@@ -1,0 +1,10 @@
+menu "browser26"
+
+    config B26_CYCLE_SECONDS
+        int "Seconds between the start of one page and the start of the next"
+        default 60
+        help
+            A page that takes longer (render plus refresh) is followed by the next
+            page at once.
+
+endmenu

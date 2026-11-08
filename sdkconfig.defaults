@@ -1,0 +1,67 @@
+# browser26 defaults. Target esp32s3, ESP32-S3-WROOM-1 with 8 MB flash and octal PSRAM.
+# After editing this file, delete the generated sdkconfig in the build profile.
+
+CONFIG_IDF_TARGET="esp32s3"
+
+# Flash: the stock bootloader is a QIO build at 80 MHz, 8 MB.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+
+# Partition table in the project root: 3.5 MB app, 4.44 MB LittleFS data (fonts, URL list) to the end of flash.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# PSRAM: 8 MB octal at 80 MHz. Every malloc goes to PSRAM first, 64 KB of internal RAM
+# stays reserved for callers that ask for internal memory. The engine, the band buffers,
+# the glyph cache and decoded images live in PSRAM. Task stacks stay internal: HTTP from
+# a task with a PSRAM stack stalled.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=0
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_SPIRAM_MEMTEST=n
+# TLS record buffers in PSRAM.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+
+# Console
+# The native USB port is the only port on the badge.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# CPU and FreeRTOS
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+# At 100 Hz pdMS_TO_TICKS truncates delays under 10 ms to 0.
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Panic and watchdogs
+CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT=y
+# The render task is pinned to core 1 and runs layout for up to 20 s without yielding,
+# so the task watchdog does not watch that core's idle task. WiFi runs on core 0.
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+CONFIG_ESP_BROWNOUT_DET=y
+
+# Compiler: -Os, no exceptions, no RTTI (the engine is patched for both).
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_COMPILER_CXX_EXCEPTIONS=n
+CONFIG_COMPILER_CXX_RTTI=n
+
+# TLS: the pages are public, so the server certificate is not checked.
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
+
+# TCP: a 32 KB receive window instead of 5.7 KB. Throughput on one connection is window over
+# round trip, and a page is one connection pulling hundreds of KB. The buffers are in PSRAM
+# (CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP).
+CONFIG_LWIP_TCP_WND_DEFAULT=32768
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=16384
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=32
+
+# Logging
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
