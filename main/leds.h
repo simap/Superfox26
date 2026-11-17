@@ -8,3 +8,6 @@ void leds_off();
 void leds_load(int done, int total);
 // Teal bar: ceil(remaining / total * 8) LEDs lit, so it drains to one LED before the next page.
 void leds_timer(int remaining_ms, int total_ms);
+// Violet bar for tab selection: the position of index among count tabs, one LED for the first tab
+// up to all eight for the last.
+void leds_select(int index, int count);

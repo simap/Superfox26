@@ -18,11 +18,6 @@
 
 static const char* TAG = "image";
 
-const uint8_t bayer8[8][8] = {
-    {0, 32, 8, 40, 2, 34, 10, 42},   {48, 16, 56, 24, 50, 18, 58, 26}, {12, 44, 4, 36, 14, 46, 6, 38},
-    {60, 28, 52, 20, 62, 30, 54, 22}, {3, 35, 11, 43, 1, 33, 9, 41},    {51, 19, 59, 27, 49, 17, 57, 25},
-    {15, 47, 7, 39, 13, 45, 5, 37},   {63, 31, 55, 23, 61, 29, 53, 21}};
-
 namespace
 {
 uint32_t be16(const unsigned char* p) { return (p[0] << 8) | p[1]; }
@@ -261,7 +256,7 @@ static bool webp_fits(const std::string& data, int dw, int dh)
 {
     int nw = 0, nh = 0;
     if(!sniff_webp(data, nw, nh)) return false;
-    size_t need = static_cast<size_t>(nw) * nh * 7 + static_cast<size_t>(dw) * dh * 4 + 1024 * 1024;
+    size_t need = static_cast<size_t>(nw) * nh * 7 + static_cast<size_t>(dw) * dh * 5 + 1024 * 1024;
     size_t free_ps = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     if(free_ps < need)
         ESP_LOGW(TAG, "webp %dx%d skipped: needs about %u, free PSRAM %u", nw, nh, (unsigned)need, (unsigned)free_ps);
@@ -279,7 +274,7 @@ bool decode_image(int kind, const std::string& data, gimage& img, int dw, int dh
     if(!ok)
     {
         std::vector<uint8_t>().swap(img.px);
-        std::vector<uint8_t>().swap(img.mask);
+        std::vector<uint8_t>().swap(img.alpha);
     }
     return ok;
 }

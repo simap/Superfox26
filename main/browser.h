@@ -9,6 +9,14 @@ bool browser_start();
 // Ends the current wait and starts the next page.
 void browser_next();
 
+// Ends the current wait and starts the page before the one shown.
+void browser_prev();
+
+// Button step during the countdown: moves a tab selection by delta (+1 or -1, wrapping) starting
+// from the page shown, shows it on the LEDs, and loads it once no step has come for SELECT_HOLD_MS.
+// Ignored outside the countdown.
+void browser_step(int delta);
+
 // Index into the URL list of the page being shown or rendered.
 int browser_page_index();
 

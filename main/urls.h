@@ -8,6 +8,14 @@
 
 static const page_entry PAGE_URLS[] = {
 
+    {"http://app.bhencke.com/had26/1.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/3.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/5.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/6.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/7.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/11.jpg", 0, 0},
+
+
     // {"https://text.npr.org/", 0, 0},
     // {"https://c.xkcd.com/random/comic/", 225, 0},
     // {"https://lite.cnn.com/", 0, 0},
@@ -27,6 +35,9 @@ static const page_entry PAGE_URLS[] = {
     {"https://c.xkcd.com/random/comic/", 225, 0},
     {"https://hackaday.com/", 20, 0},
     {"https://hackaday.com/blog/", 20, 0},
+    
+    
+
     
     
 };

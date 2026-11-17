@@ -74,7 +74,7 @@ void cmd_help()
            "OK   get URL\n"
            "OK   urls\n"
            "OK   url add URL [OFFSET [SECONDS]] | url set N OFFSET [SECONDS] | url del N | url clear\n"
-           "OK   next\n");
+           "OK   next | prev\n");
 }
 
 void cmd_status()
@@ -227,15 +227,16 @@ void run_line(const char* line)
     else if(c == "get") cmd_get(a);
     else if(c == "urls") cmd_urls();
     else if(c == "url") cmd_url(a);
-    else if(c == "next")
+    else if(c == "next" || c == "prev")
     {
         const char* state = browser_state();
         if(!strcmp(state, "nowifi")) printf("ERR waiting for WiFi, set it: wifi SSID PASSWORD\n");
         else if(!strcmp(state, "nourls")) printf("ERR no URLs: url add https://...\n");
         else if(!strcmp(state, "wait"))
         {
-            browser_next();
-            printf("OK next page\n");
+            if(c == "prev") browser_prev();
+            else browser_next();
+            printf("OK %s page\n", c == "prev" ? "previous" : "next");
         } else
             printf("ERR busy: %s, the next page follows\n", state);
     } else

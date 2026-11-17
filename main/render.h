@@ -1,4 +1,4 @@
-// Fetch a page, lay it out with litehtml and draw the top panel window into the two epd97 planes.
+// Fetch a page, lay it out with litehtml and draw the panel window into the tone frame.
 #pragma once
 
 #include <cstdint>
@@ -13,7 +13,7 @@
 static const size_t PAGE_HTML_MAX = 700 * 1024;
 
 // Height of the tab bar at the top of the panel. The page window is the rest.
-static const int TAB_H = 44;
+static const int TAB_H = 38;
 
 struct render_stats
 {
@@ -31,12 +31,11 @@ struct render_stats
 // Initialise fonts and the HTTP client. Call once. False when the fonts partition is unusable.
 bool render_init();
 
-// Render url into panel rows TAB_H to 671 of the planes (960 x 672, 1 bpp each, EPD_STRIDE bytes per
-// row), starting at document row offset, clamped so the window stays inside the document. Both planes
-// are cleared first. Stores the page's title and favicon for the tab bar. On failure err holds a
-// one-line reason and the planes are left cleared.
-bool render_page(const std::string& url, int offset, uint8_t* plane_bw, uint8_t* plane_red, render_stats& st,
-                 std::string& err);
+// Render url into rows TAB_H to 671 of the tone frame (TONE_W x TONE_H entry indices, tones.h),
+// starting at document row offset, clamped so the window stays inside the document. The frame is
+// cleared to paper first. Stores the page's title and favicon for the tab bar. On failure err holds a
+// one-line reason and the frame is left cleared.
+bool render_page(const std::string& url, int offset, uint8_t* frame, render_stats& st, std::string& err);
 
-// Render the tab bar into panel rows 0 to TAB_H - 1: one tab per page, the current one filled.
-bool render_tabs(const std::vector<page_entry>& pages, size_t current, uint8_t* plane_bw, uint8_t* plane_red);
+// Render the tab bar into frame rows 0 to TAB_H - 1: one tab per page, the current one filled.
+bool render_tabs(const std::vector<page_entry>& pages, size_t current, uint8_t* frame);

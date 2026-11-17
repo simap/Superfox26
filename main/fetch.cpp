@@ -121,8 +121,9 @@ esp_err_t one_request(const std::string& cur, std::string& out, size_t max_bytes
             if(clen < 0) err = ESP_FAIL;
         }
         if(err == ESP_OK) break;
+        bool was_live = s_live[i];
         drop(i);
-        if(retried || !s_live[i]) return err;
+        if(retried || !was_live) return err;
         retried = true;
     }
     s_live[i]   = true;
@@ -221,7 +222,7 @@ void fetch_init()
     s_buf                       = static_cast<char*>(malloc(READ_CHUNK));
     s_cfg                       = {};
     s_cfg.user_agent            = "Mozilla/5.0 (compatible; browser26/0.1; ESP32-S3; litehtml)";
-    s_cfg.timeout_ms            = 15000;
+    s_cfg.timeout_ms            = 5000;
     s_cfg.buffer_size           = 4096;
     s_cfg.buffer_size_tx        = 1024;
     s_cfg.disable_auto_redirect = true;

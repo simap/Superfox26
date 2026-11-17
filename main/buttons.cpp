@@ -34,8 +34,8 @@ static void buttons_task(void*)
                 pressed[i] = true;
                 if(strcmp(browser_state(), "wait") == 0)
                 {
-                    ESP_LOGI(TAG, "%s: next page", NAMES[i]);
-                    browser_next();
+                    ESP_LOGI(TAG, "%s: %s tab", NAMES[i], i == 0 ? "previous" : "next");
+                    browser_step(i == 0 ? -1 : 1);
                 } else
                     ESP_LOGI(TAG, "%s ignored, state %s", NAMES[i], browser_state());
             }

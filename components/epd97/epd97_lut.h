@@ -293,8 +293,198 @@ static inline void epd_build_lutb_verb(uint8_t* out, uint8_t unit, uint8_t vcom)
   }
 }
 
-// Frames one pull of a verb table plays. 0 when a count byte other than TB or
-// TD (offsets 2 and 5 in a group) is zero in any table, or when a table's
+// --- driver B seq table ------------------------------------------------------
+// Four tables for sequence tests, selected by the plane bit pair. The group
+// shape is the one yigitabi5444/supercon26-badge-os measured as a hold on the
+// B1 (main.c part_table): every group is one frame, phase C only, record
+// `level 01 01 00 01 00 01 01`, SRab 0 skips phases A and B and TD 0 skips D.
+// Ten groups make a 10 frame pull. A drive table drives groups 0 to unit - 1,
+// so unit is 1 to 9 and the step grows with it. Group 9 is always ground.
+// Hold and VCOM are ground throughout. A shake is a sequence of ink and
+// paper pulls.
+//
+//   0  hold    ground
+//   1  paper   VDL, every driven frame
+//   2  ink     VDH, every driven frame
+//   3  red     VDL in frames 0 and 4, VDHR in every other frame up to 8,
+//              whatever the unit: VDL, 3 VDHR, VDL, 4 VDHR, ground
+//   4  VCOM    ground
+//
+// The red period is pinned at EPD_SEQ_RED_PERIOD. Measured on the panel: a
+// period of 3 clears too often and red stays weak, a period of 5 runs eight
+// VDHR in a row and black comes up. 2 VDL against 7 VDHR is a positive bias.
+// The limits are published in epd97.h.
+#ifndef EPD_SEQ_UNIT_MAX
+#define EPD_SEQ_UNIT_MAX    9
+#endif
+#ifndef EPD_SEQ_PULL_FRAMES
+#define EPD_SEQ_PULL_FRAMES 10
+#endif
+#ifndef EPD_SEQ_RED_PERIOD
+#define EPD_SEQ_RED_PERIOD 4
+#endif
+static inline void epd_build_lutb_seq(uint8_t* out, uint8_t unit)
+{
+  if (unit == 0u) unit = 1u;
+  if (unit > EPD_SEQ_UNIT_MAX) unit = EPD_SEQ_UNIT_MAX;
+  const unsigned driven = unit;
+  for (unsigned t = 0; t < 5u; t++) {
+    for (unsigned g = 0; g < 10u; g++) {
+      uint8_t* q = &out[(t * 10u + g) * 8u];
+      uint8_t lvl = 0;   // phase C level code, bits 3 and 2 of the level byte
+      if (t == 3u) {
+        // VDL opens each full period, VDHR fills the rest including a
+        // partial period at the end. Frame 9 stays ground.
+        const bool opens = (g % EPD_SEQ_RED_PERIOD == 0u) &&
+                           (g + EPD_SEQ_RED_PERIOD <= EPD_SEQ_PULL_FRAMES - 1u);
+        if (g < EPD_SEQ_PULL_FRAMES - 1u) lvl = opens ? 2 : 3;
+      } else if (g < driven) {
+        if (t == 1u)      lvl = 2;                           // paper VDL
+        else if (t == 2u) lvl = 1;                           // ink VDH
+      }
+      q[0] = (uint8_t)(lvl << 2);
+      q[1] = 1; q[2] = 1; q[3] = 0;
+      q[4] = 1; q[5] = 0; q[6] = 1;
+      q[7] = 1;
+    }
+  }
+}
+
+// Frames one pull of a seq table plays, 10, or 0 when a record is not the seq
+// shape above.
+static inline uint32_t epd_lutb_seq_frames(const uint8_t* lut)
+{
+  for (unsigned k = 0; k < 50u; k++) {
+    const uint8_t* q = &lut[k * 8u];
+    if (q[1] != 1u || q[2] != 1u || q[3] != 0u || q[4] != 1u || q[5] != 0u ||
+        q[6] != 1u || q[7] != 1u) {
+      return 0;
+    }
+  }
+  return EPD_SEQ_PULL_FRAMES;
+}
+
+// --- driver B erase table ----------------------------------------------------
+// One pull that wipes the whole panel. A pattern of p and i characters is cut
+// into runs. A run of n characters at unit u is n * u frames at VDL for p or
+// VDH for i, in one phase. The runs fill phases A, B, C and D of group 0, then
+// of group 1 and so on. A run longer than 255 frames takes more than one
+// phase. One ground frame follows the last run, because the last frame of a
+// pull must be ground.
+//
+// A zero in TA, TB, TC, SRcd or RP hangs the COG with BUSY low until a reset
+// (yig-os DEVICE_INFO.md and main.c part_table), so none of them is ever 0.
+// Phases with nothing to play are skipped as in the seq shape: SRab 0 skips A
+// and B, TD 0 skips D. Phase C plays in every group. A group past the end is
+// the seq ground record, one frame. When the ground frame falls in phase A,
+// that group is the seq ground record. When it falls in phase B, phase C
+// plays one more ground frame.
+//
+// Tables 0 to 3 get the same drive, so the erase does not depend on the
+// planes. Table 4 (VCOM) is ground. Every table carries the same counts,
+// because the shortest table ends the pull for all of them.
+#ifndef EPD_ERASE_PHASES
+#define EPD_ERASE_PHASES 40u   // 10 groups x 4 phases, the ground phase included
+#endif
+
+// Builds the erase table into out. Returns the frames one pull plays, or 0
+// for unit 0, an empty pattern, a character other than lowercase p, i or h,
+// or a pattern that needs more than EPD_ERASE_PHASES phases with the ground
+// phase. h is a rest, a run of ground frames between drives. out is unchanged
+// when the return is 0.
+static inline uint32_t epd_build_lutb_erase(uint8_t* out, const char* pattern, uint8_t unit)
+{
+  uint8_t lvl[EPD_ERASE_PHASES];
+  uint8_t cnt[EPD_ERASE_PHASES];
+  unsigned n = 0;
+  if (pattern == NULL || pattern[0] == '\0' || unit == 0u) return 0;
+  for (size_t k = 0; pattern[k] != '\0';) {
+    const char c = pattern[k];
+    if (c != 'p' && c != 'i' && c != 'h') return 0;
+    size_t len = 1;
+    while (pattern[k + len] == c) len++;
+    uint32_t left = (uint32_t)len * unit;
+    while (left > 0u) {
+      if (n >= EPD_ERASE_PHASES - 1u) return 0;   // the ground phase needs a slot
+      const uint32_t f = left > 255u ? 255u : left;
+      lvl[n] = (c == 'p') ? 2u : (c == 'i') ? 1u : 0u;
+      cnt[n] = (uint8_t)f;
+      n++;
+      left -= f;
+    }
+    k += len;
+  }
+  lvl[n] = 0u;
+  cnt[n] = 1u;
+  n++;
+
+  uint32_t frames = 0;
+  for (unsigned g = 0; g < 10u; g++) {
+    const unsigned b = g * 4u;
+    const unsigned m = (b < n) ? ((n - b) < 4u ? (n - b) : 4u) : 0u;
+    // The seq ground record. With m 1 the phase in A is the ground phase,
+    // which this record plays in C. With m 2 phase B is the ground phase and
+    // C keeps this record's ground frame.
+    uint8_t rec[8] = { 0x00, 1, 1, 0, 1, 0, 1, 1 };
+    if (m >= 2u) {
+      rec[0] = (uint8_t)((lvl[b] << 6) | (lvl[b + 1u] << 4));
+      rec[1] = cnt[b];
+      rec[2] = cnt[b + 1u];
+      rec[3] = 1;
+    }
+    if (m >= 3u) {
+      rec[0] = (uint8_t)(rec[0] | (lvl[b + 2u] << 2));
+      rec[4] = cnt[b + 2u];
+    }
+    if (m == 4u) {
+      rec[0] = (uint8_t)(rec[0] | lvl[b + 3u]);
+      rec[5] = cnt[b + 3u];
+    }
+    frames += (rec[3] ? (uint32_t)rec[1] + rec[2] : 0u) + rec[4] + rec[5];
+    for (unsigned t = 0; t < 5u; t++) {
+      uint8_t* q = &out[(t * 10u + g) * 8u];
+      memcpy(q, rec, 8u);
+      if (t == 4u) q[0] = 0x00;
+    }
+  }
+  return frames;
+}
+
+// Frames one pull of an erase table plays, or 0 when the table is not the
+// shape epd_build_lutb_erase() writes. Checked: every table carries table 4's
+// counts, tables 0 to 3 carry table 0's levels, table 4 is ground, TA, TB and
+// TC are not 0, SRab is 0 or 1, SRcd and RP are 1, no phase is VDHR, the
+// phases SRab 0 or TD 0 skip are ground, and the last played phase is ground.
+static inline uint32_t epd_lutb_erase_frames(const uint8_t* lut)
+{
+  uint32_t frames = 0;
+  unsigned last = 1;
+  for (unsigned g = 0; g < 10u; g++) {
+    const uint8_t* v = &lut[(4u * 10u + g) * 8u];
+    const uint8_t lv = lut[g * 8u];
+    if (v[0] != 0u) return 0;
+    for (unsigned t = 0; t < 5u; t++) {
+      const uint8_t* q = &lut[(t * 10u + g) * 8u];
+      if (t < 4u && q[0] != lv) return 0;
+      for (unsigned i = 1; i < 8u; i++) {
+        if (q[i] != v[i]) return 0;
+      }
+    }
+    if (v[1] == 0u || v[2] == 0u || v[4] == 0u || v[3] > 1u || v[6] != 1u || v[7] != 1u) {
+      return 0;
+    }
+    const unsigned a = (lv >> 6) & 3u, b = (lv >> 4) & 3u, c = (lv >> 2) & 3u, d = lv & 3u;
+    if (a == 3u || b == 3u || c == 3u || d == 3u) return 0;
+    if (v[3] == 0u && (a | b) != 0u) return 0;
+    if (v[5] == 0u && d != 0u) return 0;
+    frames += (v[3] ? (uint32_t)v[1] + v[2] : 0u) + v[4] + v[5];
+    last = v[5] ? d : c;
+  }
+  return last == 0u ? frames : 0;
+}
+
+// Frames one pull of a verb or seq table plays. 0 when a count byte other than
+// TB or TD (offsets 2 and 5 in a group) is zero in any table, or when a table's
 // counts differ from table 4's. TB and TD at 0 are the skips
 // epd_build_lutb_verb() writes.
 static inline uint32_t epd_lutb_verb_frames(const uint8_t* lut)

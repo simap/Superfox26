@@ -1,8 +1,8 @@
-// litehtml container for the 3-color e-paper panel (white, black, red), 960 x 672. Compositing happens
-// in a 24-bit RGB band buffer. Each band row is quantized to the palette (quantizer, Atkinson error
-// diffusion by default) straight into the epd97 bw and red planes. FreeType for text, libpng and
-// libjpeg-turbo for images, fetched over HTTP as the engine asks for them.
-// Text: mono glyphs, painted into the band in the text color and dithered with everything else.
+// litehtml container for the 9.7 inch three pigment e-paper panel, 960 x 672. Compositing happens in a
+// 24-bit RGB band buffer. Each band row is dithered to tone map entries (tone_dither, tones.h) into the
+// tone frame that tones_draw() plays onto the panel. FreeType for text, libpng, libjpeg-turbo, libwebp
+// and own GIF and BMP decoders for images, fetched over HTTP as the engine asks for them.
+// Text: antialiased glyphs blended into the band by coverage in the text colour.
 
 #include "render.h"
 
@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -29,6 +30,7 @@
 #include "leds.h"
 #include "sizecache.h"
 #include "tabs.h"
+#include "tones.h"
 #include "url.h"
 
 using namespace litehtml;
@@ -41,6 +43,9 @@ static const int VIEW_W    = EPD_W; // 960
 static const int PAGE_H    = EPD_H - TAB_H;
 static const int BAND_ROWS = 64;    // RGB band 184,320 bytes
 
+// A decoded copy holds 3 bytes per drawn pixel, 4 with alpha, 5 for WebP with alpha (the RGBA decode
+// buffer keeps its capacity). Copies a later band still needs are kept past IMG_KEEP: one 960 x 628
+// copy with alpha is 2.4 MB.
 static const size_t IMG_KEEP     = 192 * 1024; // decoded image bytes kept across bands
 static const size_t IMG_FILE_MAX = 300 * 1024; // compressed bytes fetched per image
 static const size_t IMG_SRC_MAX  = 1024 * 1024; // compressed bytes held per page, all in-view images
@@ -49,7 +54,7 @@ static const size_t IMG_SRC_MAX  = 1024 * 1024; // compressed bytes held per pag
 // still missing after the first probe gets one more at PROBE_BYTES_2.
 static const size_t PROBE_BYTES   = 16 * 1024;
 static const size_t PROBE_BYTES_2 = 64 * 1024;
-static const int    RETRY_DELAY_MS = 500; // before the second attempt at an image fetch
+static const int    RETRY_DELAY_MS = 250; // before the second attempt at an image fetch
 static const size_t CSS_MAX      = 400 * 1024; // one stylesheet
 static const size_t GLYPH_CACHE  = 256 * 1024;
 // Free PSRAM that must remain after a phase's declared bytes. The engine reports the stylesheet
@@ -133,167 +138,6 @@ static std::string b64_decode(const std::string& in)
     return out;
 }
 
-// ---------------------------------------------------------------- palette and quantizer
-
-enum { PAL_WHITE = 0, PAL_BLACK = 1, PAL_RED = 2 };
-
-// Ordered dither of one RGB pixel to the palette {white, black, red}.
-//   t  = bayer8[y & 7][x & 7], 0..63
-//   b  = 255 * (2t - 63) / 128, a signed bias in [-125.5, +125.5], the same for all three channels
-//   c' = c + b per channel (not clamped)
-//   nearest palette entry P by d(P) = wr (r' - Pr)^2 + wg (g' - Pg)^2 + wb (b' - Pb)^2,
-//   wr = 0.299, wg = 0.587, wb = 0.114
-// Each palette channel is 0 or 255, so the pairwise tests reduce to:
-//   red   nearer than black  iff  r' > 127.5
-//   red   nearer than white  iff  (wg g' + wb b') / (wg + wb) < 127.5
-//   white nearer than black  iff  wr r' + wg g' + wb b' > 127.5
-// Result: red if both red tests hold (strictly). Otherwise white if the third test holds, else black.
-// Grays never pick red. Palette colors map to themselves at every threshold (|b| < 127.5).
-// Integer form below: every value is scaled by 128, so 127.5 becomes 16320.
-static const int Q_HALF = 16320;
-
-static inline int pal_index128(int r2, int g2, int b2)
-{
-    if(r2 > Q_HALF && 587 * g2 + 114 * b2 < 701 * Q_HALF) return PAL_RED;
-    return 299 * r2 + 587 * g2 + 114 * b2 > 1000 * Q_HALF ? PAL_WHITE : PAL_BLACK;
-}
-
-static inline int quantize_px(int r, int g, int b, int x, int y)
-{
-    int bias = 255 * (2 * bayer8[y & 7][x & 7] - 63);
-    return pal_index128(r * 128 + bias, g * 128 + bias, b * 128 + bias);
-}
-
-// ---------------------------------------------------------------- quantizer
-// Port of the quantizer on branch dither of the device container (harness/device/bwr_main.cpp).
-// DITHER_BAYER: quantize_px above. DITHER_FS: Floyd-Steinberg. DITHER_ATKINSON: Atkinson.
-// Error diffusion scans serpentine (odd rows right to left), picks the nearest palette entry (same weighted
-// test, no bias) for c + e, and diffuses the RGB error c + e - P. FS: 7/16 ahead, 3/16 below behind, 5/16
-// below, 1/16 below ahead. Atkinson: 1/8 each to 1 and 2 ahead, below behind, below, below ahead, 2 below
-// (6/8 diffused). The incoming error e is clamped per channel to +-ERR_CLAMP and so that c + e stays in
-// 0..255. Every palette entry has g = b, so the g - b part of an error can never be paid back and would
-// otherwise grow without bound and smear across edges. Without the 0..255 bound, an error below black in r
-// and b is passed on unchanged by every black pixel and never decays: a saturated green area locks to solid
-// black. The error rows persist from row to row, so they carry across band boundaries. alloc() resets them
-// for each window.
-// SNAP: a pixel within SNAP of a palette entry (max per-channel abs difference, source color before any
-// error) is written as that entry: no bias, no incoming error used, no error diffused. 0 disables it.
-enum { DITHER_BAYER = 0, DITHER_FS = 1, DITHER_ATKINSON = 2 };
-static const int DITHER_MODE = DITHER_ATKINSON;
-static const int SNAP        = 0;
-static const int ERR_CLAMP   = 128;
-
-static const uint8_t PALETTE[3][3] = {{255, 255, 255}, {0, 0, 0}, {255, 0, 0}};
-
-struct quantizer
-{
-    int w = 0;
-    // error rows, (w + 4) x 3 int16 each, in 1/16 pixel units, index x + 2
-    std::vector<int16_t> rows[3];
-
-    void alloc(int w_)
-    {
-        w      = w_;
-        int nr = DITHER_MODE == DITHER_FS ? 2 : DITHER_MODE == DITHER_ATKINSON ? 3 : 0;
-        for(int i = 0; i < 3; i++)
-        {
-            if(i < nr) rows[i].assign(static_cast<size_t>(w + 4) * 3, 0);
-            else std::vector<int16_t>().swap(rows[i]);
-        }
-    }
-    void release()
-    {
-        for(auto& r : rows) std::vector<int16_t>().swap(r);
-    }
-
-    // palette index if c is within SNAP of an entry, else -1
-    static int snapped(int r, int g, int b)
-    {
-        if(SNAP <= 0) return -1;
-        for(int i = 0; i < 3; i++)
-            if(std::abs(r - PALETTE[i][0]) <= SNAP && std::abs(g - PALETTE[i][1]) <= SNAP &&
-               std::abs(b - PALETTE[i][2]) <= SNAP)
-                return i;
-        return -1;
-    }
-
-    // One RGB row into one row of each plane: bit 7 of byte 0 is x = 0, a set bw bit is ink, a set red bit
-    // is red. Both rows are cleared first.
-    void row(const uint8_t* c, int y, uint8_t* bw, uint8_t* red)
-    {
-        memset(bw, 0, static_cast<size_t>(w + 7) / 8);
-        memset(red, 0, static_cast<size_t>(w + 7) / 8);
-        auto put = [&](int x, int idx) {
-            if(idx == PAL_BLACK) bw[x >> 3] |= static_cast<uint8_t>(0x80 >> (x & 7));
-            else if(idx == PAL_RED) red[x >> 3] |= static_cast<uint8_t>(0x80 >> (x & 7));
-        };
-        if(DITHER_MODE == DITHER_BAYER)
-        {
-            for(int x = 0; x < w; x++)
-            {
-                int r = c[3 * x], g = c[3 * x + 1], b = c[3 * x + 2];
-                int s = snapped(r, g, b);
-                put(x, s >= 0 ? s : quantize_px(r, g, b, x, y));
-            }
-            return;
-        }
-        bool     atk = DITHER_MODE == DITHER_ATKINSON;
-        int16_t* cur = rows[0].data();
-        int16_t* nxt = rows[1].data();
-        int16_t* nx2 = atk ? rows[2].data() : nullptr;
-        int      d   = (y & 1) ? -1 : 1;
-        for(int i = 0; i < w; i++)
-        {
-            int x = d > 0 ? i : w - 1 - i;
-            int s = snapped(c[3 * x], c[3 * x + 1], c[3 * x + 2]);
-            if(s >= 0)
-            {
-                put(x, s);
-                continue;
-            }
-            int v[3], e[3];
-            for(int k = 0; k < 3; k++)
-            {
-                int ck = c[3 * x + k];
-                int in = cur[(x + 2) * 3 + k] / 16;
-                in     = std::max(-std::min(ERR_CLAMP, ck), std::min(std::min(ERR_CLAMP, 255 - ck), in));
-                v[k]   = ck + in;
-            }
-            int idx = pal_index128(v[0] * 128, v[1] * 128, v[2] * 128);
-            put(x, idx);
-            e[0] = v[0] - PALETTE[idx][0];
-            e[1] = v[1] - PALETTE[idx][1];
-            e[2] = v[2] - PALETTE[idx][2];
-            auto add = [&](int16_t* r, int xx, int k, int amt) {
-                if(xx >= 0 && xx < w) r[(xx + 2) * 3 + k] = static_cast<int16_t>(r[(xx + 2) * 3 + k] + amt);
-            };
-            for(int k = 0; k < 3; k++)
-            {
-                if(!atk)
-                {
-                    add(cur, x + d, k, e[k] * 7);
-                    add(nxt, x - d, k, e[k] * 3);
-                    add(nxt, x, k, e[k] * 5);
-                    add(nxt, x + d, k, e[k]);
-                } else
-                {
-                    int a = e[k] * 2; // 1/8 in 1/16 units
-                    add(cur, x + d, k, a);
-                    add(cur, x + 2 * d, k, a);
-                    add(nxt, x - d, k, a);
-                    add(nxt, x, k, a);
-                    add(nxt, x + d, k, a);
-                    add(nx2, x, k, a);
-                }
-            }
-        }
-        // shift the error rows up one row
-        std::swap(rows[0], rows[1]);
-        if(atk) std::swap(rows[1], rows[2]);
-        std::fill(atk ? rows[2].begin() : rows[1].begin(), atk ? rows[2].end() : rows[1].end(), 0);
-    }
-};
-
 // ---------------------------------------------------------------- fonts
 
 struct font
@@ -312,6 +156,7 @@ class bwr_container : public document_container
     int                  W = VIEW_W, H = 0;
     int                  view_h; // viewport height reported to the engine
     std::string          caption; // <title> text, from set_caption
+    std::string          image_icon; // an image page's own 16x16 thumbnail as a BMP, the tab icon
     struct icon_cand
     {
         std::string href;
@@ -357,7 +202,7 @@ class bwr_container : public document_container
 
     // fb is an RGB band buffer of W x band rows; window rows band_y0..band_y1 (half open) map onto it.
     int       band_y0 = 0, band_y1 = 0;
-    quantizer q;
+    tone_dither q;
 
     bool alloc_window(int band_rows)
     {
@@ -568,8 +413,7 @@ class bwr_container : public document_container
         FT_Face face = fonts.sized(f->slot, f->px);
         if(!face) return nullptr;
         FT_UInt gi = FT_Get_Char_Index(face, c);
-        // The mono target hints differently and can change the advance: the advance always comes from the
-        // default-target load that text_width uses, so layout and drawing agree.
+        // The advance always comes from the plain load that text_width uses, so layout and drawing agree.
         if(!e)
         {
             if(FT_Load_Glyph(face, gi, FT_LOAD_DEFAULT)) return nullptr;
@@ -578,7 +422,7 @@ class bwr_container : public document_container
         }
         if(need_bitmap)
         {
-            if(FT_Load_Glyph(face, gi, FT_LOAD_RENDER | FT_LOAD_TARGET_MONO)) return nullptr;
+            if(FT_Load_Glyph(face, gi, FT_LOAD_RENDER)) return nullptr;
             FT_GlyphSlot     g  = face->glyph;
             const FT_Bitmap& bm = g->bitmap;
             e->left             = static_cast<int16_t>(g->bitmap_left);
@@ -589,7 +433,7 @@ class bwr_container : public document_container
             size_t n            = static_cast<size_t>(e->w) * e->h;
             if(n)
             {
-                // stored as one byte per pixel, 0 or 255
+                // stored as one coverage byte per pixel
                 e->bm.reset(new uint8_t[n]);
                 for(unsigned y = 0; y < bm.rows; y++)
                 {
@@ -598,7 +442,7 @@ class bwr_container : public document_container
                     for(unsigned x = 0; x < bm.width; x++)
                     {
                         if(bm.pixel_mode == FT_PIXEL_MODE_MONO) d[x] = ((s[x >> 3] >> (7 - (x & 7))) & 1) ? 255 : 0;
-                        else d[x] = s[x] >= 128 ? 255 : 0;
+                        else d[x] = s[x];
                     }
                 }
             }
@@ -625,8 +469,7 @@ class bwr_container : public document_container
     {
         if(collect) return;
         n_draw_text++;
-        // the text color goes into the band at full depth like a fill; mono glyph coverage is 0 or 255,
-        // so the quantizer dithers text pixels with everything else
+        // the text colour is blended into the band by glyph coverage, so edges carry real tones
         auto   f    = reinterpret_cast<font*>(h);
         rgb    v    = to_rgb(color);
         int    a    = color.alpha;
@@ -965,7 +808,8 @@ class bwr_container : public document_container
             {
                 int    sx = static_cast<int>(static_cast<long>(x - dst.x0) * img.w / dw);
                 size_t o  = static_cast<size_t>(sy) * img.w + sx;
-                if(img.opaque_at(o)) blend(x, y, {img.px[3 * o], img.px[3 * o + 1], img.px[3 * o + 2]}, 255);
+                int    a  = img.alpha_at(o);
+                if(a) blend(x, y, {img.px[3 * o], img.px[3 * o + 1], img.px[3 * o + 2]}, a);
             }
         }
     }
@@ -1112,28 +956,55 @@ class bwr_container : public document_container
         std::string b = resolve_url(page_url, url ? url : "");
         if(!b.empty()) base_url = b;
     }
-    // Every <link> that is not a stylesheet. Icon candidates are scored: a plain icon of 16 or 32
-    // pixels in a raster format first, apple-touch-icon last, SVG never.
+    // Every <link> that is not a stylesheet. Icon candidates, by rel: icon, shortcut icon,
+    // apple-touch-icon, apple-touch-icon-precomposed. Within a rel the size nearest 16 px and at least
+    // 16 comes first, then sizes below 16, an unsized link counting as 32. SVG is skipped (no decoder).
+    // href resolves against the page after redirects.
     void link(const std::shared_ptr<document>&, const element::ptr& el) override
     {
-        std::string rel  = el->get_attr("rel", "");
+        std::string rel  = " " + std::string(el->get_attr("rel", "")) + " ";
         const char* href = el->get_attr("href", "");
         std::transform(rel.begin(), rel.end(), rel.begin(), ::tolower);
-        if(!href || !*href || rel.find("icon") == std::string::npos) return;
-        std::string type  = el->get_attr("type", "");
-        std::string sizes = el->get_attr("sizes", "");
-        std::string h     = href;
-        auto        q     = h.find('?');
-        std::string path  = q == std::string::npos ? h : h.substr(0, q);
-        if(type.find("svg") != std::string::npos || (path.size() > 4 && path.compare(path.size() - 4, 4, ".svg") == 0))
+        for(auto& ch : rel)
+            if(ch == '\t' || ch == '\n' || ch == '\r') ch = ' ';
+        if(!href || !*href) return;
+        int group = -1;
+        if(rel.find(" shortcut ") != std::string::npos && rel.find(" icon ") != std::string::npos) group = 1;
+        else if(rel.find(" icon ") != std::string::npos) group = 0;
+        else if(rel.find(" apple-touch-icon ") != std::string::npos) group = 2;
+        else if(rel.find(" apple-touch-icon-precomposed ") != std::string::npos) group = 3;
+        if(group < 0) return;
+        std::string type = el->get_attr("type", "");
+        std::string h    = href;
+        auto        q    = h.find_first_of("?#");
+        std::string path = q == std::string::npos ? h : h.substr(0, q);
+        std::transform(path.begin(), path.end(), path.begin(), ::tolower);
+        if(type.find("svg") != std::string::npos || (path.size() > 4 && path.compare(path.size() - 4, 4, ".svg") == 0) ||
+           path.compare(0, 18, "data:image/svg+xml") == 0)
             return;
-        int score = 50;
-        if(rel.find("apple-touch") != std::string::npos) score = 90;
-        if(sizes.find("16x16") != std::string::npos) score -= 20;
-        else if(sizes.find("32x32") != std::string::npos) score -= 15;
-        else if(!sizes.empty() && sizes != "any") score += 10;
-        if(type.find("png") != std::string::npos) score -= 5;
-        icons.push_back({resolve(href, nullptr), score});
+        // the cost of the best listed size, 16 px costing 0
+        const char* sizes = el->get_attr("sizes", "");
+        int         cost  = 16;
+        bool        sized = false;
+        for(const char* p = sizes ? sizes : ""; *p;)
+        {
+            char* end = nullptr;
+            long  s   = strtol(p, &end, 10);
+            if(end == p)
+            {
+                p++;
+                continue;
+            }
+            p = end;
+            if(*p != 'x' && *p != 'X') continue;
+            int c = s >= 16 ? static_cast<int>(std::min(s, 4096L)) - 16 : static_cast<int>(16 - s) * 8 + 5000;
+            cost  = sized ? std::min(cost, c) : c;
+            sized = true;
+            p++;
+            strtol(p, &end, 10); // the height
+            p = end;
+        }
+        icons.push_back({resolve(href, nullptr), group * 10000 + cost});
     }
     void on_anchor_click(const char*, const element::ptr&) override {}
     void on_mouse_event(const element::ptr&, mouse_event) override {}
@@ -1218,19 +1089,17 @@ static int ms_since(int64_t t0) { return static_cast<int>((esp_timer_get_time() 
 
 // A page whose body is an image file: one <img> scaled to fit the window, aspect kept, centred, with a
 // black border of IMAGE_BORDER px. The title is the last path segment.
-static const int IMAGE_BORDER = 3;
-
 static std::string image_page_html(const std::string& url, int nat_w, int nat_h)
 {
-    int box_w = VIEW_W - 2 * IMAGE_BORDER, box_h = PAGE_H - 2 * IMAGE_BORDER;
-    int w = box_w, h = static_cast<int>(static_cast<int64_t>(nat_h) * box_w / nat_w);
-    if(h > box_h)
+    // scaled to fit the window with its aspect kept, centred on a black page
+    int w = VIEW_W, h = static_cast<int>(static_cast<int64_t>(nat_h) * VIEW_W / nat_w);
+    if(h > PAGE_H)
     {
-        h = box_h;
-        w = static_cast<int>(static_cast<int64_t>(nat_w) * box_h / nat_h);
+        h = PAGE_H;
+        w = static_cast<int>(static_cast<int64_t>(nat_w) * PAGE_H / nat_h);
     }
     w = std::max(1, w), h = std::max(1, h);
-    int left = (VIEW_W - w - 2 * IMAGE_BORDER) / 2, top = (PAGE_H - h - 2 * IMAGE_BORDER) / 2;
+    int left = (VIEW_W - w) / 2, top = (PAGE_H - h) / 2;
 
     std::string title = url;
     auto        q     = title.find_first_of("?#");
@@ -1239,58 +1108,116 @@ static std::string image_page_html(const std::string& url, int nat_w, int nat_h)
     auto slash = title.rfind('/');
     if(slash != std::string::npos && slash + 1 < title.size()) title.erase(0, slash + 1);
 
-    char img[192];
-    snprintf(img, sizeof(img),
-             "<img width=\"%d\" height=\"%d\" style=\"display:block;margin:%dpx 0 0 %dpx;border:%dpx solid #000\" src=\"",
-             w, h, top, left, IMAGE_BORDER);
-    return "<html><head><title>" + html_escape(title) + "</title></head><body style=\"margin:0;padding:0;background:#fff\">" +
+    char img[160];
+    snprintf(img, sizeof(img), "<img width=\"%d\" height=\"%d\" style=\"display:block;margin:%dpx 0 0 %dpx\" src=\"", w, h,
+             top, left);
+    return "<html><head><title>" + html_escape(title) +
+           "</title></head><body style=\"margin:0;padding:0;background:#000;height:" + std::to_string(PAGE_H) + "px\">" +
            img + html_escape(url) + "\"></body></html>";
 }
 
-// Title and favicon for the tab bar, stored per page URL. The icon is fetched only when none is
-// stored yet: the best <link rel=icon> candidate, else /favicon.ico at the origin. A failed icon fetch
-// leaves the entry without an icon and is tried again on the next load of the page.
-static const size_t ICON_FILE_MAX = 64 * 1024;
+// Title and favicon for the tab bar, stored under the configured page URL (key) so the bar finds them.
+// The icon comes from the page after redirects (c.page_url): up to ICON_LINKS <link> candidates in
+// score order, then favicon.ico, favicon.png and apple-touch-icon.png at its origin. A real icon is
+// kept and never fetched again. When every candidate fails a placeholder is stored, and the candidates
+// are tried again on the next render of the page.
+// ICON_FILE_MAX holds a 1024 px apple-touch PNG (hackaday.com, 49 KB) or a JPEG icon. The file is held
+// once and decoded to 16x16. A larger ICO is decoded from the entries inside its first ICON_FILE_MAX.
+static const size_t ICON_FILE_MAX = 128 * 1024;
+static const size_t ICON_LINKS    = 4;
 
-static void update_tab(bwr_container& c)
+// One icon fetch, once more after a transport failure or a 5xx answer. True for a 2xx answer, which
+// may be truncated at ICON_FILE_MAX.
+static bool fetch_icon(const std::string& url, std::string& out, fetch_result& r)
 {
-    tab_info t;
-    bool     had   = tabs_load(c.page_url, t);
-    std::string title = c.caption.empty() ? tabs_host(c.page_url) : c.caption;
-    bool     changed = !had || t.title != title;
-    t.title          = title;
-    if(t.icon_bmp.empty())
+    for(int attempt = 0; attempt < 2; attempt++)
     {
-        std::vector<std::string> urls;
-        std::sort(c.icons.begin(), c.icons.end(), [](const bwr_container::icon_cand& a, const bwr_container::icon_cand& b) {
-            return a.score < b.score;
-        });
-        for(auto& ic : c.icons)
-            if(!ic.href.empty() && urls.size() < 2) urls.push_back(ic.href);
-        std::string origin = c.page_url;
-        auto        p      = origin.find("://");
-        auto        q      = p == std::string::npos ? std::string::npos : origin.find('/', p + 3);
-        if(q != std::string::npos) origin = origin.substr(0, q);
-        urls.push_back(origin + "/favicon.ico");
-        for(auto& u : urls)
-        {
-            std::string  file;
-            fetch_result r;
-            if(!fetch_url(u, file, ICON_FILE_MAX, &r)) continue;
-            t.icon_bmp = tabs_icon_bmp(file);
-            if(!t.icon_bmp.empty())
-            {
-                ESP_LOGI(TAG, "favicon %s: %u bytes", u.c_str(), (unsigned)file.size());
-                changed = true;
-                break;
-            }
-            ESP_LOGW(TAG, "favicon %s: %u bytes, not decodable", u.c_str(), (unsigned)file.size());
-        }
+        if(attempt) vTaskDelay(pdMS_TO_TICKS(RETRY_DELAY_MS));
+        fetch_url(url, out, ICON_FILE_MAX, &r);
+        if(r.status >= 200 && r.status < 300) return true;
+        if(r.status != 0 && r.status < 500) return false;
     }
-    if(changed) tabs_save(c.page_url, t);
+    return false;
 }
 
-bool render_tabs(const std::vector<page_entry>& pages, size_t current, uint8_t* plane_bw, uint8_t* plane_red)
+static void update_tab(bwr_container& c, const std::string& key)
+{
+    tab_info    t;
+    bool        had     = tabs_load(key, t);
+    std::string host    = tabs_host(c.page_url);
+    std::string title   = c.caption.empty() ? host : c.caption;
+    bool        changed = !had || t.title != title;
+    t.title             = title;
+    if(!c.image_icon.empty())
+    {
+        // the page is an image: its own thumbnail is the icon, refreshed when the image changes
+        if(t.icon_bmp != c.image_icon || t.placeholder) changed = true;
+        t.icon_bmp    = c.image_icon;
+        t.placeholder = false;
+        ESP_LOGI(TAG, "tab icon: the page image, %u bytes", (unsigned)t.icon_bmp.size());
+        if(changed) tabs_save(key, t);
+        return;
+    }
+    if(!t.icon_bmp.empty() && !t.placeholder)
+    {
+        ESP_LOGI(TAG, "tab icon: stored, %u bytes", (unsigned)t.icon_bmp.size());
+        if(changed) tabs_save(key, t);
+        return;
+    }
+    std::vector<std::string> urls;
+    auto add = [&urls](const std::string& u) {
+        if(!u.empty() && std::find(urls.begin(), urls.end(), u) == urls.end()) urls.push_back(u);
+    };
+    std::stable_sort(c.icons.begin(), c.icons.end(),
+                     [](const bwr_container::icon_cand& a, const bwr_container::icon_cand& b) { return a.score < b.score; });
+    for(auto& ic : c.icons)
+        if(urls.size() < ICON_LINKS) add(ic.href);
+    std::string origin = c.page_url;
+    auto        p      = origin.find("://");
+    auto        q      = p == std::string::npos ? std::string::npos : origin.find('/', p + 3);
+    if(q != std::string::npos) origin = origin.substr(0, q);
+    add(origin + "/favicon.ico");
+    add(origin + "/favicon.png");
+    add(origin + "/apple-touch-icon.png");
+    int got = 0;
+    for(auto& u : urls)
+    {
+        std::string file, fmt;
+        bool        partial = false;
+        bool        data    = u.compare(0, 5, "data:") == 0;
+        if(data)
+        {
+            auto comma = u.find(',');
+            if(comma == std::string::npos || u.rfind(";base64", comma) == std::string::npos) continue;
+            file = b64_decode(u.substr(comma + 1));
+        } else
+        {
+            fetch_result r;
+            if(!fetch_icon(u, file, r)) continue;
+            partial = r.truncated;
+        }
+        got++;
+        std::string bmp = tabs_icon_bmp(file, partial, &fmt);
+        if(bmp.empty()) continue;
+        ESP_LOGI(TAG, "tab icon: %s, %u bytes%s, %s", data ? "data: URL" : u.c_str(), (unsigned)file.size(),
+                 partial ? " (truncated)" : "", fmt.c_str());
+        t.icon_bmp    = bmp;
+        t.placeholder = false;
+        tabs_save(key, t);
+        return;
+    }
+    ESP_LOGI(TAG, "tab icon: placeholder for %s, %u candidates, %d fetched but not decodable", host.c_str(),
+             (unsigned)urls.size(), got);
+    if(!t.placeholder || t.icon_bmp.empty())
+    {
+        t.icon_bmp    = tabs_placeholder_bmp(host);
+        t.placeholder = true;
+        changed       = true;
+    }
+    if(changed) tabs_save(key, t);
+}
+
+bool render_tabs(const std::vector<page_entry>& pages, size_t current, uint8_t* frame)
 {
     std::vector<tab_info> infos(pages.size());
     for(size_t i = 0; i < pages.size(); i++) tabs_load(pages[i].url, infos[i]);
@@ -1310,8 +1237,7 @@ bool render_tabs(const std::vector<page_entry>& pages, size_t current, uint8_t* 
             doc->draw(0, 0, 0, &clip);
             c.end_band(TAB_H);
             for(int y = 0; y < TAB_H; y++)
-                c.q.row(&c.fb[static_cast<size_t>(y) * VIEW_W * 3], y, plane_bw + static_cast<size_t>(y) * EPD_STRIDE,
-                        plane_red + static_cast<size_t>(y) * EPD_STRIDE);
+                c.q.row(&c.fb[static_cast<size_t>(y) * VIEW_W * 3], y, frame + static_cast<size_t>(y) * TONE_W);
             ok = true;
         }
         c.free_window();
@@ -1321,12 +1247,10 @@ bool render_tabs(const std::vector<page_entry>& pages, size_t current, uint8_t* 
     return ok;
 }
 
-bool render_page(const std::string& url, int offset, uint8_t* plane_bw, uint8_t* plane_red, render_stats& st,
-                 std::string& err)
+bool render_page(const std::string& url, int offset, uint8_t* frame, render_stats& st, std::string& err)
 {
     st = render_stats();
-    memset(plane_bw, 0, EPD_PLANE_BYTES);
-    memset(plane_red, 0, EPD_PLANE_BYTES);
+    memset(frame, TONE_PAPER, static_cast<size_t>(TONE_W) * TONE_H);
     bool ok = false;
     {
         bwr_container c(g_fonts, url, PAGE_H);
@@ -1335,7 +1259,8 @@ bool render_page(const std::string& url, int offset, uint8_t* plane_bw, uint8_t*
         int64_t     t0 = esp_timer_get_time();
         std::string html;
         fetch_result fr;
-        bool got = fetch_url(url, html, PAGE_HTML_MAX, &fr);
+        // one retry after a transport failure or a 5xx, as for images
+        bool got = bwr_container::fetch_url_retry(url, html, PAGE_HTML_MAX, fr);
         st.fetch_ms = ms_since(t0);
         if(!got)
         {
@@ -1363,6 +1288,7 @@ bool render_page(const std::string& url, int offset, uint8_t* plane_bw, uint8_t*
                 s->nat_w        = iw;
                 s->nat_h        = ih;
                 s->state        = bwr_container::IMG_LOADED;
+                c.image_icon    = tabs_icon_bmp(html, false);
                 s->data.swap(html);
                 shrink_to_fit(s->data);
                 c.img_src_bytes += s->data.size();
@@ -1442,8 +1368,7 @@ bool render_page(const std::string& url, int offset, uint8_t* plane_bw, uint8_t*
                 // page row y lands on panel row TAB_H + y
                 for(int y = y0; y < y1; y++)
                     c.q.row(&c.fb[static_cast<size_t>(y - y0) * VIEW_W * 3], TAB_H + y,
-                            plane_bw + static_cast<size_t>(TAB_H + y) * EPD_STRIDE,
-                            plane_red + static_cast<size_t>(TAB_H + y) * EPD_STRIDE);
+                            frame + static_cast<size_t>(TAB_H + y) * TONE_W);
                 leds_load(5 + (y1 * 3 + PAGE_H - 1) / PAGE_H, 8); // draw fills the last three LEDs
             }
             ok = true;
@@ -1452,7 +1377,7 @@ bool render_page(const std::string& url, int offset, uint8_t* plane_bw, uint8_t*
         st.draw_ms  = ms_since(t0);
         st.images   = c.img_count;
         st.img_fail = c.img_fail;
-        if(ok) update_tab(c);
+        if(ok) update_tab(c, url);
         ESP_LOGI(TAG, "fonts %ld, text_width %ld, draw_text %ld, glyph cache %u bytes peak, %ld evictions",
                  c.n_fonts, c.n_measure, c.n_draw_text, (unsigned)c.gcache.peak, c.gcache.evictions);
         ESP_LOGI(TAG,

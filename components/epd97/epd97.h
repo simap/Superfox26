@@ -181,7 +181,9 @@ bool epd_refreshing(void);
 bool epd_clear_screen(void);
 
 // Close an open session and cut the panel supply. Called for you unless
-// keep-awake is on; call it by hand before a long idle.
+// keep-awake is on. Call it by hand before a long idle. With EPD_KEEP_SUPPLY
+// 1 the automatic close keeps the supply on, and only this, the deep sleep
+// prepare, an error, the OTP dump and the register read cut it.
 void epd_sleep(void);
 
 // Everything epd_sleep() does, plus latching the supply switch off across an
@@ -221,6 +223,25 @@ bool epd_keep_awake(void);
 // holding red, so the next fast refresh without allow-fast-red runs slow.
 #define EPD_VERB_UNIT_MAX   16   // frames at the rail per pull
 #define EPD_VERB_PULLS_MAX   8   // pulls per pass call
+#define EPD_SEQ_UNIT_MAX     9   // driven frames per paper or ink pull, at most
+#define EPD_SEQ_PULL_FRAMES 10   // frames per seq pull, whatever the unit
+#define EPD_SEQ_RED_PERIOD   4   // red: VDL every 4th frame, VDHR between. Fixed.
+#define EPD_SEQ_RED_VDL      2   // red VDL frames per pull, frames 0 and 4
+#define EPD_SEQ_RED_VDHR     7   // red VDHR frames per pull
+
+// Which table set a verb session latches. EPD_VERB_TABLE_SEQ is the sequence
+// set in epd97_lut.h: 0 hold, 1 paper VDL, 2 ink VDH, 3 red (VDL then VDHR),
+// one frame a group, driven for unit_frames groups, VCOM at ground. One seq
+// pull is EPD_SEQ_PULL_FRAMES frames and unit_frames is 1 to EPD_SEQ_UNIT_MAX.
+// vcom_level is ignored for it.
+// EPD_VERB_TABLE_ERASE is the erase set in epd97_lut.h, built from a p and i
+// pattern (epd_build_lutb_erase). Every pixel gets the same drive whatever
+// the planes hold. Only epd_verb_erase() opens it.
+typedef enum {
+  EPD_VERB_TABLE_VERB  = 0,
+  EPD_VERB_TABLE_SEQ   = 1,
+  EPD_VERB_TABLE_ERASE = 2
+} epd_verb_table_t;
 
 // Power up and latch the verb table, with both planes sent as zero (all hold).
 // Closes an open normal session or verb session first. ESP_ERR_NOT_SUPPORTED
@@ -230,6 +251,41 @@ bool epd_keep_awake(void);
 // panel or during a refresh. A failed step closes everything and returns
 // ESP_FAIL (COG did not come up) or ESP_ERR_TIMEOUT (booster not ready).
 esp_err_t epd_verb_open(uint8_t unit_frames, uint8_t vcom_level);
+// Same, with the table set chosen. With the seq set both planes zero select
+// paper for every pixel, and nothing is pulled until epd_verb_pass().
+esp_err_t epd_verb_open_table(uint8_t unit_frames, uint8_t vcom_level,
+                              epd_verb_table_t table);
+// Same, and with_planes true sends epd_plane_bw() and epd_plane_red() at open,
+// before the table is latched, instead of zeros. Pair it with
+// epd_verb_pull(pulls, false, ...) so the first pull does not resend them.
+// ESP_ERR_INVALID_ARG for EPD_VERB_TABLE_ERASE, which needs a pattern.
+esp_err_t epd_verb_open_ex(uint8_t unit_frames, uint8_t vcom_level,
+                           epd_verb_table_t table, bool with_planes);
+
+// What epd_verb_erase() cost. All times in ms.
+typedef struct {
+  uint32_t frames;         // frames the erase pull plays
+  uint32_t prev_close_ms;  // closing the verb session that was open, 0 if none
+  uint32_t open_ms;        // supply up or reset, zero planes, table latch, soft start
+  uint32_t pull_ms;        // BUSY low to BUSY high of the one pull
+  uint32_t close_ms;       // closing the erase session
+} epd_erase_stats_t;
+
+// Wipe the whole panel in one pull. Closes an open session, opens a session on
+// EPD_VERB_TABLE_ERASE built from pattern at unit frames per character, sends
+// both planes as zero, pulls once and closes. pattern holds only lowercase p
+// (VDL) and i (VDH). The BUSY ceiling of the pull follows its frame count
+// (EPD_ERASE_BUSY_PCT, EPD_ERASE_BUSY_PAD_MS). stats (may be NULL) gets the
+// times, with the fields of steps that did not run left 0. ESP_ERR_INVALID_ARG
+// for unit 0 or above EPD_VERB_UNIT_MAX, or a pattern the builder rejects.
+// Other errors as epd_verb_open() and epd_verb_pull(). A failed step closes
+// the session and cuts the supply.
+esp_err_t epd_verb_erase(const char* pattern, uint8_t unit, epd_erase_stats_t* stats);
+// Table set of the open verb session. EPD_VERB_TABLE_VERB when none is open.
+epd_verb_table_t epd_verb_table(void);
+// epd_verb_pass() with the plane send optional. resend false triggers the
+// planes the session already holds.
+esp_err_t epd_verb_pull(unsigned pulls, bool resend, uint32_t *panel_ms_total);
 // Send epd_plane_bw() and epd_plane_red(), then trigger the latched table
 // `pulls` times. Never rewrites the table. *panel_ms_total (may be NULL) gets
 // the summed BUSY time. ESP_ERR_INVALID_STATE with no open verb session,
@@ -238,7 +294,8 @@ esp_err_t epd_verb_open(uint8_t unit_frames, uint8_t vcom_level);
 // ESP_ERR_TIMEOUT. Sets epd_last_send_ms(), epd_last_panel_ms() and
 // epd_last_frame_ms().
 esp_err_t epd_verb_pass(unsigned pulls, uint32_t *panel_ms_total);
-// Soft shutdown and supply cut. Does nothing when no verb session is open.
+// Soft shutdown, then the supply cut unless EPD_KEEP_SUPPLY is 1. Does nothing
+// when no verb session is open.
 void      epd_verb_close(void);
 bool      epd_verb_is_open(void);
 // unit_frames of the open verb session, 0 when none is open.

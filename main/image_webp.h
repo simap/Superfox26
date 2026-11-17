@@ -10,5 +10,5 @@
 bool sniff_webp(const std::string& data, int& w, int& h);
 
 // Decode data (a whole WebP file) to dw x dh, both already clamped to the natural size. Fills img.px (RGB) and
-// img.mask (empty when every pixel is opaque) like decode_png. False on a decoder error; img is then empty.
+// img.alpha (empty when every pixel is opaque) like decode_png. False on a decoder error; img is then empty.
 bool decode_webp(const std::string& data, gimage& img, int dw, int dh);

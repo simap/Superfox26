@@ -5,17 +5,17 @@
 #include <string>
 #include <vector>
 
-// One decoded copy of an image at (at most) one display size: 24-bit RGB plus an optional 1-bit mask.
+// One decoded copy of an image at (at most) one display size: 24-bit RGB plus an optional 8-bit alpha.
 struct gimage
 {
     int                  req_w = 0, req_h = 0; // display size this copy was decoded for
     int                  w = 0, h = 0;         // stored size: min(display, natural) per axis
-    std::vector<uint8_t> px;   // RGB, 3 bytes per pixel, row-major
-    std::vector<uint8_t> mask; // 1 bit per pixel, MSB first, row-major; empty if opaque
+    std::vector<uint8_t> px;    // RGB, 3 bytes per pixel, row-major
+    std::vector<uint8_t> alpha; // 1 byte per pixel, row-major; empty if opaque
     int                  last_y = 0; // lowest page row (exclusive) any draw so far needs
     long                 last_use = 0;
-    size_t bytes() const { return px.capacity() + mask.capacity(); }
-    bool   opaque_at(size_t o) const { return mask.empty() || ((mask[o >> 3] >> (7 - (o & 7))) & 1); }
+    size_t  bytes() const { return px.capacity() + alpha.capacity(); }
+    uint8_t alpha_at(size_t o) const { return alpha.empty() ? 255 : alpha[o]; }
 };
 
 enum { IMG_NONE = 0, IMG_PNG = 1, IMG_JPEG = 2, IMG_GIF = 3, IMG_WEBP = 4, IMG_BMP = 5 };
@@ -30,6 +30,3 @@ int sniff_size(const std::string& data, int& w, int& h, bool* incomplete = nullp
 // (image_webp.h). False on a decoder error or when the decode would not fit in PSRAM; img is then
 // empty.
 bool decode_image(int kind, const std::string& data, gimage& img, int dw, int dh);
-
-// 8x8 Bayer matrix, values 0..63 (output dither and image alpha masks)
-extern const uint8_t bayer8[8][8];

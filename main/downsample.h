@@ -8,8 +8,7 @@
 
 // Box filter from sw x sh source rows (pushed top to bottom) to dw x dh, dw <= sw and dh <= sh.
 // Source rows are RGB, 3 bytes per pixel, with an optional alpha row. Color is alpha-weighted; the
-// mask bit is the mean alpha after an 8x8 ordered dither. finish() drops the mask when every pixel
-// was opaque.
+// stored alpha is the mean alpha. finish() drops the alpha plane when every pixel was opaque.
 struct downsampler
 {
     int                   sw = 0, sh = 0, dw = 0, dh = 0, cur = -1;
@@ -28,7 +27,7 @@ struct downsampler
         o->w = dw;
         o->h = dh;
         o->px.assign(static_cast<size_t>(dw) * dh * 3, 255);
-        o->mask.assign((static_cast<size_t>(dw) * dh + 7) / 8, 0);
+        o->alpha.assign(static_cast<size_t>(dw) * dh, 0);
         sca.assign(static_cast<size_t>(dw) * 3, 0);
         sa.assign(dw, 0);
         cnt.assign(dw, 0);
@@ -61,10 +60,8 @@ struct downsampler
             size_t o = static_cast<size_t>(cur) * dw + tx;
             if(cnt[tx] && sa[tx])
                 for(int k = 0; k < 3; k++) out->px[3 * o + k] = static_cast<uint8_t>(sca[3 * tx + k] / sa[tx]);
-            // mask bit from the mean alpha, ordered-dithered so partial alpha keeps its coverage
             int am = cnt[tx] ? static_cast<int>(sa[tx] / cnt[tx]) : 0;
-            int t  = (2 * bayer8[cur & 7][tx & 7] + 1) * 255 / 128;
-            if(am >= 255 || (am > 0 && am >= t)) out->mask[o >> 3] |= static_cast<uint8_t>(0x80 >> (o & 7));
+            out->alpha[o] = static_cast<uint8_t>(am);
             if(am < 255) transparent = true;
             sca[3 * tx] = sca[3 * tx + 1] = sca[3 * tx + 2] = sa[tx] = cnt[tx] = 0;
         }
@@ -73,6 +70,6 @@ struct downsampler
     {
         flush();
         cur = -1;
-        if(!transparent) std::vector<uint8_t>().swap(out->mask);
+        if(!transparent) std::vector<uint8_t>().swap(out->alpha);
     }
 };

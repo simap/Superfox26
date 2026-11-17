@@ -7,11 +7,12 @@ static const char* TAG = "leds";
 
 static const int NUM_LEDS  = 8;
 static const int LED_GPIO  = 38; // WS2812 data, from the stock firmware's led_bar.py
-static const int BRIGHT_PCT = 10;
+static const int BRIGHT_PCT = 3;
 
 // full-scale colors, scaled by BRIGHT_PCT at write time
 static const uint8_t AMBER[3] = {255, 160, 0};
 static const uint8_t TEAL[3]  = {0, 128, 128};
+static const uint8_t VIOLET[3] = {150, 0, 255};
 
 static led_strip_handle_t s_strip;
 
@@ -59,6 +60,12 @@ void leds_load(int done, int total)
 {
     if(total <= 0) return;
     bar(AMBER, (done * NUM_LEDS + total - 1) / total);
+}
+
+void leds_select(int index, int count)
+{
+    if(count <= 1) bar(VIOLET, NUM_LEDS);
+    else bar(VIOLET, 1 + index * (NUM_LEDS - 1) / (count - 1));
 }
 
 void leds_timer(int remaining_ms, int total_ms)

@@ -14,6 +14,7 @@
 // with DMA. The two share MOSI and SCK, so the GPIO matrix is re-pointed
 // between them and the bus is never torn down.
 // -----------------------------------------------------------------------------
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -61,30 +62,32 @@ static const char* TAG = "epd";
 #define HALF_PLANE    (HALF_BYTES * EPD_H)    // 40320, one COG's share of a plane
 
 // The vendor's update register sequence for the 9.7", TCON before STV. Each
-// step is a register, its argument, and a delay field: bit 0 says the argument
-// is an OTP offset rather than a literal, the upper bits are units of 10 ms.
-typedef struct { uint8_t cmd; uint8_t arg; uint8_t dly; } upd_step_t;
+// step is a register, its argument, a delay field and the quick-profile delay.
+// In the delay field bit 0 says the argument is an OTP offset rather than a
+// literal, the upper bits are units of 10 ms. qms is the wait in ms when
+// s_quick is set (EPD_QUICK_OPEN in epd97_config.h).
+typedef struct { uint8_t cmd; uint8_t arg; uint8_t dly; uint8_t qms; } upd_step_t;
 
 static const upd_step_t k_upd[] = {
-  { 0x05, 0x7D, 20u << 1 },
-  { 0x05, 0x00,  1u << 1 },
-  { 0xC2, 0x3F,  0 },
-  { 0xD8, 0x1D,  1 },
-  { 0xD6, 0x1E,  1 },
-  { 0xA7, 0x10, 10u << 1 },
-  { 0xA7, 0x00, 10u << 1 },
-  { 0x44, 0x00,  0 },
-  { 0x45, 0x80,  0 },
-  { 0xA7, 0x10, 10u << 1 },
-  { 0xA7, 0x00, 10u << 1 },
-  { 0x44, 0x06,  0 },
-  { 0x45, 0x86,  0 },              // patched at runtime with the waveform bank
-  { 0xA7, 0x10, 10u << 1 },
-  { 0xA7, 0x00, EPD_T_PRE_SS << 1 },
-  { 0x60, 0x0B,  1 },
-  { 0x61, 0x1C,  1 },
-  { 0x01, 0x10,  1 },
-  { 0x02, 0x11,  1 },
+  { 0x05, 0x7D, 20u << 1, 50 },
+  { 0x05, 0x00,  1u << 1,  1 },
+  { 0xC2, 0x3F,  0,        0 },
+  { 0xD8, 0x1D,  1,        0 },
+  { 0xD6, 0x1E,  1,        0 },
+  { 0xA7, 0x10, 10u << 1,  2 },
+  { 0xA7, 0x00, 10u << 1, 10 },
+  { 0x44, 0x00,  0,        0 },
+  { 0x45, 0x80,  0,        0 },
+  { 0xA7, 0x10, 10u << 1,  2 },
+  { 0xA7, 0x00, 10u << 1, 10 },
+  { 0x44, 0x06,  0,        0 },
+  { 0x45, 0x86,  0,        0 },              // patched at runtime with the waveform bank
+  { 0xA7, 0x10, 10u << 1,  2 },
+  { 0xA7, 0x00, EPD_T_PRE_SS << 1, 10 },
+  { 0x60, 0x0B,  1,        0 },
+  { 0x61, 0x1C,  1,        0 },
+  { 0x01, 0x10,  1,        0 },
+  { 0x02, 0x11,  1,        0 },
 };
 #define UPD_STEPS (sizeof(k_upd) / sizeof(k_upd[0]))
 // The steps before the four geometry registers that close k_upd. The last of
@@ -152,12 +155,22 @@ static uint8_t   s_verb_lut[LUTB_BYTES];
 static bool      s_verb_open;
 static uint8_t   s_verb_unit;
 static bool      s_verb_red;          // a pass in this session sent red plane bits
+static epd_verb_table_t s_verb_table;
+// BUSY ceiling for one pull of the open verb session. The erase table sets it
+// from its frame count.
+static uint32_t  s_verb_busy_ms = EPD_VERB_BUSY_MS;
 
 static uint32_t  s_power_off_ms;
 static bool      s_power_off_valid;
+// The panel supply switch is on. With EPD_KEEP_SUPPLY it stays on between
+// sessions, with the COG held in reset.
+static bool      s_supply_on;
 static uint32_t  s_last_panel_ms;
 static uint32_t  s_last_frame_ms;
 static uint32_t  s_last_send_ms;
+// Quick waits for this open (EPD_QUICK_OPEN). Set by the fast and verb
+// openers on driver B, cleared by cog_stop_ex().
+static bool      s_quick;
 static int64_t   s_last_send_end_us;  // 0 until the first send
 
 #if EPD_STAGE_INTERNAL
@@ -326,6 +339,7 @@ static void power_on(void)
     s_power_off_valid = false;
   }
   gpio_set_level((gpio_num_t)EPD_PIN_PWR, EPD_PWR_ACTIVE_HIGH ? 1 : 0);
+  s_supply_on = true;
 }
 
 static void power_off(void)
@@ -333,6 +347,7 @@ static void power_off(void)
   gpio_set_level((gpio_num_t)EPD_PIN_PWR, EPD_PWR_ACTIVE_HIGH ? 0 : 1);
   s_power_off_ms = now_ms();
   s_power_off_valid = true;
+  s_supply_on = false;
 }
 
 static void cog_reset(void)
@@ -532,26 +547,36 @@ static int otp_read(void)
   return 0;
 }
 
+#if EPD_KEEP_SUPPLY && !EPD_SEND_0x70_EVERY_POWERUP
+#error "EPD_KEEP_SUPPLY needs EPD_SEND_0x70_EVERY_POWERUP: an open on a kept supply starts at the reset, and driver B needs 0x70 after every reset"
+#endif
+
 static int cog_initial(void)
 {
   // With the OTP cached, otp_read() returns without ever reaching cog_reset(),
-  // so the power-up and the rail settle have to happen here instead.
+  // so the power-up and the rail settle have to happen here instead. A supply
+  // kept on by cog_close() needs neither.
   const bool cached = s_otp_valid;
-  if (cached) {
+  const bool warm = EPD_KEEP_SUPPLY && s_supply_on;
+  if (cached && !warm) {
     power_on();
     delay_ms(EPD_T_RST_PWR);
   }
+  if (warm) LOGF("supply kept on, off floor and %u ms settle skipped", (unsigned)EPD_T_RST_PWR);
   int rc = otp_read();
   if (rc != 0) {
     LOGF("OTP failed (%d), aborting so the booster is not left on", rc);
     return rc;
   }
-  // Second reset after the OTP read, as the stock firmware does.
-  delay_ms(EPD_T_OTP_HI);
+  // Second reset after the OTP read, as the stock firmware does. The quick
+  // profile uses the yig-os reset shape. cog_close() leaves RST low on a kept
+  // supply, and the pulse starts from high.
+  if (warm) rst_set(1);
+  delay_ms(s_quick ? EPD_TQ_RST_HI : EPD_T_OTP_HI);
   rst_set(0);
-  delay_ms(EPD_T_OTP_LO);
+  delay_ms(s_quick ? EPD_TQ_RST_LO : EPD_T_OTP_LO);
   rst_set(1);
-  delay_ms(EPD_T_OTP_SET);
+  delay_ms(s_quick ? EPD_TQ_RST_SET : EPD_T_OTP_SET);
 #if EPD_SEND_0x70_EVERY_POWERUP
   // The probe's 0x70 does not survive the supply cut in cog_stop(), so driver
   // B gets it again after the last reset. It has to precede the window
@@ -676,8 +701,11 @@ static void write_plane(uint8_t index, const uint8_t* fb, const uint8_t* orfb)
 {
   if (index == 0x10) {
     // Driver B sets DCTL before the window registers, exactly as its stock
-    // trace does. Driver 8 sends 0x01 at the end of the update sequence.
-    if (s_driver_b) send_u8(0x01, s_otp[0x10]);
+    // trace does. Driver 8 sends 0x01 at the end of the update sequence. A
+    // resend inside a latched session leaves DCTL alone: the stock plane
+    // resend (epd.py _send_images) writes only DUW, DRFW, RAM_RW and data, and
+    // that is the only resend seen to keep a 0xB0 table latched.
+    if (s_driver_b && !s_lut_latched) send_u8(0x01, s_otp[0x10]);
     send_otp(0x13, 0x16, 6);   // DUW
     send_otp(0x90, 0x0C, 4);   // DRFW
     send_otp(0x12, 0x13, 3);   // RAM_RW
@@ -835,7 +863,7 @@ static void send_upd(size_t steps)
 {
   const uint8_t reg45 = s_driver_b ? (uint8_t)EPD_REG45_B1 : (uint8_t)EPD_REG45_084;
 
-  delay_ms(EPD_T_PRE_UPD);
+  delay_ms(s_quick ? EPD_TQ_PRE_UPD : EPD_T_PRE_UPD);
 
   for (size_t i = 0; i < steps; i++) {
     uint8_t d = k_upd[i].dly;
@@ -847,10 +875,19 @@ static void send_upd(size_t steps)
     if (k_upd[i].cmd == 0x45 && k_upd[i].arg != 0x80) arg = reg45;
 
     send_u8(k_upd[i].cmd, arg);
-    if (d >> 1) delay_ms((uint32_t)(d >> 1) * 10u);
+    if (s_quick) {
+      if (k_upd[i].qms) delay_ms(k_upd[i].qms);
+    } else if (d >> 1) {
+      delay_ms((uint32_t)(d >> 1) * 10u);
+    }
 
-    // 0x03 is the oscillator, and the stock sequence only sends it on driver 8.
-    if (i == 6 && !s_driver_b) send_u8x2(0x03, 0x00, s_otp[0x12]);
+    // 0x03 is the oscillator. The stock sequence only sends it on driver 8.
+    // Driver B gets the yig-os value in the quick profile: 23.7 ms frames
+    // instead of 29 ms.
+    if (i == 6) {
+      if (!s_driver_b)  send_u8x2(0x03, 0x00, s_otp[0x12]);
+      else if (s_quick) send_u8x2(0x03, 0x00, 0x11);
+    }
   }
 }
 
@@ -910,19 +947,51 @@ static int do_refresh(epd_refresh_t mode, bool need_red_lut)
   return 0;
 }
 
-static void cog_stop(void)
+// The DC/DC soft shutdown. cut true then cuts the supply. cut false leaves
+// the supply on and the COG in reset with RST low, as the stock firmware and
+// yig-os close a session. A BUSY that stays low past EPD_T_SHUTDOWN_BUSY
+// turns a kept supply into a cut.
+static void cog_stop_ex(bool cut)
 {
   send_u8(0x09, 0x7F);
   delay_ms(20);
   send_u8(0x05, 0x7D);
   send_u8(0x09, 0x00);
   delay_ms(200);
+  if (!cut && wait_busy(1, EPD_T_SHUTDOWN_BUSY, "dc-dc off") < 0) cut = true;
   dc_set(0);
   cs_lo();
+  if (!cut) {
+    rst_set(0);
+    cs_hi();
+    s_quick = false;
+    return;
+  }
   delay_ms(150);
   rst_set(0);
   power_off();
   // Held in reset while the rails come down.
+  delay_ms(EPD_T_DISCHARGE);
+  cs_hi();
+  rst_set(1);
+  s_quick = false;
+}
+
+// Error paths and the final shutdown.
+static void cog_stop(void) { cog_stop_ex(true); }
+
+// The end of a session that completed.
+static void cog_close(void) { cog_stop_ex(EPD_KEEP_SUPPLY == 0); }
+
+// Cuts a supply that cog_close() left on. The COG is already shut down and
+// held in reset, so only the supply cut and the discharge remain.
+static void supply_cut(void)
+{
+  if (!s_supply_on) return;
+  dc_set(0);
+  cs_lo();
+  rst_set(0);
+  power_off();
   delay_ms(EPD_T_DISCHARGE);
   cs_hi();
   rst_set(1);
@@ -1129,9 +1198,11 @@ bool refresh_display(epd_refresh_t mode)
     LOGF("refresh_display() before a successful epd_begin()");
     return false;
   }
+  // A verb or seq session holds its own table latched. Close it so this
+  // refresh opens a session on the waveform it needs. cal reopens on demand.
   if (s_verb_open) {
-    LOGF("refresh_display() refused, a verb session is open");
-    return false;
+    LOGF("closing the open verb session for the refresh");
+    epd_verb_close();
   }
   s_refreshing = true;
   const uint32_t t_frame = now_ms();
@@ -1182,13 +1253,14 @@ bool refresh_display(epd_refresh_t mode)
        (drive == EPD_FAST && !s_driver_b && need_red_lut != s_lut8_has_red) ||
       (drive == EPD_FAST && s_driver_b && s_lutb_dirty))) {
     VLOGF("the waveform changed, reopening the session");
-    cog_stop();
+    cog_close();
     s_session_open = false;
     s_lut_latched = false;
   }
 
   if (!s_session_open) {
     bus_bitbang();
+    s_quick = EPD_QUICK_OPEN && s_driver_b && drive == EPD_FAST;
     if (cog_initial() != 0) {
       LOGF("cog_initial failed");
       cog_stop();
@@ -1240,7 +1312,8 @@ bool refresh_display(epd_refresh_t mode)
   if (!keep) {
     s_session_open = false;
     s_lut_latched = false;
-    cog_stop();
+    if (rc == 0) cog_close();
+    else         cog_stop();
   }
   bod_restore();
 
@@ -1260,22 +1333,24 @@ bool refresh_display(epd_refresh_t mode)
   return rc == 0 || headless_gave_up;
 }
 
+static void verb_close(bool cut);
+
 void epd_sleep(void)
 {
-  epd_verb_close();
+  verb_close(true);
   if (s_session_open) {
     s_session_open = false;
     s_lut_latched = false;
     cog_stop();
   }
+  supply_cut();
 }
 
 bool epd_clear_screen(void)
 {
-  // Checked before epd_clear() so the verb planes survive the refusal.
   if (s_verb_open) {
-    LOGF("epd_clear_screen() refused, a verb session is open");
-    return false;
+    LOGF("closing the open verb session for the clear");
+    epd_verb_close();
   }
   LOGF("clearing the panel");
   epd_clear();
@@ -1338,33 +1413,124 @@ unsigned epd_fast_pulls(void) { return s_fast_pulls; }
 // -----------------------------------------------------------------------------
 // A pass that sent red plane bits may have moved red pigment, so the panel is
 // then treated as holding red.
-void epd_verb_close(void)
+static void verb_close(bool cut)
 {
   if (!s_verb_open) return;
   bod_hold_off();
-  cog_stop();
+  cog_stop_ex(cut);
   bod_restore();
   if (s_verb_red) s_prev_has_red = true;
   s_verb_open = false;
   s_verb_unit = 0;
   s_verb_red = false;
+  s_verb_table = EPD_VERB_TABLE_VERB;
   s_session_open = false;
   s_lut_latched = false;
-  LOGF("verb session closed");
+  LOGF("verb session closed%s", s_supply_on ? ", supply kept on" : "");
 }
 
+void epd_verb_close(void) { verb_close(EPD_KEEP_SUPPLY == 0); }
+
 esp_err_t epd_verb_open(uint8_t unit_frames, uint8_t vcom_level)
+{
+  return epd_verb_open_table(unit_frames, vcom_level, EPD_VERB_TABLE_VERB);
+}
+
+esp_err_t epd_verb_open_table(uint8_t unit_frames, uint8_t vcom_level,
+                              epd_verb_table_t table)
+{
+  return epd_verb_open_ex(unit_frames, vcom_level, table, false);
+}
+
+// Preconditions every verb open shares.
+static esp_err_t verb_check(uint8_t unit_frames)
 {
   if (!s_ready || s_headless || s_refreshing) return ESP_ERR_INVALID_STATE;
   if (!s_driver_b || s_otp_standin) return ESP_ERR_NOT_SUPPORTED;
   if (unit_frames == 0u || unit_frames > EPD_VERB_UNIT_MAX) return ESP_ERR_INVALID_ARG;
-  if (vcom_level > 3u) return ESP_ERR_INVALID_ARG;
+  return ESP_OK;
+}
 
-  epd_build_lutb_verb(s_verb_lut, unit_frames, vcom_level);
-  const uint32_t frames = epd_lutb_verb_frames(s_verb_lut);
+static const char* verb_table_name(epd_verb_table_t table)
+{
+  switch (table) {
+    case EPD_VERB_TABLE_SEQ:   return "seq";
+    case EPD_VERB_TABLE_ERASE: return "erase";
+    default:                   return "verb";
+  }
+}
+
+// One line per group of the erase table in s_verb_lut: level and frames per
+// played phase, "-" for a skipped one. The seq ground records at the end
+// share one line.
+static void erase_log_groups(void)
+{
+  static const char* const k_lvl[4] = { "GND", "VDH", "VDL", "VDHR" };
+  static const uint8_t k_ground[8] = { 0x00, 1, 1, 0, 1, 0, 1, 1 };
+  unsigned used = 10u;
+  while (used > 0u && memcmp(&s_verb_lut[(used - 1u) * 8u], k_ground, 8u) == 0) used--;
+  for (unsigned g = 0; g < used; g++) {
+    const uint8_t* q = &s_verb_lut[g * 8u];
+    char ph[4][16];
+    const unsigned cnt[4] = { q[1], q[2], q[4], q[5] };
+    for (unsigned p = 0; p < 4u; p++) {
+      const bool played = (p < 2u) ? (q[3] != 0u) : (p == 2u || q[5] != 0u);
+      if (played) {
+        snprintf(ph[p], sizeof ph[p], "%s %u", k_lvl[(q[0] >> (6u - 2u * p)) & 3u], cnt[p]);
+      } else {
+        snprintf(ph[p], sizeof ph[p], "-");
+      }
+    }
+    LOGF("erase g%u: A %s, B %s, C %s, D %s", g, ph[0], ph[1], ph[2], ph[3]);
+  }
+  if (used < 10u) LOGF("erase g%u to g9: C GND 1, A B D skipped", used);
+}
+
+// epd_verb_open_ex() with the erase pattern. pattern is read only for
+// EPD_VERB_TABLE_ERASE.
+static esp_err_t verb_open(uint8_t unit_frames, uint8_t vcom_level,
+                           epd_verb_table_t table, bool with_planes, const char* pattern)
+{
+  const esp_err_t pre = verb_check(unit_frames);
+  if (pre != ESP_OK) return pre;
+  if (vcom_level > 3u) return ESP_ERR_INVALID_ARG;
+  if (table != EPD_VERB_TABLE_VERB && table != EPD_VERB_TABLE_SEQ &&
+      table != EPD_VERB_TABLE_ERASE) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  uint32_t frames;
+  if (table == EPD_VERB_TABLE_SEQ) {
+    vcom_level = 0;
+    if (unit_frames > EPD_SEQ_UNIT_MAX) return ESP_ERR_INVALID_ARG;
+    epd_build_lutb_seq(s_verb_lut, unit_frames);
+    frames = epd_lutb_seq_frames(s_verb_lut);
+  } else if (table == EPD_VERB_TABLE_ERASE) {
+    vcom_level = 0;
+    const uint32_t built = epd_build_lutb_erase(s_verb_lut, pattern, unit_frames);
+    if (built == 0u) {
+      LOGF("erase pattern rejected: empty, not p and i only, or over %u phases at unit %u",
+           (unsigned)EPD_ERASE_PHASES, (unsigned)unit_frames);
+      return ESP_ERR_INVALID_ARG;
+    }
+    frames = epd_lutb_erase_frames(s_verb_lut);
+    if (frames != built) {
+      LOGF("erase table failed its shape check (%u against %u frames), not sent",
+           (unsigned)frames, (unsigned)built);
+      return ESP_ERR_INVALID_STATE;
+    }
+  } else {
+    epd_build_lutb_verb(s_verb_lut, unit_frames, vcom_level);
+    frames = epd_lutb_verb_frames(s_verb_lut);
+  }
   if (frames == 0u) {
     LOGF("verb table has a zero or uneven count, not sent");
     return ESP_ERR_INVALID_STATE;
+  }
+  s_verb_busy_ms = EPD_VERB_BUSY_MS;
+  if (table == EPD_VERB_TABLE_ERASE) {
+    s_verb_busy_ms = (uint32_t)(((uint64_t)frames * EPD_B_FRAME_US / 1000u) *
+                                EPD_ERASE_BUSY_PCT / 100u) + EPD_ERASE_BUSY_PAD_MS;
   }
 
   // The panel latches one table per session, so any open session ends here.
@@ -1374,7 +1540,7 @@ esp_err_t epd_verb_open(uint8_t unit_frames, uint8_t vcom_level)
   } else if (s_session_open) {
     LOGF("closing the open %s session for the verb table",
          s_planes_only ? "planes-only" : "refresh");
-    cog_stop();
+    cog_close();
     s_session_open = false;
     s_lut_latched = false;
   }
@@ -1383,6 +1549,7 @@ esp_err_t epd_verb_open(uint8_t unit_frames, uint8_t vcom_level)
   s_refreshing = true;
   const uint32_t t0 = now_ms();
   bus_bitbang();
+  s_quick = EPD_QUICK_OPEN && s_driver_b;
   if (cog_initial() != 0) {
     LOGF("verb open: cog_initial failed");
     cog_stop();
@@ -1392,8 +1559,9 @@ esp_err_t epd_verb_open(uint8_t unit_frames, uint8_t vcom_level)
 
   // Both planes zero select table 0 for every pixel, so the session opens on
   // hold. write_plane() sends the window registers ahead of the bw plane.
-  write_plane(0x10, NULL, NULL);
-  write_plane(0x13, NULL, NULL);
+  // with_planes sends the caller's planes here instead, before the latch.
+  write_plane(0x10, with_planes ? s_bw : NULL, NULL);
+  write_plane(0x13, with_planes ? s_red : NULL, NULL);
   send_upd(UPD_STEPS);
   // The update registers overwrite 0xB0, and nothing after this touches it.
   send_index(0xB0, s_verb_lut, (uint16_t)LUTB_BYTES);
@@ -1415,13 +1583,29 @@ esp_err_t epd_verb_open(uint8_t unit_frames, uint8_t vcom_level)
   s_session_images = 0;
   s_verb_open = true;
   s_verb_unit = unit_frames;
-  s_verb_red = false;
+  s_verb_red = with_planes && frame_has_red();
+  s_verb_table = table;
   s_refreshing = false;
-  LOGF("verb session open, unit %u frames, pull %u frames = %u ms at %u.%u ms per frame, open %u ms",
+  LOGF("%s session open, unit %u frames, pull %u frames = %u ms at %u.%u ms per frame, open %u ms",
+       verb_table_name(table),
        (unsigned)unit_frames, (unsigned)frames,
        (unsigned)((frames * EPD_B_FRAME_US) / 1000u),
        (unsigned)(EPD_B_FRAME_US / 1000u), (unsigned)((EPD_B_FRAME_US % 1000u) / 100u),
        (unsigned)(now_ms() - t0));
+  if (table == EPD_VERB_TABLE_ERASE) {
+    LOGF("erase pattern %s, every pixel table drives the same, VCOM at ground, "
+         "BUSY ceiling %u ms", pattern, (unsigned)s_verb_busy_ms);
+    erase_log_groups();
+    return ESP_OK;
+  }
+  if (table == EPD_VERB_TABLE_SEQ) {
+    LOGF("seq tables: 0 hold, 1 paper VDL, 2 ink VDH, %u driven of %u frames. "
+         "3 red fixed: VDL every %u frames, %u VDL and %u VDHR. One frame a group, "
+         "phase C only",
+         (unsigned)unit_frames, (unsigned)EPD_SEQ_PULL_FRAMES,
+         (unsigned)EPD_SEQ_RED_PERIOD, (unsigned)EPD_SEQ_RED_VDL, (unsigned)EPD_SEQ_RED_VDHR);
+    return ESP_OK;
+  }
   // Net field per verb, source minus VCOM, as epd_build_lutb_verb() sets it.
   static const char* const k_rail[4] = { "GND", "VDH", "VDL", "VDHR" };
   const char* vc = k_rail[vcom_level];
@@ -1433,7 +1617,63 @@ esp_err_t epd_verb_open(uint8_t unit_frames, uint8_t vcom_level)
   return ESP_OK;
 }
 
+esp_err_t epd_verb_open_ex(uint8_t unit_frames, uint8_t vcom_level,
+                           epd_verb_table_t table, bool with_planes)
+{
+  if (table == EPD_VERB_TABLE_ERASE) return ESP_ERR_INVALID_ARG;
+  return verb_open(unit_frames, vcom_level, table, with_planes, NULL);
+}
+
+esp_err_t epd_verb_erase(const char* pattern, uint8_t unit, epd_erase_stats_t* stats)
+{
+  epd_erase_stats_t st = { 0 };
+  if (stats) *stats = st;
+  esp_err_t err = verb_check(unit);
+  if (err != ESP_OK) return err;
+  // Checked before anything closes, so a bad pattern leaves an open session
+  // as it is.
+  static uint8_t probe[LUTB_BYTES];
+  st.frames = epd_build_lutb_erase(probe, pattern, unit);
+  if (st.frames == 0u) {
+    LOGF("erase pattern rejected: empty, not p and i only, or over %u phases at unit %u",
+         (unsigned)EPD_ERASE_PHASES, (unsigned)unit);
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  uint32_t t = now_ms();
+  if (s_verb_open) {
+    epd_verb_close();
+    st.prev_close_ms = now_ms() - t;
+  }
+
+  t = now_ms();
+  err = verb_open(unit, 0, EPD_VERB_TABLE_ERASE, false, pattern);
+  if (err != ESP_OK) {
+    if (stats) *stats = st;
+    return err;
+  }
+  st.open_ms = now_ms() - t;
+
+  // The planes went out as zero at open, and the table ignores them.
+  err = epd_verb_pull(1, false, &st.pull_ms);
+  if (err == ESP_OK) {
+    t = now_ms();
+    epd_verb_close();
+    st.close_ms = now_ms() - t;
+  }
+  LOGF("erase %s: %u frames, close before %u ms, open %u ms, pull %u ms, close %u ms",
+       err == ESP_OK ? "done" : "FAILED", (unsigned)st.frames, (unsigned)st.prev_close_ms,
+       (unsigned)st.open_ms, (unsigned)st.pull_ms, (unsigned)st.close_ms);
+  if (stats) *stats = st;
+  return err;
+}
+
 esp_err_t epd_verb_pass(unsigned pulls, uint32_t *panel_ms_total)
+{
+  return epd_verb_pull(pulls, true, panel_ms_total);
+}
+
+esp_err_t epd_verb_pull(unsigned pulls, bool resend, uint32_t *panel_ms_total)
 {
   if (panel_ms_total) *panel_ms_total = 0;
   if (!s_verb_open || s_refreshing) return ESP_ERR_INVALID_STATE;
@@ -1441,11 +1681,14 @@ esp_err_t epd_verb_pass(unsigned pulls, uint32_t *panel_ms_total)
 
   s_refreshing = true;
   const uint32_t t_frame = now_ms();
-  if (frame_has_red()) s_verb_red = true;
-
-  // Both planes go out unmerged: draw_red sends the red plane as it is.
   bus_bitbang();
-  send_planes(false, true);
+  if (resend) {
+    if (frame_has_red()) s_verb_red = true;
+    // Both planes go out unmerged: draw_red sends the red plane as it is.
+    send_planes(false, true);
+  } else {
+    s_last_send_ms = 0;
+  }
 
   // Triggers only, as a kept session does after its first image. 0xB0 is not
   // written again: a rewrite inside a session drops the panel onto its own
@@ -1455,7 +1698,7 @@ esp_err_t epd_verb_pass(unsigned pulls, uint32_t *panel_ms_total)
   unsigned done = 0;
   int rc = 0;
   for (unsigned i = 0; i < pulls; i++) {
-    rc = retrigger(EPD_VERB_BUSY_MS);
+    rc = retrigger(s_verb_busy_ms);
     if (rc != 0) break;
     total += s_last_panel_ms;
     done++;
@@ -1467,7 +1710,7 @@ esp_err_t epd_verb_pass(unsigned pulls, uint32_t *panel_ms_total)
   if (rc != 0) {
     LOGF("verb pull %u of %u did not finish, closing the session",
          done + 1u, pulls);
-    epd_verb_close();
+    verb_close(true);
   }
   bod_restore();
 
@@ -1481,6 +1724,7 @@ esp_err_t epd_verb_pass(unsigned pulls, uint32_t *panel_ms_total)
 
 bool    epd_verb_is_open(void) { return s_verb_open; }
 uint8_t epd_verb_unit(void)    { return s_verb_unit; }
+epd_verb_table_t epd_verb_table(void) { return s_verb_open ? s_verb_table : EPD_VERB_TABLE_VERB; }
 
 // The variant's own read. Driver 8 gets its unlock and address writes on both
 // COGs here, where the probe sends them to the left COG only.
@@ -1505,12 +1749,13 @@ size_t epd_otp_dump_ex(const epd_otp_probe_t* probe, uint8_t* dst, size_t cap)
   if (cap > (size_t)EPD_OTP_DUMP_MAX) cap = (size_t)EPD_OTP_DUMP_MAX;
 
   // The read needs a fresh power-up and reset, so an open session ends here.
-  epd_verb_close();
+  verb_close(true);
   if (s_session_open) {
     s_session_open = false;
     s_lut_latched = false;
     cog_stop();
   }
+  supply_cut();
   bus_bitbang();
   otp_read_probe(probe, dst, cap);
   cog_stop();
@@ -1527,12 +1772,13 @@ size_t epd_reg_read(const epd_reg_probe_t* probe, uint8_t* dst, size_t cap)
   if (probe == NULL || dst == NULL || cap == 0u) return 0;
   if (cap > (size_t)EPD_OTP_DUMP_MAX) cap = (size_t)EPD_OTP_DUMP_MAX;
 
-  epd_verb_close();
+  verb_close(true);
   if (s_session_open) {
     s_session_open = false;
     s_lut_latched = false;
     cog_stop();
   }
+  supply_cut();
   bus_bitbang();
   cog_select(COG_M);
   cog_reset();

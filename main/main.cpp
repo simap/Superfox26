@@ -1,5 +1,5 @@
-// browser26: fetches a list of pages in turn, renders each with litehtml into the epd97 planes and
-// refreshes the 9.7 inch three-color panel. The URL list lives on the cfg partition and the WiFi
+// browser26: fetches a list of pages in turn, renders each with litehtml into a tone frame and draws
+// it on the 9.7 inch three pigment panel through the measured tone map. The URL list lives on the cfg partition and the WiFi
 // credentials in NVS, both set over the serial console (console.h).
 
 #include "esp_heap_caps.h"
@@ -13,6 +13,7 @@
 #include "leds.h"
 #include "render.h"
 #include "sizecache.h"
+#include "tones.h"
 #include "wifi.h"
 
 static const char* TAG = "main";
@@ -35,6 +36,12 @@ extern "C" void app_main(void)
     {
         ESP_LOGE(TAG, "no framebuffer, console only");
         return; // the console task keeps running
+    }
+
+    if(!tones_init())
+    {
+        ESP_LOGE(TAG, "tone frame not allocated, console only");
+        return;
     }
 
     if(!render_init())

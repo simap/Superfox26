@@ -58,9 +58,11 @@
 #endif
 // Bulk plane data only. Register writes and the OTP readback stay bitbanged:
 // they are a few dozen bytes and the OTP wants a ~50 kHz clock.
-// The PDi reference driver runs the panel at 8 MHz.
+// The PDi reference driver runs the panel at 8 MHz. 20 MHz is PDi's stated
+// maximum for this COG family and the clock yigitabi5444/supercon26-badge-os
+// runs on the B1.
 #ifndef EPD_SPI_HZ
-#define EPD_SPI_HZ        8000000u
+#define EPD_SPI_HZ        20000000u
 #endif
 // 1: each COG's 40320-byte half of a plane is gathered into an internal DMA
 // buffer and goes out as one transaction. Planes in PSRAM need this, because
@@ -120,11 +122,46 @@
 #ifndef EPD_T_DISCHARGE
 #define EPD_T_DISCHARGE  300u   // held in reset, supply already cut
 #endif
+// 1: a session close keeps the panel supply on, as the stock MicroPython
+// firmware and yig-os do. The close is the DC/DC soft shutdown, a bounded
+// wait for BUSY, then the COG held in reset. The next open skips the
+// EPD_T_OFF_MIN floor and the EPD_T_RST_PWR settle and starts at the reset.
+// Error paths, epd_sleep(), epd_deep_sleep_prepare(), the OTP dump and the
+// register read still cut the supply. 0: every close cuts the supply.
+#ifndef EPD_KEEP_SUPPLY
+#define EPD_KEEP_SUPPLY    0
+#endif
+// BUSY ceiling after the soft shutdown of a close that keeps the supply on.
+// A close that runs past it cuts the supply.
+#ifndef EPD_T_SHUTDOWN_BUSY
+#define EPD_T_SHUTDOWN_BUSY 2000u
+#endif
 #ifndef EPD_T_PRE_UPD
 #define EPD_T_PRE_UPD    660u   // settle in front of the update registers
 #endif
 #ifndef EPD_T_PRE_SS
 #define EPD_T_PRE_SS      50u   // after the last 0xA7, before the soft start
+#endif
+// Quick profile for driver B fast and verb sessions, from yig-os
+// (DEVICE_INFO.md, 348 ms open): reset 2/4/20 ms, no settle in front of the
+// registers, 0x05 7D 50 ms, 0x05 00 1 ms, load strobes 2/10 ms, 0xB0 10 ms
+// after the last strobe, and the oscillator register 0x03 00 11 after the
+// first strobe for 23.7 ms frames. The slow OTP refresh keeps the vendor
+// waits above. yig-os never cuts the supply. EPD_KEEP_SUPPLY does the same.
+#ifndef EPD_QUICK_OPEN
+#define EPD_QUICK_OPEN     1
+#endif
+#ifndef EPD_TQ_RST_HI
+#define EPD_TQ_RST_HI      2u
+#endif
+#ifndef EPD_TQ_RST_LO
+#define EPD_TQ_RST_LO      4u
+#endif
+#ifndef EPD_TQ_RST_SET
+#define EPD_TQ_RST_SET    20u
+#endif
+#ifndef EPD_TQ_PRE_UPD
+#define EPD_TQ_PRE_UPD     5u
 #endif
 // A refresh on the panel's own waveform is ~51 s on the 084 and ~34 s on the
 // B1, so the ceiling has to be generous.
@@ -293,10 +330,20 @@
 #define EPD_B_FRAME_US 23700u
 #endif
 // BUSY ceiling for one verb pull, in ms. The longest verb pull is 35 frames,
-// 830 ms at EPD_B_FRAME_US. A pull that runs past this closes the session and
-// cuts the supply.
+// 830 ms at EPD_B_FRAME_US. A seq pull is 10 frames, 237 ms. A pull that runs
+// past this closes the session and cuts the supply.
 #ifndef EPD_VERB_BUSY_MS
 #define EPD_VERB_BUSY_MS 5000u
+#endif
+// BUSY ceiling for the erase pull: its frame count at EPD_B_FRAME_US, times
+// EPD_ERASE_BUSY_PCT percent, plus EPD_ERASE_BUSY_PAD_MS. Frames run 26.3 ms
+// at 15 C and about 29 ms without the quick profile's oscillator write, so
+// the ceiling has to sit well above 100 percent.
+#ifndef EPD_ERASE_BUSY_PCT
+#define EPD_ERASE_BUSY_PCT 200u
+#endif
+#ifndef EPD_ERASE_BUSY_PAD_MS
+#define EPD_ERASE_BUSY_PAD_MS 2000u
 #endif
 
 // --- OTP dump ----------------------------------------------------------------

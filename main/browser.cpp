@@ -1,7 +1,7 @@
 // Page cycle task. Waits are task-notification waits, so the console's "next" ends them early.
-// The panel is refreshed only for a rendered page: a refresh costs 32 s or more, so status (no WiFi,
-// no URLs, a failed page) goes to the log and the console's status command, and the last page stays
-// on the panel.
+// The panel is drawn only for a rendered page: a draw costs about 12 s, so status (no WiFi, no URLs,
+// a failed page) goes to the log and the console's status command, and the last page stays on the
+// panel.
 
 #include "browser.h"
 
@@ -21,6 +21,7 @@
 #include "epd97.h"
 #include "leds.h"
 #include "render.h"
+#include "tones.h"
 #include "wifi.h"
 
 static const char* TAG = "browser";
@@ -32,20 +33,25 @@ static const char* TAG = "browser";
 static const uint32_t RENDER_STACK = 40 * 1024;
 // Pause after a failed page before the next one.
 static const int64_t FAIL_WAIT_MS = 10 * 1000;
+// A button selection loads once no button has been pressed for this long.
+static const int64_t SELECT_HOLD_MS = 1500;
 
 namespace
 {
 TaskHandle_t        s_task;
 volatile int        s_index = 0;
+volatile bool       s_back  = false; // browser_prev() was called: step back two from the advanced index
+volatile int        s_count = 1;     // pages in the list, for the button selection to wrap
+volatile int        s_select = -1;   // tab chosen with the buttons, -1 none
+volatile int64_t    s_select_until = 0; // when the selection loads, esp_timer time
 const char* volatile s_state = "wait";
 
 void refresh()
 {
-    s_state    = "refresh";
-    int64_t t0 = esp_timer_get_time();
-    bool    ok = refresh_display(EPD_SLOW);
-    ESP_LOGI(TAG, "refresh %s, panel %lu ms, total %lld ms", ok ? "ok" : "failed",
-             (unsigned long)epd_last_panel_ms(), (esp_timer_get_time() - t0) / 1000);
+    s_state = "refresh";
+    tone_draw_stats ds;
+    bool            ok = tones_draw(tones_frame(), &ds);
+    ESP_LOGI(TAG, "draw %s, %u steps, %u ms", ok ? "ok" : "failed", (unsigned)ds.steps, (unsigned)ds.total_ms);
 }
 
 // Sleeps up to ms, less when browser_next() is called. True when it was.
@@ -61,13 +67,24 @@ bool wait_ms(int64_t ms)
 void countdown(int64_t total_ms)
 {
     ulTaskNotifyTake(pdTRUE, 0);
+    s_select      = -1;
     int64_t t_end = esp_timer_get_time() + total_ms * 1000;
     for(;;)
     {
-        int64_t remaining_ms = (t_end - esp_timer_get_time()) / 1000;
+        int64_t now = esp_timer_get_time();
+        if(s_select >= 0)
+        {
+            // a button selection is open: the timer pauses, the LEDs show the chosen tab, and the
+            // page loads once the buttons have been quiet for SELECT_HOLD_MS
+            if(now >= s_select_until) break;
+            leds_select(s_select, s_count);
+            wait_ms(std::max<int64_t>(1, (s_select_until - now) / 1000));
+            continue;
+        }
+        int64_t remaining_ms = (t_end - now) / 1000;
         if(remaining_ms <= 0) break;
         leds_timer(static_cast<int>(remaining_ms), static_cast<int>(total_ms));
-        if(wait_ms(std::min<int64_t>(remaining_ms, 250))) break;
+        if(wait_ms(std::min<int64_t>(remaining_ms, 250)) && s_select < 0) break;
     }
 }
 
@@ -101,7 +118,19 @@ void browser_task(void*)
         logged = nullptr;
 
         int64_t t_start = esp_timer_get_time();
-        if(s_index >= static_cast<int>(urls.size())) s_index = 0;
+        int n   = static_cast<int>(urls.size());
+        s_count = n;
+        if(s_index >= n) s_index = 0;
+        if(s_select >= 0)
+        {
+            s_index  = s_select % n;
+            s_select = -1;
+        } else if(s_back)
+        {
+            // s_index already points past the page shown, so the page before it is two back
+            s_back  = false;
+            s_index = ((s_index - 2) % n + n) % n;
+        }
         page_entry  page = urls[s_index];
         std::string url  = page.url;
         int         secs = page.seconds > 0 ? page.seconds : CONFIG_B26_CYCLE_SECONDS;
@@ -114,8 +143,8 @@ void browser_task(void*)
         leds_load(1, 8); // fetch starts; render_page advances the bar from here
         render_stats st;
         std::string  err;
-        bool         ok = render_page(url, page.offset, epd_plane_bw(), epd_plane_red(), st, err);
-        if(ok && !render_tabs(urls, static_cast<size_t>(s_index), epd_plane_bw(), epd_plane_red()))
+        bool         ok = render_page(url, page.offset, tones_frame(), st, err);
+        if(ok && !render_tabs(urls, static_cast<size_t>(s_index), tones_frame()))
             ESP_LOGW(TAG, "tab bar did not render");
         if(ok)
             ESP_LOGI(TAG,
@@ -155,6 +184,23 @@ bool browser_start()
 void browser_next()
 {
     if(s_task) xTaskNotifyGive(s_task);
+}
+
+void browser_prev()
+{
+    s_back = true;
+    if(s_task) xTaskNotifyGive(s_task);
+}
+
+void browser_step(int delta)
+{
+    if(strcmp(s_state, "wait") != 0 || !s_task) return;
+    int n = s_count > 0 ? s_count : 1;
+    // the selection starts at the page shown, which is one before the advanced index
+    int cur = s_select >= 0 ? s_select : ((s_index - 1) % n + n) % n;
+    s_select       = ((cur + delta) % n + n) % n;
+    s_select_until = esp_timer_get_time() + SELECT_HOLD_MS * 1000;
+    xTaskNotifyGive(s_task);
 }
 
 int browser_page_index()
