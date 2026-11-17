@@ -13,40 +13,71 @@ static const int TONE_H = 672;
 // Entry index of the paper tone. The frame buffer is cleared to it.
 static const uint8_t TONE_PAPER = 0;
 
-// Expand the tone map's patterns (tone_plan_init), precompute each entry's Oklab and linear light,
-// its neighbours and the neutral entries, and allocate the frame. Call once after epd_begin().
-// False, with the reason logged, when a pattern does not expand, the paper or black entry is
-// missing, or the frame does not fit in PSRAM.
+// The float dither of the reference (tone_dither_float) is in the build of the host harness
+// (-DTONES_FLOAT_REF) and of the benchmark.
+#if defined(TONES_BENCH) || defined(TONES_FLOAT_REF)
+#define TONES_HAVE_FLOAT_REF 1
+#else
+#define TONES_HAVE_FLOAT_REF 0
+#endif
+
+// Check the expanded patterns of main/tone_tables.inc against the push limits and the balance rule
+// (tone_plan_init), place the dither's slot WHITE, and allocate and clear the frame. Every table is
+// data built on the host (tone_tables.h). Call once after epd_begin(). False, with the reason
+// logged, when a pattern fails the check or the frame does not fit in PSRAM. Then nothing draws.
 bool tones_init();
 
 // Entry index of the panel black, TONEMAP_BLACK_PATTERN.
 uint8_t tones_black();
 
 // The gray byte (r = g = b) nearest to g whose target lands exactly on a neutral entry, so an area
-// filled with it renders solid, without dither. For UI fills such as the tab bar.
+// filled with it renders solid, without dither. For UI fills such as the tab bar. A table lookup.
 int tones_solid_gray(int g);
 
 // The frame: TONE_W x TONE_H entry indices, row major.
 uint8_t* tones_frame();
 
-// Error diffusion dither of RGB rows into entry indices, serpentine. A pixel's target is its sRGB
-// colour in Oklab brought into the panel's range by tonemap_squeeze(), with L held at or above the
-// black entry's. A target with no chroma after the squeeze is neutral: it mixes only the two
-// neutral entries (patterns with no r or R) around its L and holds its error inside that pair. Any
-// other target takes the nearest of its nearest entry's neighbours by the weighted Oklab distance.
-// A blue noise threshold moves the decision between the two nearest entries. The carried error is
-// in linear light: target plus carried error minus the chosen entry, diffused to the neighbours by
-// the kernel set in tones.cpp. The error rows persist from row to row. alloc() clears them for the
-// next window.
+// Error diffusion dither of RGB rows into entry indices, serpentine, in fixed point (q15, tone_fx.h).
+// A pixel's target is its sRGB colour in Oklab brought into the panel's range by the squeeze
+// (tone_fx_squeeze.h), with L held at or above the black entry's. A target with no chroma after the
+// squeeze is neutral: it mixes only the two neutral entries (patterns with no r or R) around its L
+// and holds its error inside that pair. Any other target takes the nearest of all entries to the
+// target plus its carried error by the weighted Oklab distance. A blue noise threshold moves the
+// decision between the two nearest entries. The carried error is in linear light: target plus
+// carried error minus the chosen entry, diffused to the neighbours by the kernel set in tones.cpp.
+// The error rows persist from row to row. alloc() clears them for the next window.
 struct tone_dither
+{
+    int      w     = 0;
+    int16_t* block = nullptr; // the three rows in one allocation, internal RAM when it fits
+    int16_t* rows[3] = {nullptr, nullptr, nullptr}; // (w + 4) x 3 q15 each, index x + 2
+    tone_dither() = default;
+    tone_dither(const tone_dither&) = delete;
+    tone_dither& operator=(const tone_dither&) = delete;
+    ~tone_dither() { release(); }
+    void alloc(int w_);
+    void release();
+    // One RGB row (3 bytes per pixel, w pixels) to w entry indices at out. Without memory for the
+    // error rows the row is paper.
+    void row(const uint8_t* rgb, int y, uint8_t* out);
+};
+
+#if TONES_HAVE_FLOAT_REF
+// The float dither the fixed point one is checked and timed against: the same rules in 32 bit
+// float with libm, the target of each RGB colour kept in a cache, and the coloured search over
+// the nearest neighbours of the target's nearest entry (tones_float_ref.inc).
+struct tone_dither_float
 {
     int w = 0;
     std::vector<float> rows[3]; // (w + 4) x 3 floats each, index x + 2
     void alloc(int w_);
     void release();
-    // One RGB row (3 bytes per pixel, w pixels) to w entry indices at out.
     void row(const uint8_t* rgb, int y, uint8_t* out);
 };
+
+// tones_solid_gray() by the float targets.
+int tones_float_ref_solid_gray(int g);
+#endif
 
 struct tone_draw_stats
 {

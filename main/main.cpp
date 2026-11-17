@@ -28,7 +28,10 @@ extern "C" void app_main(void)
     leds_init();
     cfg_init();
     sizecache_init();
+#ifndef TONES_BENCH
+    // The benchmark build leaves WiFi off: its tasks and interrupts would land inside the timed spans.
     wifi_init();
+#endif
 
     bool panel_ok = epd_begin();
     ESP_LOGI(TAG, "epd_begin: %s, panel %s", panel_ok ? "ok" : "failed", epd_panel_name());

@@ -6,6 +6,7 @@
 # the text test. FREETYPE=0 builds without it. IMAGE picks the images.
 
 ROOT     := ../..
+MODEL    := ../tone_fx/model
 OUT      := out
 IMAGES   := $(ROOT)/../images
 IMAGE    ?= $(IMAGES)/01.png
@@ -16,17 +17,24 @@ CXX      := clang++
 # Both lodepng.h users see the same set, so LodePNGState has one layout.
 LODEPNG  := -DLODEPNG_NO_COMPILE_CPP
 CFLAGS   := -std=c11 -O2 -Wall -Wextra $(LODEPNG)
-CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -fno-exceptions -fno-rtti $(LODEPNG) -DHAVE_FREETYPE=$(FREETYPE) \
-            -Istub -I. -I$(ROOT)/main -I$(ROOT)/components/epd97
+# TONES_FLOAT_REF builds the float dither of main/tones_float_ref.inc beside the fixed point one.
+CXXFLAGS := -std=gnu++17 -O2 -Wall -Wextra -fno-exceptions -fno-rtti $(LODEPNG) -DHAVE_FREETYPE=$(FREETYPE) \
+            -DTONES_FLOAT_REF=1 -Istub -I. -I$(ROOT)/main -I$(MODEL) -I$(ROOT)/components/epd97
 
 ifeq ($(FREETYPE),1)
 CXXFLAGS += $(shell pkg-config --cflags freetype2)
 LIBS     := $(shell pkg-config --libs freetype2)
 endif
 
-SRCS := tones_host.cpp epd_stub.cpp $(ROOT)/main/tones.cpp $(ROOT)/main/tone_plan.cpp
-HDRS := $(ROOT)/main/tones.h $(ROOT)/main/tonemap.h $(ROOT)/main/tonemap_entries.inc $(ROOT)/main/tonemap_squeeze.h \
-        $(ROOT)/main/tone_plan.h $(wildcard $(ROOT)/components/epd97/*.h) $(wildcard stub/*.h) epd_stub.h lodepng.h
+# The kernels: the tables from main/ (main/tone_tables.inc), the stand ins from $(MODEL).
+FX   := srgb bracket squeeze search oklab
+SRCS := tones_host.cpp epd_stub.cpp $(ROOT)/main/tones.cpp $(ROOT)/main/tone_plan.cpp \
+        $(foreach k,$(FX),$(ROOT)/main/tone_fx_$(k).cpp $(MODEL)/tone_fx_$(k)_model.cpp)
+HDRS := $(ROOT)/main/tones.h $(ROOT)/main/tones_float_ref.inc $(ROOT)/main/tonemap.h $(ROOT)/main/tonemap_entries.inc \
+        $(ROOT)/main/tonemap_squeeze.h $(ROOT)/main/tone_plan.h $(ROOT)/main/tone_fx.h $(MODEL)/tone_fx_model.h \
+        $(wildcard $(ROOT)/main/tone_tables*) \
+        $(foreach k,$(FX),$(ROOT)/main/tone_fx_$(k).h $(ROOT)/main/tone_fx_$(k)_internal.h) \
+        $(wildcard $(ROOT)/components/epd97/*.h) $(wildcard stub/*.h) epd_stub.h lodepng.h
 
 # make sweep: one build per config with the dither settings of main/tones.cpp overridden, each run
 # into out/sweep/<config>/, then the side by side comparison. CFG_<config> holds the overrides.

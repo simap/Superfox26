@@ -1,7 +1,8 @@
 // Host harness for the tone dither in main/tones.cpp. Renders test images through tone_dither at
 // TONE_W wide and writes per test the input, the entry frame in the entries' colours, and a 4x crop
 // of that frame. Prints the entry histogram and deviation figures. Plays each frame through
-// tones_draw() into the driver model of epd_stub.cpp and checks every pull. See README.md.
+// tones_draw() into the driver model of epd_stub.cpp and checks every pull. Runs the float dither of
+// main/tones_float_ref.inc on the same image and compares the two. See README.md.
 //
 // usage: tones_host OUTDIR [TONE_IMAGE.png ...]
 //        tones_host --compare SWEEPDIR CONFIG ...
@@ -62,14 +63,14 @@ const char* DEFAULT_FONT = "/System/Library/Fonts/Supplemental/Arial.ttf"; // to
 struct image
 {
     int                  h = 0;
-    std::vector<uint8_t> rgb; // W x h x 3
+    std::vector<uint8_t> rgb; // W x h x 3, then 16 bytes the dither's sRGB decode may read
 };
 
 image blank(int h)
 {
     image im;
     im.h = h;
-    im.rgb.assign(static_cast<size_t>(W) * h * 3, 255);
+    im.rgb.assign(static_cast<size_t>(W) * h * 3 + 16, 255);
     return im;
 }
 
@@ -299,6 +300,12 @@ struct summary_row
     double  solid_reach = 0;  // ramps: largest |tgt L - entry L| inside a solid run
     texture tex;              // ramps: mean over bands, else the whole frame
     double  ms = 0;           // dither time on the host
+    // The float dither of main/tones_float_ref.inc on the same image.
+    double  ref_differ = 0;     // share of pixels whose entry differs from the fixed point dither's
+    double  ref_worst_seen = 0; // ramps: as worst_seen, for the float dither
+    double  ref_worst_y = 0;    // ramps: as worst_y, for the float dither
+    double  frame_dy = 0, ref_frame_dy = 0; // mean entry luminance minus mean target luminance, frame
+    double  ref_ms = 0;
     double  checker_pct() const { return 100 * tex.checker; }
 };
 
@@ -422,6 +429,17 @@ void run(const test_case& tc, const std::string& outdir, std::vector<summary_row
     s.name = tc.name;
     s.ms   = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 
+    std::vector<uint8_t> ref(n);
+    tone_dither_float    qf;
+    const auto           t1 = std::chrono::steady_clock::now();
+    qf.alloc(W);
+    for(int y = 0; y < h; y++) qf.row(&tc.im.rgb[static_cast<size_t>(y) * W * 3], y, &ref[static_cast<size_t>(y) * W]);
+    qf.release();
+    s.ref_ms      = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
+    size_t differ = 0;
+    for(size_t p = 0; p < n; p++) differ += idx[p] != ref[p];
+    s.ref_differ = static_cast<double>(differ) / n;
+
     std::vector<uint8_t> panel(n * 3);
     for(size_t p = 0; p < n; p++) memcpy(&panel[3 * p], g_rgb[idx[p]], 3);
     const int         cx   = std::max(0, std::min(tc.crop_x, W - CROP_W));
@@ -434,8 +452,9 @@ void run(const test_case& tc, const std::string& outdir, std::vector<summary_row
     save_png(base + "_crop4x.png", crop_of(panel, h, cx, cy, CROP_W, CROP_H).data(), CROP_W * CROP_S, CROP_H * CROP_S);
     save_png(base + "_dark4x.png", crop_of(panel, h, dx, dy, DARK_W, DARK_H).data(), DARK_W * CROP_S, DARK_H * CROP_S);
 
-    printf("\n== %s: %dx%d, crop %dx%d at (%d, %d), dark crop %dx%d at (%d, %d), dither %.1f ms\n", tc.name.c_str(), W,
-           h, CROP_W, CROP_H, cx, cy, DARK_W, DARK_H, dx, dy, s.ms);
+    printf("\n== %s: %dx%d, crop %dx%d at (%d, %d), dark crop %dx%d at (%d, %d), dither %.1f ms, float dither %.1f ms\n",
+           tc.name.c_str(), W, h, CROP_W, CROP_H, cx, cy, DARK_W, DARK_H, dx, dy, s.ms, s.ref_ms);
+    printf("  float dither: %zu pixels of %zu (%.2f%%) take another entry\n", differ, n, 100.0 * s.ref_differ);
 
     // histogram
     size_t count[TONEMAP_COUNT] = {0};
@@ -458,6 +477,13 @@ void run(const test_case& tc, const std::string& outdir, std::vector<summary_row
     {
         tn[p] = pixel_target(&tc.im.rgb[3 * p], &tg[3 * p]);
         target_lin(&tg[3 * p], &tl[3 * p]);
+    }
+    {
+        double ty = 0, fy = 0, ry = 0;
+        for(size_t p = 0; p < n; p++) ty += luma(&tl[3 * p]), fy += luma(g_lin[idx[p]]), ry += luma(g_lin[ref[p]]);
+        s.frame_dy = (fy - ty) / n, s.ref_frame_dy = (ry - ty) / n;
+        printf("  frame mean entry luminance minus target luminance: fixed %+.5f, float %+.5f\n", s.frame_dy,
+               s.ref_frame_dy);
     }
     size_t dl10 = 0, dl15 = 0, dl20 = 0, dc04 = 0, dc06 = 0, dc10 = 0, neutral_px = 0;
     size_t far_by[TONEMAP_COUNT] = {0}, iso_by[TONEMAP_COUNT] = {0};
@@ -584,27 +610,35 @@ void run(const test_case& tc, const std::string& outdir, std::vector<summary_row
         }
 
         printf("  x0   input R G B  | tgt L     a      b  | seen L     a      b  |   dY    | chk%%   run  blk | solid "
-               "max mean | entries\n");
+               "max mean | float seen L   dY    | entries\n");
+        float ref_worst_seen = 0;
         float worst_seen = 0;
         int   worst_seen_x = 0, worst_y_x = 0, bands = 0, ratios = 0;
         for(int x0 = 0; x0 < W; x0 += BAND)
         {
             const int x1 = std::min(W, x0 + BAND);
-            double    ti[3] = {0, 0, 0}, li[3] = {0, 0, 0};
+            double    ti[3] = {0, 0, 0}, li[3] = {0, 0, 0}, ri[3] = {0, 0, 0};
             size_t    cnt[TONEMAP_COUNT] = {0}, m = 0;
             for(int y = 0; y < h; y++)
                 for(int x = x0; x < x1; x++)
                 {
                     const size_t p = static_cast<size_t>(y) * W + x;
-                    for(int i = 0; i < 3; i++) ti[i] += tl[3 * p + i], li[i] += g_lin[idx[p]][i];
+                    for(int i = 0; i < 3; i++)
+                        ti[i] += tl[3 * p + i], li[i] += g_lin[idx[p]][i], ri[i] += g_lin[ref[p]][i];
                     cnt[idx[p]]++;
                     m++;
                 }
-            float t_mean[3], e_mean[3], tgt[3], seen[3];
-            for(int i = 0; i < 3; i++) t_mean[i] = static_cast<float>(ti[i] / m), e_mean[i] = static_cast<float>(li[i] / m);
+            float t_mean[3], e_mean[3], r_mean[3], tgt[3], seen[3], rseen[3];
+            for(int i = 0; i < 3; i++)
+                t_mean[i] = static_cast<float>(ti[i] / m), e_mean[i] = static_cast<float>(li[i] / m),
+                r_mean[i] = static_cast<float>(ri[i] / m);
             oklab_lin(t_mean, tgt);
             oklab_lin(e_mean, seen);
-            const float    dY = luma(e_mean) - luma(t_mean);
+            oklab_lin(r_mean, rseen);
+            const float    dY  = luma(e_mean) - luma(t_mean);
+            const float    rdY = luma(r_mean) - luma(t_mean);
+            ref_worst_seen     = std::max(ref_worst_seen, fabsf(rseen[0] - tgt[0]));
+            s.ref_worst_y      = std::max(s.ref_worst_y, static_cast<double>(fabsf(rdY)));
             const uint8_t* c  = &tc.im.rgb[static_cast<size_t>((x0 + x1) / 2) * 3];
             const texture  tx = texture_of(idx, tg, h, x0, x1);
             s.tex.checker += tx.checker, s.tex.run += tx.run, bands++;
@@ -618,13 +652,16 @@ void run(const test_case& tc, const std::string& outdir, std::vector<summary_row
             for(auto& r : sruns)
                 if(r.x1 > x0 && r.x0 < x1) smax = std::max(smax, r.x1 - r.x0), ssum += r.x1 - r.x0, sn++;
             printf("     %3d %4.1f |", smax, sn ? ssum / sn : 0.0);
+            printf("       %5.3f %+7.4f |", rseen[0], rdY);
             for(auto& [e, cn] : top_entries(cnt, 3)) printf(" %s %.0f%%", name_of(e), 100.0 * cn / m);
             printf("\n");
             if(fabsf(seen[0] - tgt[0]) > worst_seen) worst_seen = fabsf(seen[0] - tgt[0]), worst_seen_x = x0;
             if(fabs(dY) > s.worst_y) s.worst_y = fabs(dY), worst_y_x = x0;
             s.worst_seen_c = std::max(s.worst_seen_c, static_cast<double>(hypotf(seen[1] - tgt[1], seen[2] - tgt[2])));
         }
-        s.worst_seen = worst_seen;
+        s.worst_seen     = worst_seen;
+        s.ref_worst_seen = ref_worst_seen;
+        printf("  float dither: largest band |seen L - tgt L| %.4f, |dY| %.4f\n", s.ref_worst_seen, s.ref_worst_y);
         printf("  largest band |seen L - tgt L| %.4f at x0 %d, |dY| %.4f at x0 %d, a, b distance of seen from tgt "
                "%.4f\n",
                static_cast<double>(worst_seen), worst_seen_x, s.worst_y, worst_y_x, s.worst_seen_c);
@@ -1029,7 +1066,7 @@ void stock_check()
 
 const char* SUMMARY_HEAD = "test\tentries\tpulls1\tpulls2\tsends\tplay_bad\tfar\ttint\twhite\twhite_off\twhite_off_flat\t"
                            "black\tblack_off\tworst_seen\tworst_c\tworst_y\tsolid_px\tsolid_max\tsolid_reach\tchecker\t"
-                           "run\tratio\tms";
+                           "run\tratio\tms\tref_differ\tref_worst_seen\tref_worst_y\tframe_dy\tref_frame_dy\tref_ms";
 
 void write_summary(const std::string& path, const std::vector<summary_row>& sum)
 {
@@ -1038,10 +1075,11 @@ void write_summary(const std::string& path, const std::vector<summary_row>& sum)
     fprintf(f, "%s\n", SUMMARY_HEAD);
     for(auto& s : sum)
         fprintf(f, "%s\t%u\t%u\t%u\t%u\t%zu\t%zu\t%zu\t%zu\t%zu\t%zu\t%zu\t%zu\t%.4f\t%.4f\t%.4f\t%d\t%d\t%.4f\t%.2f\t%.2f\t"
-                   "%.2f\t%.1f\n",
+                   "%.2f\t%.1f\t%.4f\t%.4f\t%.4f\t%.5f\t%.5f\t%.1f\n",
                 s.name.c_str(), s.entries, s.pulls1, s.pulls2, s.sends, s.play_bad, s.far, s.tint, s.white, s.white_off,
                 s.white_off_flat, s.black, s.black_off, s.worst_seen, s.worst_seen_c, s.worst_y, s.solid_px, s.solid_max,
-                s.solid_reach, s.checker_pct(), s.tex.run, s.tex.ratio, s.ms);
+                s.solid_reach, s.checker_pct(), s.tex.run, s.tex.ratio, s.ms, s.ref_differ, s.ref_worst_seen,
+                s.ref_worst_y, s.frame_dy, s.ref_frame_dy, s.ref_ms);
     fclose(f);
 }
 
@@ -1149,6 +1187,16 @@ int main(int argc, char** argv)
     printf("init %.1f ms\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
     printf("tones_solid_gray: 174 -> %d, 200 -> %d, 0 -> %d, 255 -> %d\n", tones_solid_gray(174), tones_solid_gray(200),
            tones_solid_gray(0), tones_solid_gray(255));
+    {
+        int differ = 0;
+        for(int g = 0; g < 256; g++)
+            if(tones_solid_gray(g) != tones_float_ref_solid_gray(g))
+            {
+                if(differ < 8) printf("  gray %d: fixed %d, float %d\n", g, tones_solid_gray(g), tones_float_ref_solid_gray(g));
+                differ++;
+            }
+        printf("tones_solid_gray against the float targets: %d of 256 gray bytes differ\n", differ);
+    }
 
     std::vector<summary_row> sum;
     run(gray_ramp(), outdir, sum);
@@ -1175,6 +1223,14 @@ int main(int argc, char** argv)
                s.name.c_str(), s.entries, s.pulls1, s.pulls2, s.sends, s.play_bad ? "FAIL" : "ok", s.flat, s.far,
                s.far_iso, s.tint, s.white_off, s.black_off, s.worst_seen, s.worst_y, s.checker_pct(), s.tex.run,
                s.tex.ratio, s.solid_max);
+    printf("\n== fixed point against float: share of pixels on another entry, the band checks of the ramps, the frame "
+           "mean luminance error, host ms\n"
+           "  test                 differ  worst seen L fixed  float  worst dY fixed   float  frame dY fixed    float"
+           "      ms fixed  float\n");
+    for(auto& s : sum)
+        printf("  %-20s %6.2f%%  %18.4f %6.4f  %14.4f %7.4f  %14.5f %8.5f  %12.1f %6.1f\n", s.name.c_str(),
+               100 * s.ref_differ, s.worst_seen, s.ref_worst_seen, s.worst_y, s.ref_worst_y, s.frame_dy, s.ref_frame_dy,
+               s.ms, s.ref_ms);
     write_summary(outdir + "/summary.tsv", sum);
     return 0;
 }

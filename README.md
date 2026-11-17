@@ -12,12 +12,16 @@ It combines two pieces of work in this tree:
   `components/epd97`, the board settings from its sdkconfig.defaults, the tone map `main/tonemap.h`
   with `main/tonemap_entries.inc`, the squeeze `main/tonemap_squeeze.h` and the draw plan
   `main/tone_plan.cpp`.
-- `browsers`: the litehtml fork (`browsers/litehtml/fork`, branch `epaper`) built by path through
-  `components/litehtml`, and the three-color container from `browsers/litehtml/harness/device`
+- `browsers`: the litehtml fork, https://github.com/simap/litehtml branch `epaper`, a submodule at
+  `components/litehtml/fork` built through `components/litehtml`, and the three-color container
+  from `browsers/litehtml/harness/device`
   ported to the device in `main/render.cpp`. `browsers/BADGE-INTEGRATION.md` is the design the port
   follows.
 
 ## Build and flash
+
+The litehtml fork is a git submodule. Clone with `git clone --recursive`, or run
+`git submodule update --init` in an existing clone.
 
 ESP-IDF v6.0.2 through the tools scripts, which run the IDF venv python on idf.py without activating
 the environment in your shell.

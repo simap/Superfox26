@@ -9,6 +9,10 @@
 //   pattern  the pulls every pixel of the tone plays, in the notation below.
 //            tone_plan.h expands it and adds the pulls that make each draw
 //            DC balanced.
+// The tables the tone code reads are built from this table on the host, into
+// main/tone_tables.inc. After a change here, regenerate that file
+// (host_tests/tone_tables, make generate). The firmware does not build while
+// it is stale.
 // Entry 0 is the paper. A frame stores the entry index per pixel in one byte.
 //
 // The table holds 103 entries: the 101 tones of the lists c97a and c97b of
@@ -87,7 +91,9 @@ struct tone_entry
     const char* pattern;
 };
 
-static const tone_entry k_tonemap[] = {
+// constexpr, so the build checks main/tone_tables.inc against it
+// (tone_tables_source.h). A unit that reads it at run time gets its own copy.
+static constexpr tone_entry k_tonemap[] = {
 #include "tonemap_entries.inc"
 };
 

@@ -17,6 +17,7 @@
 #include <memory>
 #include <vector>
 
+#include "esp_cpu.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -201,14 +202,15 @@ class bwr_container : public document_container
     ~bwr_container() override { gcache.clear(); }
 
     // fb is an RGB band buffer of W x band rows; window rows band_y0..band_y1 (half open) map onto it.
+    // 16 bytes follow the last row: the dither's sRGB decode may read them (tones.cpp).
     int       band_y0 = 0, band_y1 = 0;
     tone_dither q;
 
     bool alloc_window(int band_rows)
     {
-        fb.assign(static_cast<size_t>(W) * band_rows * 3, 255);
+        fb.assign(static_cast<size_t>(W) * band_rows * 3 + 16, 255);
         q.alloc(W);
-        return fb.size() == static_cast<size_t>(W) * band_rows * 3;
+        return fb.size() == static_cast<size_t>(W) * band_rows * 3 + 16;
     }
     void free_window()
     {
@@ -1358,7 +1360,7 @@ bool render_page(const std::string& url, int offset, uint8_t* frame, render_stat
             err = "no memory for the band buffer";
         } else
         {
-            int64_t dither_us = 0;
+            uint64_t dither_cycles = 0;
             for(int y0 = 0; y0 < PAGE_H; y0 += BAND_ROWS)
             {
                 int y1 = std::min(PAGE_H, y0 + BAND_ROWS);
@@ -1367,15 +1369,17 @@ bool render_page(const std::string& url, int offset, uint8_t* frame, render_stat
                 doc->draw(0, 0, static_cast<pixel_t>(-offset), &clip);
                 c.end_band(y1);
                 // page row y lands on panel row TAB_H + y
-                const int64_t td = esp_timer_get_time();
+                // The cycle counter is 32 bits and per core. A band takes far less than its 17.9 s
+                // range, and the browser task is pinned to one core.
+                const uint32_t cd = esp_cpu_get_cycle_count();
                 for(int y = y0; y < y1; y++)
                     c.q.row(&c.fb[static_cast<size_t>(y - y0) * VIEW_W * 3], TAB_H + y,
                             frame + static_cast<size_t>(TAB_H + y) * TONE_W);
-                dither_us += esp_timer_get_time() - td;
+                dither_cycles += static_cast<uint32_t>(esp_cpu_get_cycle_count() - cd);
                 leds_load(5 + (y1 * 3 + PAGE_H - 1) / PAGE_H, 8); // draw fills the last three LEDs
             }
             ok           = true;
-            st.dither_ms = static_cast<int>(dither_us / 1000);
+            st.dither_ms = static_cast<int>(dither_cycles / (CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ * 1000ull));
         }
         c.free_window();
         st.draw_ms  = ms_since(t0);

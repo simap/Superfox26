@@ -1,35 +1,588 @@
-// Timing of the tone code on the device. tones.cpp includes this at its end in a TONES_BENCH build
-// (tools/idf.sh -DTONES_BENCH=1 build). main.cpp then runs tones_bench() after tones_init() and
-// stops before the browser starts, so the panel is not drawn. Every line starts with BENCH and the
-// last one is BENCH DONE.
+// Timing of the float code of tones_float_ref.inc against the fixed point kernels of tone_fx.h and
+// the dither built on them. tones.cpp includes this file at its end in a TONES_BENCH build
+// (tools/idf.sh -DTONES_BENCH=1 build), so the float rows run the float functions at the -O2 of
+// tones.cpp, the level main/CMakeLists.txt also gives the kernels. main.cpp runs tones_bench() after
+// tones_init() and stops before the browser starts, so the panel is not drawn. The kernels' self
+// tests against their stand ins run in the probes of probes/.
+//
+// Output. Every line starts with BENCH and the last one is BENCH DONE. First come the heap and
+// tones_init(), then the rows. A row has five fields split by spaces:
+//   stage  the job
+//   form   float (the code of tones_float_ref.inc), pie (the kernel of tone_fx.h on the vector unit),
+//          or empty_*: the same harness with a function of the same signature that does nothing. The
+//          empty rows are printed for the reader to subtract. No row has them subtracted.
+//   n      elements per call, or per timed loop for the stages of one element per call
+//   data   where the input bytes are: internal or psram
+//   cycles best cycles per element, the element being a pixel, a value or a search
+// The frame rows dither a whole synthetic page as render.cpp does, the float dither of
+// tones_float_ref.inc and the fixed point dither of tones.cpp. The float rows add the target cache
+// lookups and misses. The pie row adds the kernel lanes of pass A after the decode and the coloured
+// pixels of pass B, and three lines follow it:
+//   split  cycles per pixel of each phase of the row (enum bench_phase in tones.cpp), from the
+//          cycle counter read at chunk boundaries in the timed runs, and the rest of the row calls
+//   chunks the chunks, the all white ones, the ones that ran the kernels and which of the last two
+//          kernels they ran, and the kernel lanes
+//   px     the pixels on each path of pass B (struct bench_counts in tones.cpp)
+// The counts come from one more run of the frame through dither_row<true>, which counts per pixel
+// and is not timed. The path rows (path_*) run PATH_ROWS rows of one kind of pixel each from
+// internal RAM and print the same lines, so the pass_b column gives each path's cost per pixel.
+//
+// Timing. Every time comes from the CPU cycle counter. esp_timer_get_time() costs hundreds of cycles
+// a call. The counter is 32 bits and per core, so one measured span stays under 2^32 cycles, 17.9 s
+// at 240 MHz, and unsigned subtraction handles one wrap. A row is the best of REPS runs. The code
+// under test is called through a volatile function pointer, so it is not folded into the loop.
+//
+// Same job. The float row and the fixed point rows of a stage read the same pixels (the q15 inputs
+// are the q15 conversion of the float inputs), the same number per call, from planar 16 byte aligned
+// arrays in internal RAM, and write the same outputs to planar arrays there. A float is 4 bytes and
+// a q15 2. The float rows run the float functions of tones.cpp once per element in a loop.
 
 #include <cstdio>
 
+#include "esp_cpu.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "tone_fx_bracket.h"
+#include "tone_fx_search.h"
+#include "tone_fx_squeeze.h"
+#include "tone_fx_srgb.h"
+
 namespace
 {
-const int      BN = 256;
-uint8_t        b_rgb[BN][3];  // random colours
-float          b_raw[BN][3];  // their Oklab
-float          b_lab[BN][3];  // their Oklab after the squeeze
-float          b_lin[BN][3];  // and that in linear light
-uint8_t        b_near[BN];    // nearest entry of b_lab
-volatile float b_sink;
+const int    REPS       = 10;     // runs per row, the best counts
+const int    FRAME_REPS = 3;      // runs of a fixed point frame, the best counts. A float frame runs once.
+const int    YIELD_ROWS = 16;     // rows of a frame between two yields to the idle task
+const int    NP         = TONE_W; // pixels of one row
+const int    NC         = 64;     // pixels of a short call
+const int    NS[]       = {NC, NP};
+const int    NS_DECODE[] = {NC, CHUNK, NP}; // the sRGB decode also at the chunk of the dither (tones.cpp)
+const int    BAND       = 64; // rows of a band, as render.cpp feeds the dither
+const size_t BAND_BYTES = static_cast<size_t>(TONE_W) * 3 * BAND;
 
-template <typename F> float ns_per(int reps, F f)
+static_assert(NC % 8 == 0 && CHUNK % 8 == 0 && NP % 8 == 0, "the kernels take multiples of 8 elements");
+static_assert(BAND_BYTES % (3 * NC) == 0 && BAND_BYTES % (3 * CHUNK) == 0 && BAND_BYTES % (3 * NP) == 0,
+              "a walk of the band ends on a call");
+
+// A default bench build times what changes with the dither: tones_init(), the pass B paths and the
+// whole frames, float with its cache against fixed point. -DTONES_BENCH_ALL=1 adds the kernel rows
+// and the float frames without the cache. The rows stay compiled either way, so they cannot rot.
+#ifndef TONES_BENCH_ALL
+#define TONES_BENCH_ALL 0
+#endif
+const bool BENCH_ALL = TONES_BENCH_ALL;
+
+// ---------------------------------------------------------------- harness
+
+template <typename F> uint32_t best_of(F body)
 {
-    const int64_t t0 = esp_timer_get_time();
-    for(int r = 0; r < reps; r++)
-        for(int i = 0; i < BN; i++) f(i);
-    return static_cast<float>(esp_timer_get_time() - t0) * 1000.0f / static_cast<float>(reps * BN);
+    uint32_t best = UINT32_MAX;
+    for(int r = 0; r < REPS; r++)
+    {
+        const uint32_t c0 = esp_cpu_get_cycle_count();
+        body();
+        const uint32_t dt = esp_cpu_get_cycle_count() - c0;
+        if(dt < best) best = dt;
+    }
+    return best;
 }
 
-void line(const char* name, float ns)
+// One call of fn on a.
+template <typename Fn, typename... A> uint32_t time_call(Fn fn, A... a)
 {
-    printf("BENCH %-36s %8.0f ns %7.0f cycles\n", name, ns, ns * 0.24f);
+    Fn volatile f = fn;
+    return best_of([&] { f(a...); });
 }
+
+template <typename... A> void empty(A...) {}
+
+void row(const char* stage, const char* form, int n, const char* where, uint32_t cycles, int per)
+{
+    printf("BENCH %-15s %-13s %6d %-8s %10.2f\n", stage, form, n, where,
+           static_cast<double>(cycles) / static_cast<double>(per));
+}
+
+void heap_line(const char* when)
+{
+    printf("BENCH heap %-10s free internal %u, largest internal block %u, free PSRAM %u\n", when,
+           static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+           static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+           static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+}
+
+// ---------------------------------------------------------------- data
+
+// Every array in internal RAM except the band. Planes hold NP elements.
+struct bench_mem
+{
+    uint8_t* rgb;     // NP pixels, interleaved R, G, B, then 16 bytes the vector form may read
+    uint8_t* band;    // PSRAM, BAND_BYTES of pseudo random bytes, then the frame bands, then 16 bytes
+                      // the sRGB decode may read
+    float*   fin[3];  // the inputs of the stage
+    q15*     qin[3];  // their q15
+    uint8_t* near;    // the nearest entry of the squeezed colours
+    float*   fout[7]; // outputs
+    q15*     qout[7];
+    uint8_t* lo; // also best
+    uint8_t* hi; // also next
+    float*   f1in;  // NC pixels of 4 floats, r g b then 1 unused
+    float*   f1out; // NC pixels of 4 floats, L a b then 1 unused
+    q15*     q1in;  // NC pixels of 8 q15, r g b then 5 unused
+    q15*     q1out; // NC pixels of 8 q15, L a b then 5 written with no meaning
+};
+
+bench_mem s_m;
+void*     s_alloc[40];
+int       s_n_alloc = 0;
+
+template <typename T> T* take(size_t count, uint32_t caps)
+{
+    void* p = heap_caps_aligned_alloc(16, count * sizeof(T), caps);
+    if(p) memset(p, 0, count * sizeof(T));
+    if(s_n_alloc < static_cast<int>(sizeof(s_alloc) / sizeof(s_alloc[0]))) s_alloc[s_n_alloc++] = p;
+    return static_cast<T*>(p);
+}
+
+bool alloc_all()
+{
+    const uint32_t in = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    s_m.rgb           = take<uint8_t>(3 * NP + 16, in);
+    s_m.band          = take<uint8_t>(BAND_BYTES + 16, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    for(int c = 0; c < 3; c++) s_m.fin[c] = take<float>(NP, in), s_m.qin[c] = take<q15>(NP, in);
+    s_m.near = take<uint8_t>(NP, in);
+    for(int c = 0; c < 7; c++) s_m.fout[c] = take<float>(NP, in), s_m.qout[c] = take<q15>(NP, in);
+    s_m.lo    = take<uint8_t>(NP, in);
+    s_m.hi    = take<uint8_t>(NP, in);
+    s_m.f1in  = take<float>(4 * NC, in);
+    s_m.f1out = take<float>(4 * NC, in);
+    s_m.q1in  = take<q15>(8 * NC, in);
+    s_m.q1out = take<q15>(8 * NC, in);
+    bool ok   = s_n_alloc < static_cast<int>(sizeof(s_alloc) / sizeof(s_alloc[0]));
+    for(int i = 0; i < s_n_alloc; i++) ok = ok && s_alloc[i];
+    return ok;
+}
+
+void free_all()
+{
+    for(int i = 0; i < s_n_alloc; i++) heap_caps_free(s_alloc[i]);
+    s_n_alloc = 0;
+    s_m       = bench_mem();
+}
+
+// Pixel i of the set: a pseudo random colour from a fixed seed, every odd one a red or pink so the
+// squeeze leaves it chroma.
+void gen_pixels()
+{
+    for(int i = 0; i < NP; i++)
+    {
+        uint8_t*       p = s_m.rgb + 3 * i;
+        const uint32_t h = hash32(static_cast<uint32_t>(i) * 2654435761u + 17u);
+        p[0] = static_cast<uint8_t>(h), p[1] = static_cast<uint8_t>(h >> 8), p[2] = static_cast<uint8_t>(h >> 16);
+        if(i & 1) p[1] = p[2] = static_cast<uint8_t>(p[1] / 2);
+    }
+    for(size_t i = 0; i < BAND_BYTES; i++) s_m.band[i] = static_cast<uint8_t>(hash32(static_cast<uint32_t>(i)) >> 24);
+}
+
+enum in_kind
+{
+    IN_LIN,      // linear light of the pixels
+    IN_LAB,      // their Oklab
+    IN_SQUEEZED, // that through tonemap_squeeze() and the black floor, and its nearest entry
+};
+
+// fin and qin for a stage, from the pixels by the float code.
+void gen_inputs(in_kind k)
+{
+    const float black_l = s_lab[s_black][0];
+    for(int i = 0; i < NP; i++)
+    {
+        const uint8_t* p    = s_m.rgb + 3 * i;
+        float          v[3] = {s_byte_lin[p[0]], s_byte_lin[p[1]], s_byte_lin[p[2]]};
+        if(k != IN_LIN)
+        {
+            float lab[3];
+            lin_to_oklab(v, lab);
+            if(k == IN_SQUEEZED)
+            {
+                tonemap_squeeze(lab);
+                lab[0]     = std::max(lab[0], black_l);
+                s_m.near[i] = static_cast<uint8_t>(nearest(lab));
+            }
+            memcpy(v, lab, sizeof(v));
+        }
+        for(int c = 0; c < 3; c++) s_m.fin[c][i] = v[c], s_m.qin[c][i] = q15_from(v[c]);
+    }
+}
+
+// ---------------------------------------------------------------- float references
+
+void f_decode(const uint8_t* rgb, int n, float* r, float* g, float* b)
+{
+    for(int i = 0; i < n; i++, rgb += 3) r[i] = s_byte_lin[rgb[0]], g[i] = s_byte_lin[rgb[1]], b[i] = s_byte_lin[rgb[2]];
+}
+
+void f_cbrt(const float* x, int n, float* y)
+{
+    for(int i = 0; i < n; i++) y[i] = cbrtf(x[i]);
+}
+
+void f_lin_to_oklab(const float* r, const float* g, const float* b, int n, float* L, float* A, float* B)
+{
+    for(int i = 0; i < n; i++)
+    {
+        const float c[3] = {r[i], g[i], b[i]};
+        float       o[3];
+        lin_to_oklab(c, o);
+        L[i] = o[0], A[i] = o[1], B[i] = o[2];
+    }
+}
+
+void f_oklab_to_lin(const float* L, const float* A, const float* B, int n, float* r, float* g, float* b)
+{
+    for(int i = 0; i < n; i++)
+    {
+        const float lab[3] = {L[i], A[i], B[i]};
+        float       o[3];
+        oklab_to_lin(lab, o);
+        r[i] = clampf(o[0], 0.0f, 1.0f), g[i] = clampf(o[1], 0.0f, 1.0f), b[i] = clampf(o[2], 0.0f, 1.0f);
+    }
+}
+
+void f_lin_to_oklab_1(const float* rgb, float* lab)
+{
+    lin_to_oklab(rgb, lab);
+}
+
+// tonemap_squeeze(), the black floor, and the chroma along the hue of sRGB red. The squeeze leaves
+// a and b on that hue, so the chroma is their dot product with the unit hue.
+void f_squeeze(const float* L, const float* A, const float* B, int n, float* Lo, float* Ao, float* Bo, float* Co)
+{
+    const float black_l = s_lab[s_black][0];
+    for(int i = 0; i < n; i++)
+    {
+        float t[3] = {L[i], A[i], B[i]};
+        tonemap_squeeze(t);
+        Lo[i] = std::max(t[0], black_l), Ao[i] = t[1], Bo[i] = t[2];
+        Co[i] = t[1] * s_squeeze_hue[0] + t[2] * s_squeeze_hue[1];
+    }
+}
+
+void f_bracket(const float* L, int n, uint8_t* lo, uint8_t* hi)
+{
+    for(int i = 0; i < n; i++) bracket(L[i], lo + i, hi + i);
+}
+
+// The two nearest of all entries by dist().
+void f_search_all(float L, float A, float B, uint8_t* best, uint8_t* next)
+{
+    const float p[3] = {L, A, B};
+    unsigned    b = 0, x = 0;
+    float       bd = 1e9f, nd = 1e9f;
+    for(unsigned f = 0; f < N; f++)
+    {
+        const float dd = dist(p, s_lab[f]);
+        if(dd < bd) nd = bd, x = b, bd = dd, b = f;
+        else if(dd < nd) nd = dd, x = f;
+    }
+    *best = static_cast<uint8_t>(b), *next = static_cast<uint8_t>(x);
+}
+
+// The two nearest of the NB neighbours of entry near, the candidate loop of tone_dither::row().
+void f_search_nb(float L, float A, float B, uint8_t near, uint8_t* best, uint8_t* next)
+{
+    const float    p[3] = {L, A, B};
+    const uint8_t* cand = s_nb[near];
+    unsigned       b = cand[0], x = cand[0];
+    float          bd = 1e9f, nd = 1e9f;
+    for(int k = 0; k < NB; k++)
+    {
+        const unsigned f  = cand[k];
+        const float    dd = dist(p, s_lab[f]);
+        if(dd < bd) nd = bd, x = b, bd = dd, b = f;
+        else if(dd < nd) nd = dd, x = f;
+    }
+    *best = static_cast<uint8_t>(b), *next = static_cast<uint8_t>(x);
+}
+
+// ---------------------------------------------------------------- Pass A
+
+// Outputs of Pass A per pixel: p[0..2] the squeezed Oklab, p[3] its chroma along the red hue,
+// p[4..6] its linear light held to 0 to 1, lo and hi the neutral pair around its L.
+struct chain_f
+{
+    float*   p[7];
+    uint8_t* lo;
+    uint8_t* hi;
+};
+struct chain_q
+{
+    q15*     p[7];
+    uint8_t* lo;
+    uint8_t* hi;
+};
+
+// The steps of make_target() without the cache, per pixel, with the steps of both its branches run
+// for every pixel and the nearest entry search left out.
+void pass_a_float(const uint8_t* rgb, int n, const chain_f* o)
+{
+    const float black_l = s_lab[s_black][0];
+    for(int i = 0; i < n; i++, rgb += 3)
+    {
+        float lab[3], lin[3];
+        oklab(rgb[0], rgb[1], rgb[2], lab);
+        tonemap_squeeze(lab);
+        lab[0] = std::max(lab[0], black_l);
+        oklab_to_lin(lab, lin);
+        o->p[0][i] = lab[0], o->p[1][i] = lab[1], o->p[2][i] = lab[2];
+        o->p[3][i] = lab[1] * s_squeeze_hue[0] + lab[2] * s_squeeze_hue[1];
+        for(int k = 0; k < 3; k++) o->p[4 + k][i] = clampf(lin[k], 0.0f, 1.0f);
+        bracket(lab[0], o->lo + i, o->hi + i);
+    }
+}
+
+// The kernels stage by stage over the chunk. The squeeze runs in place.
+void pass_a_pie(const uint8_t* rgb, int n, const chain_q* o)
+{
+    q15* const* p = o->p;
+    tone_fx_srgb_to_lin(rgb, n, p[4], p[5], p[6]);
+    tone_fx_lin_to_oklab(p[4], p[5], p[6], n, p[0], p[1], p[2]);
+    tone_fx_squeeze(p[0], p[1], p[2], n, p[0], p[1], p[2], p[3]);
+    tone_fx_oklab_to_lin(p[0], p[1], p[2], n, p[4], p[5], p[6]);
+    tone_fx_bracket(p[0], n, o->lo, o->hi);
+}
+
+// ---------------------------------------------------------------- stages
+
+void stage_decode()
+{
+    const uint8_t* rgb = s_m.rgb;
+    float* const*  fo  = s_m.fout;
+    q15* const*    qo  = s_m.qout;
+    for(int n : NS_DECODE)
+    {
+        row("srgb_decode", "float", n, "internal", time_call(f_decode, rgb, n, fo[0], fo[1], fo[2]), n);
+        row("srgb_decode", "pie", n, "internal", time_call(tone_fx_srgb_to_lin, rgb, n, qo[0], qo[1], qo[2]), n);
+        row("srgb_decode", "empty_float", n, "internal",
+            time_call(empty<const uint8_t*, int, float*, float*, float*>, rgb, n, fo[0], fo[1], fo[2]), n);
+        row("srgb_decode", "empty_pie", n, "internal",
+            time_call(empty<const uint8_t*, int, q15*, q15*, q15*>, rgb, n, qo[0], qo[1], qo[2]), n);
+    }
+}
+
+// Calls of n pixels that walk the PSRAM band from its start to its end, so no call reads bytes a
+// call before it left in the cache. Cycles of the whole walk.
+template <typename Fn, typename T> uint32_t time_walk(Fn fn, int n, T* r, T* g, T* b)
+{
+    Fn volatile    f     = fn;
+    const int      calls = static_cast<int>(BAND_BYTES / (3 * static_cast<size_t>(n)));
+    const uint8_t* band  = s_m.band;
+    return best_of([&] {
+        for(int k = 0; k < calls; k++) f(band + static_cast<size_t>(3 * n) * k, n, r, g, b);
+    });
+}
+
+void stage_decode_psram()
+{
+    const int     px = static_cast<int>(BAND_BYTES / 3);
+    float* const* fo = s_m.fout;
+    q15* const*   qo = s_m.qout;
+    for(int n : NS_DECODE)
+    {
+        row("srgb_decode", "float", n, "psram", time_walk(f_decode, n, fo[0], fo[1], fo[2]), px);
+        row("srgb_decode", "pie", n, "psram", time_walk(tone_fx_srgb_to_lin, n, qo[0], qo[1], qo[2]), px);
+        row("srgb_decode", "empty_float", n, "psram",
+            time_walk(empty<const uint8_t*, int, float*, float*, float*>, n, fo[0], fo[1], fo[2]), px);
+        row("srgb_decode", "empty_pie", n, "psram",
+            time_walk(empty<const uint8_t*, int, q15*, q15*, q15*>, n, qo[0], qo[1], qo[2]), px);
+    }
+}
+
+void stage_cbrt()
+{
+    gen_inputs(IN_LIN);
+    const float* fx = s_m.fin[1];
+    const q15*   qx = s_m.qin[1];
+    for(int n : NS)
+    {
+        row("cbrt", "float", n, "internal", time_call(f_cbrt, fx, n, s_m.fout[0]), n);
+        row("cbrt", "pie", n, "internal", time_call(tone_fx_cbrt, qx, n, s_m.qout[0]), n);
+        row("cbrt", "empty_float", n, "internal", time_call(empty<const float*, int, float*>, fx, n, s_m.fout[0]), n);
+        row("cbrt", "empty_pie", n, "internal", time_call(empty<const q15*, int, q15*>, qx, n, s_m.qout[0]), n);
+    }
+}
+
+// A stage of three planes in and three out. kind picks the inputs.
+template <typename FF, typename FP> void stage_3to3(const char* stage, in_kind kind, FF ff, FP fp)
+{
+    gen_inputs(kind);
+    const float* const* fi = s_m.fin;
+    const q15* const*   qi = s_m.qin;
+    float* const*       fo = s_m.fout;
+    q15* const*         qo = s_m.qout;
+    for(int n : NS)
+    {
+        row(stage, "float", n, "internal", time_call(ff, fi[0], fi[1], fi[2], n, fo[0], fo[1], fo[2]), n);
+        row(stage, "pie", n, "internal", time_call(fp, qi[0], qi[1], qi[2], n, qo[0], qo[1], qo[2]), n);
+        row(stage, "empty_float", n, "internal",
+            time_call(empty<const float*, const float*, const float*, int, float*, float*, float*>, fi[0], fi[1],
+                      fi[2], n, fo[0], fo[1], fo[2]),
+            n);
+        row(stage, "empty_pie", n, "internal",
+            time_call(empty<const q15*, const q15*, const q15*, int, q15*, q15*, q15*>, qi[0], qi[1], qi[2], n,
+                      qo[0], qo[1], qo[2]),
+            n);
+    }
+}
+
+// n calls of one pixel each, pixel k at in + stride k, its result at out + stride k. Both forms
+// take 16 bytes per pixel.
+template <typename Fn, typename T> uint32_t time_one(Fn fn, const T* in, T* out, int stride, int n)
+{
+    Fn volatile f = fn;
+    return best_of([&] {
+        for(int k = 0; k < n; k++) f(in + stride * k, out + stride * k);
+    });
+}
+
+void stage_lin_to_oklab_1()
+{
+    gen_inputs(IN_LIN);
+    for(int k = 0; k < NC; k++)
+        for(int c = 0; c < 3; c++) s_m.f1in[4 * k + c] = s_m.fin[c][k], s_m.q1in[8 * k + c] = s_m.qin[c][k];
+    const char* st = "lin_to_oklab_1";
+    row(st, "float", NC, "internal", time_one(f_lin_to_oklab_1, s_m.f1in, s_m.f1out, 4, NC), NC);
+    row(st, "pie", NC, "internal", time_one(tone_fx_lin_to_oklab_1, s_m.q1in, s_m.q1out, 8, NC), NC);
+    row(st, "empty_float", NC, "internal", time_one(empty<const float*, float*>, s_m.f1in, s_m.f1out, 4, NC), NC);
+    row(st, "empty_pie", NC, "internal", time_one(empty<const q15*, q15*>, s_m.q1in, s_m.q1out, 8, NC), NC);
+}
+
+void stage_squeeze()
+{
+    gen_inputs(IN_LAB);
+    const float* const* fi = s_m.fin;
+    const q15* const*   qi = s_m.qin;
+    float* const*       fo = s_m.fout;
+    q15* const*         qo = s_m.qout;
+    for(int n : NS)
+    {
+        row("squeeze", "float", n, "internal",
+            time_call(f_squeeze, fi[0], fi[1], fi[2], n, fo[0], fo[1], fo[2], fo[3]), n);
+        row("squeeze", "pie", n, "internal",
+            time_call(tone_fx_squeeze, qi[0], qi[1], qi[2], n, qo[0], qo[1], qo[2], qo[3]), n);
+        row("squeeze", "empty_float", n, "internal",
+            time_call(empty<const float*, const float*, const float*, int, float*, float*, float*, float*>, fi[0],
+                      fi[1], fi[2], n, fo[0], fo[1], fo[2], fo[3]),
+            n);
+        row("squeeze", "empty_pie", n, "internal",
+            time_call(empty<const q15*, const q15*, const q15*, int, q15*, q15*, q15*, q15*>, qi[0], qi[1], qi[2], n,
+                      qo[0], qo[1], qo[2], qo[3]),
+            n);
+    }
+}
+
+void stage_bracket()
+{
+    gen_inputs(IN_SQUEEZED);
+    const float* fl = s_m.fin[0];
+    const q15*   ql = s_m.qin[0];
+    for(int n : NS)
+    {
+        row("bracket", "float", n, "internal", time_call(f_bracket, fl, n, s_m.lo, s_m.hi), n);
+        row("bracket", "pie", n, "internal", time_call(tone_fx_bracket, ql, n, s_m.lo, s_m.hi), n);
+        row("bracket", "empty_float", n, "internal",
+            time_call(empty<const float*, int, uint8_t*, uint8_t*>, fl, n, s_m.lo, s_m.hi), n);
+        row("bracket", "empty_pie", n, "internal",
+            time_call(empty<const q15*, int, uint8_t*, uint8_t*>, ql, n, s_m.lo, s_m.hi), n);
+    }
+}
+
+// n calls of one search point each, best and next of point k to lo[k] and hi[k].
+template <typename Fn, typename P> uint32_t time_search(Fn fn, const P* const* pt, int n)
+{
+    Fn volatile f = fn;
+    const P *   L = pt[0], *A = pt[1], *B = pt[2];
+    uint8_t *   best = s_m.lo, *next = s_m.hi;
+    return best_of([&] {
+        for(int k = 0; k < n; k++) f(L[k], A[k], B[k], best + k, next + k);
+    });
+}
+
+// The same with the nearest entry of point k as the extra argument.
+template <typename Fn> uint32_t time_search_nb(Fn fn, int n)
+{
+    Fn volatile    f = fn;
+    const float *  L = s_m.fin[0], *A = s_m.fin[1], *B = s_m.fin[2];
+    const uint8_t* near = s_m.near;
+    uint8_t *      best = s_m.lo, *next = s_m.hi;
+    return best_of([&] {
+        for(int k = 0; k < n; k++) f(L[k], A[k], B[k], near[k], best + k, next + k);
+    });
+}
+
+void stage_search()
+{
+    gen_inputs(IN_SQUEEZED);
+    const float* const* fp = s_m.fin;
+    const q15* const*   qp = s_m.qin;
+    const int           n  = NP;
+    row("search", "float_all", n, "internal", time_search(f_search_all, fp, n), n);
+    row("search", "float_nb48", n, "internal", time_search_nb(f_search_nb, n), n);
+    row("search", "pie", n, "internal", time_search(tone_fx_search, qp, n), n);
+    row("search", "empty_float", n, "internal", time_search(empty<float, float, float, uint8_t*, uint8_t*>, fp, n), n);
+    row("search", "empty_nb", n, "internal", time_search_nb(empty<float, float, float, uint8_t, uint8_t*, uint8_t*>, n),
+        n);
+    row("search", "empty_pie", n, "internal", time_search(empty<q15, q15, q15, uint8_t*, uint8_t*>, qp, n), n);
+}
+
+void stage_pass_a()
+{
+    chain_f cf;
+    chain_q cq;
+    for(int c = 0; c < 7; c++) cf.p[c] = s_m.fout[c], cq.p[c] = s_m.qout[c];
+    cf.lo = cq.lo = s_m.lo;
+    cf.hi = cq.hi = s_m.hi;
+    for(int n : NS)
+    {
+        row("pass_a", "float", n, "internal", time_call(pass_a_float, s_m.rgb, n, &cf), n);
+        row("pass_a", "pie", n, "internal", time_call(pass_a_pie, s_m.rgb, n, &cq), n);
+        row("pass_a", "empty_float", n, "internal",
+            time_call(empty<const uint8_t*, int, const chain_f*>, s_m.rgb, n, &cf), n);
+        row("pass_a", "empty_pie", n, "internal",
+            time_call(empty<const uint8_t*, int, const chain_q*>, s_m.rgb, n, &cq), n);
+    }
+}
+
+uint8_t empty_code(const tone_plan&, unsigned, tone_phase, unsigned)
+{
+    return 0;
+}
+
+// tone_plan_code() of NP pixels in turn.
+void stage_plan_code()
+{
+    uint32_t count[TONEMAP_COUNT];
+    for(uint32_t& c : count) c = 1;
+    static tone_plan plan;
+    tone_plan_build(count, &plan);
+    const unsigned len = plan.len[TONE_PHASE_2];
+    if(len == 0)
+    {
+        printf("BENCH tone_plan_code skipped: the plan has no phase 2\n");
+        return;
+    }
+    typedef uint8_t (*code_fn)(const tone_plan&, unsigned, tone_phase, unsigned);
+    auto time_code = [&](code_fn fn) {
+        code_fn volatile f   = fn;
+        uint8_t*         out = s_m.lo;
+        return best_of([&] {
+            for(unsigned k = 0; k < static_cast<unsigned>(NP); k++) out[k] = f(plan, k % N, TONE_PHASE_2, k % len);
+        });
+    };
+    row("tone_plan_code", "call", NP, "internal", time_code(tone_plan_code), NP);
+    row("tone_plan_code", "empty", NP, "internal", time_code(empty_code), NP);
+}
+
+// ---------------------------------------------------------------- whole frames
 
 enum
 {
@@ -39,7 +592,7 @@ enum
     IMG_NOISE,
     IMG_N
 };
-const char* const k_img[IMG_N] = {"text", "gradient", "photo", "noise"};
+const char* const k_img[IMG_N] = {"frame_text", "frame_gradient", "frame_photo", "frame_noise"};
 
 // One row of a synthetic page. text: paper, a gray header, lines of black glyph pixels with gray
 // edge pixels, every 7th line in link blue. gradient: smooth colour. photo: the gradient with 3
@@ -48,7 +601,7 @@ void gen_row(int img, int y, uint8_t* rgb)
 {
     for(int x = 0; x < TONE_W; x++)
     {
-        uint8_t* p = rgb + 3 * x;
+        uint8_t*       p = rgb + 3 * x;
         const uint32_t h = hash32(static_cast<uint32_t>(x) * 7919u + static_cast<uint32_t>(y) * 104729u);
         if(img == IMG_TEXT)
         {
@@ -61,7 +614,7 @@ void gen_row(int img, int y, uint8_t* rgb)
                 if(g % 4 == 0)
                 {
                     p[0] = p[1] = 0;
-                    p[2] = link ? 238 : 0;
+                    p[2]        = link ? 238 : 0;
                 }
                 else if(g % 8 == 1) p[0] = p[1] = p[2] = static_cast<uint8_t>(64 + (g >> 8) % 160);
             }
@@ -85,204 +638,285 @@ void gen_row(int img, int y, uint8_t* rgb)
     }
 }
 
-// The dither of one whole frame, bands of 64 rows from PSRAM as render.cpp feeds it. Only the row
-// calls are timed.
-void run_frame(int img, const char* mode, uint8_t* band)
+// One whole frame of the page img into dst, bands of BAND rows from PSRAM as render.cpp feeds them.
+// dither(y, rgb, out) runs one row. Returns the cycles of the row calls alone. A yield to the idle
+// task follows every YIELD_ROWS rows, outside the timed spans.
+template <typename F> uint64_t time_frame(int img, uint8_t* band, uint8_t* dst, F dither)
 {
-    const int   BAND = 64;
-    tone_dither q;
-    q.alloc(TONE_W);
-    if(s_bench_bits) memset(s_cache, 0, (static_cast<size_t>(1) << s_bench_bits) * sizeof(target));
-    s_bench_miss = s_bench_look = 0;
-    int64_t us = 0;
+    uint64_t cycles = 0;
     for(int y0 = 0; y0 < TONE_H; y0 += BAND)
     {
         const int n = std::min(BAND, TONE_H - y0);
         for(int y = 0; y < n; y++) gen_row(img, y0 + y, band + static_cast<size_t>(y) * TONE_W * 3);
-        const int64_t t0 = esp_timer_get_time();
-        for(int y = 0; y < n; y++)
-            q.row(band + static_cast<size_t>(y) * TONE_W * 3, y0 + y, s_frame + static_cast<size_t>(y0 + y) * TONE_W);
-        us += esp_timer_get_time() - t0;
+        for(int ya = 0; ya < n; ya += YIELD_ROWS)
+        {
+            const int      yb = std::min(n, ya + YIELD_ROWS);
+            const uint32_t c0 = esp_cpu_get_cycle_count();
+            for(int y = ya; y < yb; y++)
+                dither(y0 + y, band + static_cast<size_t>(y) * TONE_W * 3, dst + static_cast<size_t>(y0 + y) * TONE_W);
+            cycles += static_cast<uint32_t>(esp_cpu_get_cycle_count() - c0);
+            vTaskDelay(1);
+        }
+    }
+    return cycles;
+}
+
+// The float dither of one whole frame into s_frame, the target cache in PSRAM.
+void run_frame(int img, const char* form, uint8_t* band)
+{
+    tone_dither_float q;
+    q.alloc(TONE_W);
+    if(s_bench_bits) memset(s_cache, 0, (static_cast<size_t>(1) << s_bench_bits) * sizeof(target));
+    s_bench_miss = s_bench_look = 0;
+    const uint64_t cycles = time_frame(img, band, s_frame, [&](int y, const uint8_t* rgb, uint8_t* out) { q.row(rgb, y, out); });
+    q.release();
+    const int px = TONE_W * TONE_H;
+    printf("BENCH %-15s %-13s %6d %-8s %10.2f %7u lookups %7u misses\n", k_img[img], form, px, "psram",
+           static_cast<double>(cycles) / px, static_cast<unsigned>(s_bench_look), static_cast<unsigned>(s_bench_miss));
+}
+
+// The phase cycles of the run with the best total, and the pixel counts of a counting run.
+struct split
+{
+    uint64_t     total = UINT64_MAX;
+    uint32_t     cyc[PH_N];
+    bench_counts n;
+};
+
+// Keeps the phase cycles of a run when its total is the best so far.
+void keep_best(split& sp, uint64_t total)
+{
+    if(total >= sp.total) return;
+    sp.total = total;
+    memcpy(sp.cyc, s_bench_cyc, sizeof(sp.cyc));
+}
+
+// The two lines under a row of the fixed point dither. split: cycles per pixel of each phase of
+// dither_row() and the rest of the row calls, over px pixels. px: the chunks and kernel lanes of pass
+// A, then the pixels on each path of pass B.
+void print_split(const char* stage, const split& sp, int px)
+{
+    double sum = 0;
+    for(uint32_t v : sp.cyc) sum += v;
+    const double p = px;
+    printf("BENCH %-15s split decode %.2f compact %.2f kernels %.2f pass_b %.2f rest %.2f cycles/px\n", stage,
+           sp.cyc[PH_DECODE] / p, sp.cyc[PH_COMPACT] / p, sp.cyc[PH_KERNELS] / p, sp.cyc[PH_PASS_B] / p,
+           (static_cast<double>(sp.total) - sum) / p);
+    const bench_counts& n = sp.n;
+    printf("BENCH %-15s chunks %u white %u kernel %u (colour %u neutral %u) lanes %u\n", stage,
+           static_cast<unsigned>(n.chunks), static_cast<unsigned>(n.white_chunks),
+           static_cast<unsigned>(n.kernel_chunks), static_cast<unsigned>(n.colour_chunks),
+           static_cast<unsigned>(n.neutral_chunks), static_cast<unsigned>(n.lanes));
+    printf("BENCH %-15s px white_chunk %u entry_run %u (white %u) entry_carry %u neutral %u colour %u "
+           "(two_nearest %u, runs %u)\n",
+           stage, static_cast<unsigned>(n.white_chunk_px), static_cast<unsigned>(n.entry_run_px),
+           static_cast<unsigned>(n.white_run_px), static_cast<unsigned>(n.entry_carry_px),
+           static_cast<unsigned>(n.neutral_px), static_cast<unsigned>(n.colour_px),
+           static_cast<unsigned>(n.colour_two_px), static_cast<unsigned>(n.colour_runs));
+}
+
+// The fixed point dither of one whole frame into s_frame through tone_dither, as render.cpp runs
+// it. FRAME_REPS timed runs, the best printed with its split, then one counting run.
+void run_frame_fixed(int img, uint8_t* band)
+{
+    split sp;
+    auto  frame = [&] {
+        tone_dither q;
+        q.alloc(TONE_W);
+        return time_frame(img, band, s_frame, [&](int y, const uint8_t* rgb, uint8_t* out) { q.row(rgb, y, out); });
+    };
+    for(int r = 0; r < FRAME_REPS; r++)
+    {
+        memset(s_bench_cyc, 0, sizeof(s_bench_cyc));
+        keep_best(sp, frame());
+    }
+    s_bench_n     = bench_counts();
+    s_bench_count = true;
+    frame();
+    s_bench_count = false;
+    sp.n          = s_bench_n;
+    const int px  = TONE_W * TONE_H;
+    printf("BENCH %-15s %-13s %6d %-8s %10.2f %7u lanes   %7u colour\n", k_img[img], "pie", px, "psram",
+           static_cast<double>(sp.total) / px, static_cast<unsigned>(sp.n.lanes),
+           static_cast<unsigned>(sp.n.colour_px));
+    print_split(k_img[img], sp, px);
+}
+
+// ---------------------------------------------------------------- pass B paths
+
+// Rows of one kind of pixel, so the split of each shows the cost of one path of pass B per pixel.
+enum
+{
+    PATH_WHITE_CHUNK, // all white: every chunk takes the fill of an all white chunk
+    PATH_WHITE_RUN,   // white, the first pixel of every chunk black: K_ENTRY pixels with no carry
+    PATH_BLACK,       // all black, on the black entry
+    PATH_GRAY,        // all sRGB gray 128, which dithers between two neutral entries
+    PATH_GRAY_WW,     // gray 128 then two white, repeated: each white is K_ENTRY with a carry
+    PATH_COLOUR,      // all one red
+    PATH_COLOUR_RND,  // pseudo random reds and pinks, every pixel its own slot
+    PATH_COLOUR_GRAY, // the red of PATH_COLOUR and gray 128 in turn: a run of one coloured pixel each
+    PATH_N
+};
+const char* const k_path[PATH_N] = {"path_white_chk", "path_white_run", "path_black",      "path_gray",
+                                    "path_gray_ww",   "path_colour",    "path_colour_rnd", "path_colour_gray"};
+const int         PATH_ROWS      = 32;
+
+void gen_path_row(int kind, uint8_t* rgb)
+{
+    for(int x = 0; x < TONE_W; x++)
+    {
+        uint8_t*       p = rgb + 3 * x;
+        const uint32_t h = hash32(static_cast<uint32_t>(x) * 2654435761u + 7u);
+        uint8_t        v = 255;
+        if(kind == PATH_WHITE_RUN && x % CHUNK == 0) v = 0;
+        if(kind == PATH_BLACK) v = 0;
+        if(kind == PATH_GRAY || (kind == PATH_GRAY_WW && x % 3 == 0) || kind == PATH_COLOUR_GRAY) v = 128;
+        p[0] = p[1] = p[2] = v;
+        if(kind == PATH_COLOUR || (kind == PATH_COLOUR_GRAY && x % 2 == 0)) p[0] = 220, p[1] = 60, p[2] = 60;
+        if(kind == PATH_COLOUR_RND)
+        {
+            const int r = 160 + static_cast<int>(h % 96);
+            p[0]        = static_cast<uint8_t>(r);
+            p[1]        = static_cast<uint8_t>((h >> 8) % static_cast<uint32_t>(r / 3));
+            p[2]        = static_cast<uint8_t>((h >> 16) % static_cast<uint32_t>(r / 3));
+        }
+    }
+}
+
+// PATH_ROWS rows of one kind from internal RAM into s_frame, best of FRAME_REPS, then a counting run.
+void run_path(int kind)
+{
+    gen_path_row(kind, s_m.rgb);
+    split sp;
+    auto  rows = [&] {
+        tone_dither q;
+        q.alloc(TONE_W);
+        const uint32_t c0 = esp_cpu_get_cycle_count();
+        for(int y = 0; y < PATH_ROWS; y++) q.row(s_m.rgb, y, s_frame + static_cast<size_t>(y) * TONE_W);
+        return static_cast<uint64_t>(esp_cpu_get_cycle_count() - c0);
+    };
+    for(int r = 0; r < FRAME_REPS; r++)
+    {
+        memset(s_bench_cyc, 0, sizeof(s_bench_cyc));
+        keep_best(sp, rows());
+    }
+    s_bench_n     = bench_counts();
+    s_bench_count = true;
+    rows();
+    s_bench_count = false;
+    sp.n          = s_bench_n;
+    const int px  = TONE_W * PATH_ROWS;
+    row(k_path[kind], "pie", px, "internal", static_cast<uint32_t>(sp.total), px);
+    print_split(k_path[kind], sp, px);
+}
+
+void stage_paths()
+{
+    for(int k = 0; k < PATH_N; k++)
+    {
+        run_path(k);
         vTaskDelay(1);
     }
-    q.release();
-    printf("BENCH frame %-9s cache %-14s %6u ms, %6u lookups, %6u misses\n", k_img[img], mode,
-           static_cast<unsigned>(us / 1000), static_cast<unsigned>(s_bench_look), static_cast<unsigned>(s_bench_miss));
+}
+
+// The frame rows of every page: the float dither with and without its cache, then the fixed point
+// dither.
+void stage_frames()
+{
+    char cached[16];
+    snprintf(cached, sizeof(cached), "float_c%u", CACHE_SLOTS);
+    for(int img = 0; img < IMG_N; img++)
+    {
+        s_bench_bits = CACHE_BITS;
+        run_frame(img, cached, s_m.band);
+        if(BENCH_ALL)
+        {
+            s_bench_bits = 0;
+            run_frame(img, "float_nocache", s_m.band);
+        }
+        run_frame_fixed(img, s_m.band);
+    }
+    s_bench_bits = CACHE_BITS;
+    memset(s_cache, 0, CACHE_SLOTS * sizeof(target));
+}
+
+// ---------------------------------------------------------------- inits
+
+uint32_t s_c0;
+
+void init_start()
+{
+    s_c0 = esp_cpu_get_cycle_count();
+}
+
+void init_row(const char* name, bool ok)
+{
+    const uint32_t dt = esp_cpu_get_cycle_count() - s_c0;
+    printf("BENCH init %-30s %-6s %10u cycles\n", name, ok ? "ok" : "FAILED", static_cast<unsigned>(dt));
 }
 } // namespace
 
 void tones_bench()
 {
-    printf("BENCH start: free internal %u, largest internal block %u, free PSRAM %u\n",
-           static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
-           static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
-           static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+    heap_line("start");
 
-    // init work, each run once more
+    // tones_init() once more, with the frame allocated, then two of its parts: the boot check of the
+    // patterns, and float_ref_init(), which tones_init() runs only in a build with the float dither,
+    // as this one. The rest is the copy of the slot WHITE and the fill of the frame.
     {
-        char    why[160];
-        int64_t t0 = esp_timer_get_time();
-        tone_plan_init(why, sizeof(why));
-        printf("BENCH init tone_plan_init          %6u us\n", static_cast<unsigned>(esp_timer_get_time() - t0));
-        t0 = esp_timer_get_time();
-        tonemap_squeeze_begin(oklab);
-        printf("BENCH init tonemap_squeeze_begin   %6u us\n", static_cast<unsigned>(esp_timer_get_time() - t0));
-        t0 = esp_timer_get_time();
-        build_noise();
-        printf("BENCH init build_noise             %6u us\n", static_cast<unsigned>(esp_timer_get_time() - t0));
-        t0 = esp_timer_get_time();
-        tones_init();
-        printf("BENCH init tones_init, all of it   %6u us\n", static_cast<unsigned>(esp_timer_get_time() - t0));
+        static char why[160];
+        init_start();
+        init_row("tones_init, all of it", tones_init());
+        init_start();
+        const bool ok = tone_plan_init(why, sizeof(why));
+        init_row("tone_plan_init", ok);
+        init_start();
+        init_row("float_ref_init", float_ref_init());
     }
+    vTaskDelay(1);
 
-    for(int i = 0; i < BN; i++)
+    if(!alloc_all())
     {
-        const uint32_t h = hash32(static_cast<uint32_t>(i) * 2654435761u + 17u);
-        b_rgb[i][0] = static_cast<uint8_t>(h), b_rgb[i][1] = static_cast<uint8_t>(h >> 8);
-        b_rgb[i][2] = static_cast<uint8_t>(h >> 16);
-        // a red or pink in half the slots, so the squeeze leaves chroma to search with
-        if(i & 1) b_rgb[i][1] = b_rgb[i][2] = static_cast<uint8_t>(b_rgb[i][1] / 2);
-        oklab(b_rgb[i][0], b_rgb[i][1], b_rgb[i][2], b_raw[i]);
-        memcpy(b_lab[i], b_raw[i], sizeof(b_lab[i]));
-        tonemap_squeeze(b_lab[i]);
-        b_lab[i][0] = std::max(b_lab[i][0], s_lab[s_black][0]);
-        oklab_to_lin(b_lab[i], b_lin[i]);
-        b_near[i] = static_cast<uint8_t>(nearest(b_lab[i]));
+        printf("BENCH rows skipped: no memory\n");
+        free_all();
+        heap_line("freed");
+        printf("BENCH DONE\n");
+        return;
     }
+    heap_line("allocated");
+    gen_pixels();
+    printf("BENCH %-15s %-13s %6s %-8s %10s\n", "stage", "form", "n", "data", "cycles");
 
-    const int R = 40;
-    line("loop and one load", ns_per(R, [](int i) { b_sink = b_lin[i][0]; }));
-    line("sRGB to linear, 3 powf", ns_per(R, [](int i) {
-        float s = 0;
-        for(int k = 0; k < 3; k++)
-        {
-            const float c = b_rgb[i][k] / 255.0f;
-            s += c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
-        }
-        b_sink = s;
-    }));
-    line("sRGB to linear, 3 table reads", ns_per(R, [](int i) {
-        b_sink = s_byte_lin[b_rgb[i][0]] + s_byte_lin[b_rgb[i][1]] + s_byte_lin[b_rgb[i][2]];
-    }));
-    line("cbrtf", ns_per(R, [](int i) { b_sink = cbrtf(b_lin[i][0] + 0.01f); }));
-    line("oklab, table and 3 cbrtf", ns_per(R, [](int i) {
-        float t[3];
-        oklab(b_rgb[i][0], b_rgb[i][1], b_rgb[i][2], t);
-        b_sink = t[0];
-    }));
-    line("tonemap_squeeze", ns_per(R, [](int i) {
-        float t[3] = {b_raw[i][0], b_raw[i][1], b_raw[i][2]};
-        tonemap_squeeze(t);
-        b_sink = t[0];
-    }));
-    line("oklab_to_lin", ns_per(R, [](int i) {
-        float t[3];
-        oklab_to_lin(b_lab[i], t);
-        b_sink = t[0];
-    }));
-    line("lin_to_oklab", ns_per(R, [](int i) {
-        float t[3];
-        lin_to_oklab(b_lin[i], t);
-        b_sink = t[0];
-    }));
-    line("nearest, pruned by L", ns_per(R, [](int i) { b_sink = static_cast<float>(nearest(b_lab[i])); }));
-    line("nearest, all entries", ns_per(R, [](int i) {
-        unsigned best = 0;
-        float    bd   = 1e9f;
-        for(unsigned e = 0; e < N; e++)
-        {
-            const float d = dist(b_lab[i], s_lab[e]);
-            if(d < bd) bd = d, best = e;
-        }
-        b_sink = static_cast<float>(best);
-    }));
-    for(int nb : {12, 24, 48})
+    // The kernel rows are stable from run to run, so only a TONES_BENCH_ALL build times them.
+    if(BENCH_ALL)
     {
-        char name[40];
-        snprintf(name, sizeof(name), "two nearest of %d neighbours", nb);
-        line(name, ns_per(R, [nb](int i) {
-            const uint8_t* cand = s_nb[b_near[i]];
-            unsigned       best = cand[0], next = cand[0];
-            float          bd = 1e9f, nd = 1e9f;
-            for(int k = 0; k < nb && k < NB; k++)
-            {
-                const unsigned f  = cand[k];
-                const float    dd = dist(b_lab[i], s_lab[f]);
-                if(dd < bd) nd = bd, next = best, bd = dd, best = f;
-                else if(dd < nd) nd = dd, next = f;
-            }
-            b_sink = static_cast<float>(best + next);
-        }));
+        stage_decode();
+        vTaskDelay(1);
+        stage_decode_psram();
+        vTaskDelay(1);
+        stage_cbrt();
+        vTaskDelay(1);
+        stage_3to3("lin_to_oklab", IN_LIN, f_lin_to_oklab, tone_fx_lin_to_oklab);
+        vTaskDelay(1);
+        stage_3to3("oklab_to_lin", IN_SQUEEZED, f_oklab_to_lin, tone_fx_oklab_to_lin);
+        vTaskDelay(1);
+        stage_lin_to_oklab_1();
+        vTaskDelay(1);
+        stage_squeeze();
+        vTaskDelay(1);
+        stage_bracket();
+        vTaskDelay(1);
+        stage_search();
+        vTaskDelay(1);
+        stage_pass_a();
+        vTaskDelay(1);
+        stage_plan_code();
+        vTaskDelay(1);
     }
-    line("two nearest of all entries", ns_per(R, [](int i) {
-        unsigned best = 0, next = 0;
-        float    bd = 1e9f, nd = 1e9f;
-        for(unsigned f = 0; f < N; f++)
-        {
-            const float dd = dist(b_lab[i], s_lab[f]);
-            if(dd < bd) nd = bd, next = best, bd = dd, best = f;
-            else if(dd < nd) nd = dd, next = f;
-        }
-        b_sink = static_cast<float>(best + next);
-    }));
-    line("bracket", ns_per(R, [](int i) {
-        uint8_t lo, hi;
-        bracket(b_lab[i][0], &lo, &hi);
-        b_sink = static_cast<float>(lo + hi);
-    }));
-    line("make_target, colour", ns_per(R, [](int i) {
-        target t;
-        make_target(b_rgb[i][0], b_rgb[i][1], b_rgb[i][2], &t);
-        b_sink = t.lin[0];
-    }));
-    line("make_target, gray", ns_per(R, [](int i) {
-        target t;
-        make_target(b_rgb[i][0], b_rgb[i][0], b_rgb[i][0], &t);
-        b_sink = t.lin[0];
-    }));
-    {
-        uint32_t count[TONEMAP_COUNT];
-        for(uint32_t& c : count) c = 1;
-        static tone_plan plan;
-        tone_plan_build(count, &plan);
-        line("tone_plan_code", ns_per(R, [](int i) {
-            b_sink = static_cast<float>(tone_plan_code(plan, static_cast<unsigned>(i) % N, TONE_PHASE_2,
-                                                       static_cast<unsigned>(i) % plan.len[TONE_PHASE_2]));
-        }));
-        const int64_t t0 = esp_timer_get_time();
-        tone_seq      s;
-        for(unsigned e = 0; e < N; e++) tone_pattern_expand(k_tonemap[e].pattern, &s, nullptr, 0);
-        line("tone_pattern_expand, per entry", static_cast<float>(esp_timer_get_time() - t0) * 1000.0f / static_cast<float>(N));
-    }
+    stage_paths();
+    stage_frames();
 
-    // whole frames, per cache
-    uint8_t* band  = static_cast<uint8_t*>(heap_caps_malloc(static_cast<size_t>(TONE_W) * 3 * 64, MALLOC_CAP_SPIRAM));
-    target*  ps12  = static_cast<target*>(heap_caps_malloc(4096 * sizeof(target), MALLOC_CAP_SPIRAM));
-    target*  in10  = static_cast<target*>(heap_caps_malloc(1024 * sizeof(target), MALLOC_CAP_INTERNAL));
-    target*  ps10  = s_cache;
-    if(!band || !ps12 || !in10) printf("BENCH frame runs skipped, no memory\n");
-    else
-    {
-        struct
-        {
-            const char* name;
-            target*     mem;
-            int         bits;
-        } const modes[] = {{"none", ps10, 0},          {"PSRAM 1024", ps10, 10},  {"PSRAM 4096", ps12, 12},
-                           {"internal 1024", in10, 10}, {"internal 256", in10, 8}, {"internal 64", in10, 6}};
-        for(int img = 0; img < IMG_N; img++)
-            for(const auto& m : modes)
-            {
-                s_cache      = m.mem;
-                s_bench_bits = m.bits;
-                run_frame(img, m.name, band);
-            }
-    }
-    s_cache      = ps10;
-    s_bench_bits = CACHE_BITS;
-    memset(s_cache, 0, CACHE_SLOTS * sizeof(target));
-    heap_caps_free(band);
-    heap_caps_free(ps12);
-    heap_caps_free(in10);
+    free_all();
+    heap_line("freed");
     printf("BENCH DONE\n");
 }

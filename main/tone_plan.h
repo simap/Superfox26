@@ -49,9 +49,10 @@
 // both orders phase 1 can play (with and without S fill). The run left open
 // at the end of a draw meets the S pull that opens the next draw. The two VDH
 // frames at the head of that pull join an open VDH or positive tail, so a
-// pattern whose tail plus that head passes the VDH limit is refused too. A
-// table entry that fails any of these is an init error. This is a hardware
-// safety rule.
+// pattern whose tail plus that head passes the VDH limit is refused too. This
+// is a hardware safety rule. The generator of main/tone_tables.inc
+// (host_tests/tone_tables) refuses a table entry that fails any of these, and
+// tone_plan_init() checks the push figures it wrote at boot.
 //
 // Plane sends. The COG swaps its two plane registers after every pull, so a
 // pull without a plane send plays the planes of two pulls back. Codes 0 and
@@ -60,15 +61,18 @@
 // or 3 and equals its code at the pull before. This lets the S pad at the
 // head of phase 1 send the planes once.
 //
-// The module has no device calls and no output. Init expands the table once
-// into fixed storage. After that, build and code only read it, so they may
-// run on any task.
+// The module has no device calls and no output. The expanded patterns and
+// their push figures are data in flash (main/tone_tables.inc), expanded on
+// the host by host_tests/tone_tables. Init checks them once. Build and code
+// only read them, so they may run on any task.
 // -----------------------------------------------------------------------------
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
 
+#include "epd97_config.h"
+#include "epd97_lut.h"
 #include "tonemap.h"
 
 // Pulls of each expanded part of a pattern at most: the I and P part, the S
@@ -143,36 +147,79 @@ struct tone_plan
     unsigned mid;                   // B: the prefix and I P part of every counted entry ends here
 };
 
-// Expands the pattern src into s, with its net, prefix, nudge and residual.
-// Returns false, with the reason in why, for a letter outside the notation,
-// a repeat count of 0 or over TONE_SEQ_MAX, an S or M after a phase 2
-// letter, an S after an M, a part over TONE_SEQ_MAX pulls, a prefix or
-// residual outside -127 to 127, a push over the limits, or an open VDH or
-// positive tail that the next draw's S head carries over the VDH limit. s is
-// not valid after false. why may be null. It is cut to why_len bytes.
-bool tone_pattern_expand(const char* src, tone_seq* s, char* why, size_t why_len);
+// Net of a phase 1 letter I P S M in frames of VDH.
+constexpr int tone_p1_net(char c)
+{
+    switch(c)
+    {
+    case 'I': return EPD_PHASE1_DRIVE;
+    case 'P': return -EPD_PHASE1_DRIVE;
+    case 'M': return -4;
+    default: return 0;
+    }
+}
 
-// The push of s as it reaches the panel: per rail the larger of the two
-// phase 1 orders, both opened by an S pull, with the prefix and nudge.
-void tone_push_of(const tone_seq& s, tone_push* u);
+// Net of a phase 2 letter p i w in frames of VDH.
+constexpr int tone_p2_net(char c)
+{
+    switch(c)
+    {
+    case 'p': return -static_cast<int>(TONE_NUDGE_FRAMES);
+    case 'i': return static_cast<int>(TONE_NUDGE_FRAMES);
+    case 'w': return static_cast<int>((EPD_SEQ_W_FRAMES * TONEMAP_VDHR_PCT + 50u) / 100u);
+    default: return 0;
+    }
+}
+
+// How a draw pays back a net: prefix pulls of EPD_PHASE1_DRIVE frames, then
+// nudges of TONE_NUDGE_FRAMES, and the residual neither pays.
+struct tone_balance
+{
+    int prefix, nudge, residual;
+};
+
+// Integer division truncates toward zero, so the prefix and the nudge carry
+// the debt's own sign and never overshoot.
+constexpr tone_balance tone_balance_of(int net)
+{
+    const int debt   = -net;
+    const int prefix = debt / EPD_PHASE1_DRIVE;
+    const int rem    = debt - prefix * EPD_PHASE1_DRIVE;
+    const int nudge  = rem / static_cast<int>(TONE_NUDGE_FRAMES);
+    return {prefix, nudge, rem - nudge * static_cast<int>(TONE_NUDGE_FRAMES)};
+}
+
+// VDH frames an S pull drives before its first VDL frame, the S head. 2 for
+// the slotted shape.
+constexpr unsigned tone_s_head_vdh()
+{
+    unsigned n = 0;
+    for(const char* f = EPD_PHASE1_SHAPE_S; *f != '\0' && *f != 'L'; f++) n += *f == 'H';
+    return n;
+}
 
 // True when u has a run over EPD_PUSH_MAX_VDH, EPD_PUSH_MAX_VDL or
 // EPD_PUSH_MAX_VDHR, or a positive run over EPD_PUSH_MAX_VDH.
-bool tone_push_over(const tone_push& u);
+constexpr bool tone_push_over(const tone_push& u)
+{
+    return u.max_vdh > EPD_PUSH_MAX_VDH || u.max_vdl > EPD_PUSH_MAX_VDL || u.max_vdhr > EPD_PUSH_MAX_VDHR ||
+           u.max_pos > EPD_PUSH_MAX_VDH;
+}
 
-// Expands all TONEMAP_COUNT entries once. Returns false with the entry and
-// the reason in why when any entry fails. Then no draw may play, and
-// tone_plan_build fails. Call it once before the first draw.
+// Checks the expanded patterns and push figures of main/tone_tables.inc
+// against the rules of this file as the firmware compiles them. Returns false
+// with the entry and the reason in why when any entry fails. Then no draw may
+// play, and tone_plan_build fails. Call it once before the first draw.
 bool tone_plan_init(char* why, size_t why_len);
 
-// The expanded pattern of entry e, e below TONEMAP_COUNT, after init.
+// The expanded pattern of entry e, e below TONEMAP_COUNT.
 const tone_seq& tone_plan_seq(unsigned e);
 
 // The plan of one draw. count holds the pixels of each entry in the frame,
 // and an entry is counted when its count is not 0. Sets plan->len and
 // plan->mid as the file header gives. A frame with no counted entry gets 0
 // pulls in both phases. Returns false, with an empty plan, when init has not
-// succeeded.
+// run or found a fault.
 bool tone_plan_build(const uint32_t count[TONEMAP_COUNT], tone_plan* plan);
 
 // Table code of entry e at pull k of phase ph in plan: TONE_P1_* in phase 1,

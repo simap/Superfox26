@@ -1,7 +1,12 @@
+# The fixed point tone kernels (tone_fx.h), which the dither of tones.cpp runs on.
+set(tone_fx_srcs "tone_fx_srgb.cpp" "tone_fx_bracket.cpp" "tone_fx_squeeze.cpp" "tone_fx_search.cpp"
+                 "tone_fx_oklab.cpp")
+
 # MINIMAL_BUILD is on, so every component main uses is listed here.
 idf_component_register(SRCS "main.cpp" "browser.cpp" "console.cpp" "config.cpp" "wifi.c" "fetch.cpp"
                             "url.cpp" "fonts.cpp" "image.cpp" "render.cpp" "leds.cpp" "buttons.cpp" "sizecache.cpp"
                             "tabs.cpp" "tones.cpp" "tone_plan.cpp"
+                            ${tone_fx_srcs}
                             "image_legacy.cpp"
                             "image_webp.cpp"
                        INCLUDE_DIRS "."
@@ -14,12 +19,19 @@ idf_component_register(SRCS "main.cpp" "browser.cpp" "console.cpp" "config.cpp" 
 
 target_compile_options(${COMPONENT_LIB} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>)
 # The dither runs per pixel over the whole panel. At the project's -Os its helpers stay out of line
-# and the row loop spills around every call.
-set_source_files_properties(tones.cpp PROPERTIES COMPILE_OPTIONS "-O2")
+# and the row loop spills around every call. The kernels take the same level, so the bench compares
+# the float and the fixed point code at one optimisation level.
+set_source_files_properties(tones.cpp ${tone_fx_srcs} PROPERTIES COMPILE_OPTIONS "-O2")
 # tools/idf.sh -DTONES_BENCH=1 build: the firmware times the tone code at boot (tones_bench.inc) and
-# stops before the browser starts. -DTONES_BENCH=0 turns it off again, the value stays in the cache.
+# stops before the browser starts. It also builds the float dither of
+# tones_float_ref.inc that the bench times against. -DTONES_BENCH=0 turns it off again, the value
+# stays in the cache.
 if(TONES_BENCH)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE TONES_BENCH=1)
+    # -DTONES_BENCH_ALL=1 adds the kernel rows and the float frames without the cache.
+    if(TONES_BENCH_ALL)
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE TONES_BENCH_ALL=1)
+    endif()
 endif()
 
 # The data partition image: a LittleFS volume built from build/fsroot, which holds the three
