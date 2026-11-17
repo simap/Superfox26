@@ -1,4 +1,5 @@
-# litehtml fork (browsers/litehtml/fork, branch epaper) as an ESP-IDF component, built by path.
+# litehtml fork (https://github.com/simap/litehtml, branch epaper, the submodule in fork/) as an
+# ESP-IDF component, built by path.
 # Three files are copied into the build directory and patched (patches/xtensa.patch):
 #   encodings.cpp: no exceptions in the charset prescan, encoding tables const (.data to .rodata)
 #   html_tag.cpp: dynamic_cast to static_cast (no RTTI)
@@ -6,7 +7,10 @@
 # Override the fork location with -DLITEHTML_FORK=<path> on the idf.py command line.
 
 if(NOT DEFINED LITEHTML_FORK)
-    set(LITEHTML_FORK "${CMAKE_CURRENT_LIST_DIR}/../../../browsers/litehtml/fork")
+    set(LITEHTML_FORK "${CMAKE_CURRENT_LIST_DIR}/fork")
+endif()
+if(NOT EXISTS "${LITEHTML_FORK}/src/document.cpp")
+    message(FATAL_ERROR "litehtml fork not found at ${LITEHTML_FORK}. Run: git submodule update --init")
 endif()
 get_filename_component(LH "${LITEHTML_FORK}" ABSOLUTE)
 

@@ -1,0 +1,4 @@
+[submodule "components/litehtml/fork"]
+	path = components/litehtml/fork
+	url = https://github.com/simap/litehtml.git
+	branch = epaper
