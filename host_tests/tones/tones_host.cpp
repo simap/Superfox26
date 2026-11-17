@@ -1,6 +1,7 @@
 // Host harness for the tone dither in main/tones.cpp. Renders test images through tone_dither at
-// TONE_W wide and writes per test the input, the entry frame in the entries' measured colours, and a
-// 4x crop of that frame. Prints the entry histogram and deviation figures. See README.md.
+// TONE_W wide and writes per test the input, the entry frame in the entries' colours, and a 4x crop
+// of that frame. Prints the entry histogram and deviation figures. Plays each frame through
+// tones_draw() into the driver model of epd_stub.cpp and checks every pull. See README.md.
 //
 // usage: tones_host OUTDIR [TONE_IMAGE.png ...]
 //        tones_host --compare SWEEPDIR CONFIG ...
@@ -16,7 +17,11 @@
 #include <string>
 #include <vector>
 
+#include "epd97.h"
+#include "epd_stub.h"
+#include "tone_plan.h"
 #include "tonemap.h"
+#include "tonemap_squeeze.h"
 #include "tones.h"
 
 extern "C" {
@@ -41,9 +46,12 @@ const int      BLOCK  = 8;  // texture block side
 const double   BLOCK_SD_MIN = 0.005;
 
 // Deviation thresholds in Oklab units, against the pixel's target before the carried error.
-const float FAR_L = 0.15f; // above the widest neutral gap, 0.13 in L
+const float FAR_L = 0.15f; // above the widest neutral gap, 0.1275 in L
 const float FAR_C = 0.06f; // a, b distance
 const float FLAT  = 0.02f; // weighted distance within the 7x7 window for a flat pixel
+// tones.cpp NEUTRAL_C: a target with less a, b chroma after the squeeze is neutral.
+const float NEUTRAL_C = 1e-3f;
+const float LUMA[3]   = {0.2126f, 0.7152f, 0.0722f};
 
 #if HAVE_FREETYPE
 const char* DEFAULT_FONT = "/System/Library/Fonts/Supplemental/Arial.ttf"; // tools/stage_fonts.py sans
@@ -78,15 +86,6 @@ void put(image& im, int x, int y, int r, int g, int b)
     p[2]       = static_cast<uint8_t>(b);
 }
 
-// RGB whose fold in tone_dither::row gives back (ink, red): R = 255 - ink is the largest channel and
-// red is R minus G and B.
-void put_pair(image& im, int x, int y, int ink, int red)
-{
-    int r  = 255 - ink;
-    int gb = std::max(0, r - red);
-    put(im, x, y, r, gb, gb);
-}
-
 // render.cpp blend(): c over the pixel at a of 255, integer mix of the sRGB bytes.
 void blend(image& im, int x, int y, const uint8_t c[3], int a)
 {
@@ -111,18 +110,14 @@ bool save_png(const std::string& path, const uint8_t* rgb, int w, int h)
     return !err;
 }
 
-// ---------------------------------------------------------------- Oklab, as tones.cpp computes it
+// ---------------------------------------------------------------- the tone system, as tones.cpp computes it
 
-float g_lab[TONEMAP_COUNT][3]; // entry Oklab
-float g_lin[TONEMAP_COUNT][3]; // entry linear RGB
-float g_cw[3], g_cb[3], g_cr[3];
-uint8_t g_lift[256];
-
-float to_lin(uint8_t v8)
-{
-    float v = v8 / 255.0f;
-    return v <= 0.04045f ? v / 12.92f : powf((v + 0.055f) / 1.055f, 2.4f);
-}
+float    g_lab[TONEMAP_COUNT][3]; // entry Oklab
+float    g_lin[TONEMAP_COUNT][3]; // entry linear light
+uint8_t  g_rgb[TONEMAP_COUNT][3]; // entry sRGB, the simulated panel colour
+bool     g_neutral[TONEMAP_COUNT]; // pattern without r or R
+unsigned g_black = 0;
+float    g_byte_lin[256];
 
 void oklab_lin(const float c[3], float out[3])
 {
@@ -134,6 +129,42 @@ void oklab_lin(const float c[3], float out[3])
     out[2]        = 0.0259040371f * l + 0.7827717662f * m - 0.8086757660f * s;
 }
 
+void lin_of_oklab(const float lab[3], float out[3])
+{
+    float l = lab[0] + 0.3963377774f * lab[1] + 0.2158037573f * lab[2];
+    float m = lab[0] - 0.1055613458f * lab[1] - 0.0638541728f * lab[2];
+    float s = lab[0] - 0.0894841775f * lab[1] - 1.2914855480f * lab[2];
+    l       = l * l * l;
+    m       = m * m * m;
+    s       = s * s * s;
+    out[0]  = 4.0767416621f * l - 3.3077115913f * m + 0.2309699292f * s;
+    out[1]  = -1.2684380046f * l + 2.6097574011f * m - 0.3413193965f * s;
+    out[2]  = -0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s;
+}
+
+void oklab_rgb(uint8_t r, uint8_t g, uint8_t b, float out[3])
+{
+    const float c[3] = {g_byte_lin[r], g_byte_lin[g], g_byte_lin[b]};
+    oklab_lin(c, out);
+}
+
+uint8_t srgb_byte(float v)
+{
+    v = std::max(0.0f, std::min(1.0f, v));
+    v = v <= 0.0031308f ? 12.92f * v : 1.055f * powf(v, 1 / 2.4f) - 0.055f;
+    return static_cast<uint8_t>(255.0f * v + 0.5f);
+}
+
+float luma(const float* c)
+{
+    return LUMA[0] * c[0] + LUMA[1] * c[1] + LUMA[2] * c[2];
+}
+
+const char* name_of(unsigned e)
+{
+    return e == TONE_PAPER ? "paper" : e == g_black ? "black" : k_tonemap[e].pattern;
+}
+
 int entry_of(const char* pattern)
 {
     for(unsigned e = 0; e < N; e++)
@@ -143,32 +174,42 @@ int entry_of(const char* pattern)
 
 bool analysis_init()
 {
+    for(int v = 0; v < 256; v++)
+    {
+        const float c = v / 255.0f;
+        g_byte_lin[v] = c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
+    }
     for(unsigned e = 0; e < N; e++)
     {
-        g_lin[e][0] = to_lin(k_tonemap[e].r);
-        g_lin[e][1] = to_lin(k_tonemap[e].g);
-        g_lin[e][2] = to_lin(k_tonemap[e].b);
-        oklab_lin(g_lin[e], g_lab[e]);
+        g_lab[e][0]  = k_tonemap[e].L, g_lab[e][1] = k_tonemap[e].a, g_lab[e][2] = k_tonemap[e].b;
+        g_neutral[e] = strpbrk(k_tonemap[e].pattern, "rR") == nullptr;
+        lin_of_oklab(g_lab[e], g_lin[e]);
+        for(int c = 0; c < 3; c++) g_rgb[e][c] = srgb_byte(g_lin[e][c]);
     }
-    int eb = entry_of("iiiii"), er = entry_of(TONEMAP_CIE_RED_PATTERN);
-    if(eb < 0 || er < 0) return false;
-    memcpy(g_cw, g_lab[TONE_PAPER], sizeof(g_cw));
-    memcpy(g_cb, g_lab[eb], sizeof(g_cb));
-    memcpy(g_cr, g_lab[er], sizeof(g_cr));
-    for(int v = 0; v < 256; v++) g_lift[v] = static_cast<uint8_t>(255.0f * powf(v / 255.0f, TONEMAP_GAMMA) + 0.5f);
+    const int eb = entry_of(TONEMAP_BLACK_PATTERN);
+    if(eb < 0) return false;
+    g_black = static_cast<unsigned>(eb);
+    tonemap_squeeze_begin(oklab_rgb);
     return true;
 }
 
-// The target tone_dither::row forms for one RGB pixel before it adds the carried error.
-void pixel_target(const uint8_t* c, float t[3])
+// The target tone_dither::row forms for one RGB pixel before it adds the carried error, in Oklab:
+// the colour through tonemap_squeeze(), L held at the black entry's or above. True when it is
+// neutral, then its a and b are set to 0.
+bool pixel_target(const uint8_t* c, float t[3])
 {
-    int r = c[0], g = c[1], b = c[2];
-    int mx  = std::max(r, std::max(g, b));
-    int ink = g_lift[255 - mx];
-    int red = std::max(0, r - std::max(g, b));
-    if(ink + red > 255) red = 255 - ink;
-    int w = 255 - ink - red;
-    for(int i = 0; i < 3; i++) t[i] = (w * g_cw[i] + ink * g_cb[i] + red * g_cr[i]) * (1.0f / 255.0f);
+    oklab_rgb(c[0], c[1], c[2], t);
+    tonemap_squeeze(t);
+    t[0]               = std::max(t[0], g_lab[g_black][0]);
+    const bool neutral = t[1] * t[1] + t[2] * t[2] < NEUTRAL_C * NEUTRAL_C;
+    if(neutral) t[1] = t[2] = 0.0f;
+    return neutral;
+}
+
+// The target's linear light. A neutral target's is L cubed on all three channels.
+void target_lin(const float t[3], float out[3])
+{
+    lin_of_oklab(t, out);
 }
 
 float wdist2(const float* a, const float* b)
@@ -185,11 +226,44 @@ int ramp_at(int x)
     return (x * 255 + (W - 1) / 2) / (W - 1);
 }
 
-// Ramp column whose gray target has Oklab lightness L.
+float gray_target_l(int v)
+{
+    const uint8_t c[3] = {static_cast<uint8_t>(v), static_cast<uint8_t>(v), static_cast<uint8_t>(v)};
+    float         t[3];
+    pixel_target(c, t);
+    return t[0];
+}
+
+// The neutral entries, lightest first, and the midpoint of the widest L gap between neighbours
+// whose upper entry is at or below l_max.
+std::vector<unsigned> neutrals()
+{
+    std::vector<unsigned> nt;
+    for(unsigned e = 0; e < N; e++)
+        if(g_neutral[e]) nt.push_back(e);
+    std::sort(nt.begin(), nt.end(), [](unsigned a, unsigned b) { return g_lab[a][0] > g_lab[b][0]; });
+    return nt;
+}
+
+float widest_gap_mid(float l_max)
+{
+    const std::vector<unsigned> nt = neutrals();
+    float                       best = 0, mid = 0.5f;
+    for(size_t i = 0; i + 1 < nt.size(); i++)
+    {
+        const float hi = g_lab[nt[i]][0], lo = g_lab[nt[i + 1]][0];
+        if(hi <= l_max && hi - lo > best) best = hi - lo, mid = 0.5f * (hi + lo);
+    }
+    return mid;
+}
+
+// Column of the white to black ramp whose gray target has Oklab lightness L.
 int gray_x_of_l(float l)
 {
-    float ink = (g_cw[0] - l) / (g_cw[0] - g_cb[0]) * 255.0f;
-    return static_cast<int>(ink * (W - 1) / 255.0f + 0.5f);
+    int bx = 0;
+    for(int x = 1; x < W; x++)
+        if(fabsf(gray_target_l(255 - ramp_at(x)) - l) < fabsf(gray_target_l(255 - ramp_at(bx)) - l)) bx = x;
+    return bx;
 }
 
 // ---------------------------------------------------------------- tests
@@ -205,7 +279,7 @@ struct test_case
 
 struct texture
 {
-    double checker = 0; // share of 2x2 cells that are a two-entry checkerboard
+    double checker = 0; // share of 2x2 cells that are a checkerboard of two entries
     double run     = 0; // mean run of one entry along rows
     double ratio   = 0; // block mean deviation over the expected, -1 when near solid
 };
@@ -213,17 +287,19 @@ struct texture
 struct summary_row
 {
     std::string name;
-    unsigned    entries = 0, pulls = 0;
-    std::string longest;
-    size_t      far = 0, far_iso = 0, flat = 0, white = 0, white_off = 0, white_off_flat = 0, black = 0, black_off = 0;
-    double      worst_ok = 0, worst_seen = 0; // ramps: largest band |okmean L - tgt L|, |seen L - tgt L|
-    double      worst_seen_c = 0;             // ramps: largest band a, b distance of seen from tgt
-    int         solid_px = 0;                 // ramps: columns in solid runs >= 8 px
-    int         solid_max = 0;                // ramps: longest solid run
-    double      solid_reach = 0;              // ramps: largest |tgt L - entry L| inside a solid run
-    texture     tex;                          // ramps: mean over bands, else the whole frame
-    double      ms = 0;                       // dither time on the host
-    double      checker_pct() const { return 100 * tex.checker; }
+    unsigned    entries = 0, pulls1 = 0, pulls2 = 0, sends = 0;
+    size_t      play_bad = 0; // tones_draw() pulls or codes that differ from the plan, see play_check()
+    size_t      far = 0, far_iso = 0, flat = 0, tint = 0, white = 0, white_off = 0, white_off_flat = 0, black = 0,
+           black_off = 0;
+    double  worst_seen = 0;   // ramps: largest band |seen L - tgt L|
+    double  worst_seen_c = 0; // ramps: largest band a, b distance of seen from tgt
+    double  worst_y = 0;      // ramps: largest band |entry luminance - target luminance|, linear
+    int     solid_px = 0;     // ramps: columns in solid runs >= 8 px
+    int     solid_max = 0;    // ramps: longest solid run
+    double  solid_reach = 0;  // ramps: largest |tgt L - entry L| inside a solid run
+    texture tex;              // ramps: mean over bands, else the whole frame
+    double  ms = 0;           // dither time on the host
+    double  checker_pct() const { return 100 * tex.checker; }
 };
 
 // Texture of the entry frame over columns x0 to x1 - 1, all rows. The block ratio compares the
@@ -298,6 +374,39 @@ std::vector<std::pair<unsigned, size_t>> top_entries(const size_t* count, unsign
     return v;
 }
 
+// Plays the entry frame (h rows, the rest paper) through tones_draw() into the driver model and
+// checks it against the plan: every pull of both phases, each pixel's code at each pull equal to
+// tone_plan_code() of its entry after the COG's plane swap, the first pull of each session with a
+// plane send, the sessions on the right table and unit in phase order, and at the end the session
+// closed and the planes clear.
+void play_check(const std::vector<uint8_t>& idx, int h, summary_row& s)
+{
+    std::vector<uint8_t> frame(static_cast<size_t>(TONE_W) * TONE_H, TONE_PAPER);
+    memcpy(frame.data(), idx.data(), static_cast<size_t>(W) * h);
+    uint32_t count[TONEMAP_COUNT] = {0};
+    for(uint8_t e : frame) count[e]++;
+    tone_plan plan;
+    tone_plan_build(count, &plan);
+    g_stub       = epd_stub_log();
+    g_stub.frame = frame.data();
+    g_stub.plan  = plan;
+    g_stub.count = count;
+    tone_draw_stats ds;
+    const bool      ok    = tones_draw(frame.data(), &ds);
+    bool            clear = true;
+    for(size_t i = 0; i < EPD_PLANE_BYTES; i++) clear = clear && !epd_plane_bw()[i] && !epd_plane_red()[i];
+    const epd_stub_log& g = g_stub;
+    s.pulls1 = g.pulls[TONE_PHASE_1], s.pulls2 = g.pulls[TONE_PHASE_2], s.sends = g.sends;
+    s.play_bad = g.mismatches + g.first_kept + g.bad_open + !ok + !clear + epd_verb_is_open() +
+                 (g.pulls[TONE_PHASE_1] != plan.len[TONE_PHASE_1]) + (g.pulls[TONE_PHASE_2] != plan.len[TONE_PHASE_2]) +
+                 (ds.pulls1 != plan.len[TONE_PHASE_1]) + (ds.pulls2 != plan.len[TONE_PHASE_2]);
+    printf("  play: plan %u + %u pulls (B %u), played %u + %u, %u sends, %u opens, %u closes, mismatched pixel "
+           "pulls %zu, first pulls kept %u, bad opens %u, %s, session %s, planes %s => %s\n",
+           plan.len[TONE_PHASE_1], plan.len[TONE_PHASE_2], plan.mid, g.pulls[TONE_PHASE_1], g.pulls[TONE_PHASE_2],
+           g.sends, g.opens, g.closes, g.mismatches, g.first_kept, g.bad_open, ok ? "ok" : "failed",
+           epd_verb_is_open() ? "open" : "closed", clear ? "clear" : "not clear", s.play_bad ? "FAIL" : "pass");
+}
+
 void run(const test_case& tc, const std::string& outdir, std::vector<summary_row>& sum)
 {
     const int    h = tc.im.h;
@@ -314,13 +423,7 @@ void run(const test_case& tc, const std::string& outdir, std::vector<summary_row
     s.ms   = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 
     std::vector<uint8_t> panel(n * 3);
-    for(size_t p = 0; p < n; p++)
-    {
-        const tone_entry_t& t = k_tonemap[idx[p]];
-        panel[3 * p]          = t.r;
-        panel[3 * p + 1]      = t.g;
-        panel[3 * p + 2]      = t.b;
-    }
+    for(size_t p = 0; p < n; p++) memcpy(&panel[3 * p], g_rgb[idx[p]], 3);
     const int         cx   = std::max(0, std::min(tc.crop_x, W - CROP_W));
     const int         cy   = std::max(0, std::min(tc.crop_y, h - CROP_H));
     const int         dx   = std::max(0, std::min(tc.dark_x, W - DARK_W));
@@ -342,29 +445,37 @@ void run(const test_case& tc, const std::string& outdir, std::vector<summary_row
     {
         if(!count[e]) continue;
         s.entries++;
-        unsigned len = static_cast<unsigned>(strlen(k_tonemap[e].pattern));
-        if(len > s.pulls) s.pulls = len, s.longest = k_tonemap[e].pattern;
-        printf("  %3u  %-16s %5.3f %+6.3f %+6.3f %9zu %6.2f%%\n", e, k_tonemap[e].pattern, g_lab[e][0], g_lab[e][1],
-               g_lab[e][2], count[e], 100.0 * count[e] / n);
+        printf("  %3u  %-16s %6.4f %+7.4f %+7.4f %9zu %6.2f%%\n", e, name_of(e), g_lab[e][0], g_lab[e][1], g_lab[e][2],
+               count[e], 100.0 * count[e] / n);
     }
-    printf("  distinct entries %u, longest pattern %s (%u pulls)\n", s.entries, s.longest.c_str(), s.pulls);
+    printf("  distinct entries %u\n", s.entries);
+    play_check(idx, h, s);
 
     // deviation from target over flat input areas
-    std::vector<float> tg(n * 3);
-    for(size_t p = 0; p < n; p++) pixel_target(&tc.im.rgb[3 * p], &tg[3 * p]);
-    size_t dl10 = 0, dl15 = 0, dl20 = 0, dc04 = 0, dc06 = 0, dc10 = 0;
+    std::vector<float>   tg(n * 3), tl(n * 3);
+    std::vector<uint8_t> tn(n);
+    for(size_t p = 0; p < n; p++)
+    {
+        tn[p] = pixel_target(&tc.im.rgb[3 * p], &tg[3 * p]);
+        target_lin(&tg[3 * p], &tl[3 * p]);
+    }
+    size_t dl10 = 0, dl15 = 0, dl20 = 0, dc04 = 0, dc06 = 0, dc10 = 0, neutral_px = 0;
     size_t far_by[TONEMAP_COUNT] = {0}, iso_by[TONEMAP_COUNT] = {0};
-    size_t far_ink[TONEMAP_COUNT] = {0}, far_red[TONEMAP_COUNT] = {0};
+    size_t far_in[TONEMAP_COUNT][3] = {};
     size_t white = 0, white_off = 0, white_off_flat = 0, black = 0, black_off = 0;
-    size_t white_by[TONEMAP_COUNT] = {0}, black_by[TONEMAP_COUNT] = {0};
-    const uint8_t eblack = tones_black();
+    size_t white_by[TONEMAP_COUNT] = {0}, black_by[TONEMAP_COUNT] = {0}, tint_by[TONEMAP_COUNT] = {0};
     for(int y = 0; y < h; y++)
         for(int x = 0; x < W; x++)
         {
             const size_t   p  = static_cast<size_t>(y) * W + x;
             const uint8_t* in = &tc.im.rgb[3 * p];
             const float* t    = &tg[3 * p];
-            bool         flat = true;
+            if(tn[p])
+            {
+                neutral_px++;
+                if(!g_neutral[idx[p]]) s.tint++, tint_by[idx[p]]++;
+            }
+            bool flat = true;
             for(int yy = std::max(0, y - 3); flat && yy <= std::min(h - 1, y + 3); yy++)
                 for(int xx = std::max(0, x - 3); xx <= std::min(W - 1, x + 3); xx++)
                     if(wdist2(t, &tg[3 * (static_cast<size_t>(yy) * W + xx)]) > FLAT * FLAT)
@@ -380,8 +491,8 @@ void run(const test_case& tc, const std::string& outdir, std::vector<summary_row
             }
             if(in[0] == 0 && in[1] == 0 && in[2] == 0)
             {
-                black++, black_off += idx[p] != eblack;
-                if(idx[p] != eblack) black_by[idx[p]]++;
+                black++, black_off += idx[p] != g_black;
+                if(idx[p] != g_black) black_by[idx[p]]++;
             }
             if(!flat) continue;
             s.flat++;
@@ -393,8 +504,7 @@ void run(const test_case& tc, const std::string& outdir, std::vector<summary_row
             if(dl <= FAR_L && dc <= FAR_C) continue;
             s.far++;
             far_by[e]++;
-            far_ink[e] += 255 - std::max(in[0], std::max(in[1], in[2]));
-            far_red[e] += std::max(0, in[0] - std::max(in[1], in[2]));
+            for(int c = 0; c < 3; c++) far_in[e][c] += in[c];
             bool iso = true;
             for(int yy = std::max(0, y - 1); iso && yy <= std::min(h - 1, y + 1); yy++)
                 for(int xx = std::max(0, x - 1); xx <= std::min(W - 1, x + 1); xx++)
@@ -405,6 +515,9 @@ void run(const test_case& tc, const std::string& outdir, std::vector<summary_row
                     }
             if(iso) s.far_iso++, iso_by[e]++;
         }
+    printf("  neutral targets %zu of %zu, on an entry with r or R %zu", neutral_px, n, s.tint);
+    for(auto& [e, c] : top_entries(tint_by, 3)) printf(", %s %zu", name_of(e), c);
+    printf("\n");
     auto pct = [&](size_t v) { return s.flat ? 100.0 * v / s.flat : 0.0; };
     printf("  flat pixels %zu of %zu. Against the target: |dL| > 0.10 %zu (%.2f%%), > 0.15 %zu (%.2f%%), > 0.20 %zu "
            "(%.2f%%). dC > 0.04 %zu (%.2f%%), > 0.06 %zu (%.2f%%), > 0.10 %zu (%.2f%%)\n",
@@ -414,27 +527,27 @@ void run(const test_case& tc, const std::string& outdir, std::vector<summary_row
            static_cast<double>(FAR_L), static_cast<double>(FAR_C), s.far, s.far_iso);
     if(s.far)
     {
-        printf("  far by entry, count, isolated, mean input (ink, red):");
+        printf("  far by entry, count, isolated, mean input RGB:");
         for(auto& [e, c] : top_entries(far_by, 8))
-            printf(" %s %zu %zu (%zu, %zu)", k_tonemap[e].pattern, c, iso_by[e], far_ink[e] / c, far_red[e] / c);
+            printf(" %s %zu %zu (%zu %zu %zu)", name_of(e), c, iso_by[e], far_in[e][0] / c, far_in[e][1] / c,
+                   far_in[e][2] / c);
         printf("\n");
     }
     if(white)
         printf("  input white pixels %zu, rendered other than paper %zu, of them in flat areas %zu\n", white,
                white_off, white_off_flat);
-    if(black) printf("  input black pixels %zu, rendered other than iiiii %zu\n", black, black_off);
+    if(black) printf("  input black pixels %zu, rendered other than black %zu\n", black, black_off);
     if(white_off || black_off)
     {
         printf("  off-white as, off-black as (entry L count):");
-        for(auto& [e, c] : top_entries(white_by, 3)) printf(" %s %.3f %zu", k_tonemap[e].pattern, g_lab[e][0], c);
+        for(auto& [e, c] : top_entries(white_by, 3)) printf(" %s %.3f %zu", name_of(e), g_lab[e][0], c);
         printf(",");
-        for(auto& [e, c] : top_entries(black_by, 3)) printf(" %s %.3f %zu", k_tonemap[e].pattern, g_lab[e][0], c);
+        for(auto& [e, c] : top_entries(black_by, 3)) printf(" %s %.3f %zu", name_of(e), g_lab[e][0], c);
         printf("\n");
     }
     s.white = white, s.white_off = white_off, s.white_off_flat = white_off_flat, s.black = black, s.black_off = black_off;
 
-    // ramp columns: target, Oklab mean of the entries, Oklab of their linear-light mean, texture,
-    // solid runs
+    // ramp columns: the target and the entries as their mean linear light, texture, solid runs
     if(tc.ramp)
     {
         // runs of columns where one entry covers SOLID of the column. reach: the largest |tgt L - entry
@@ -470,35 +583,34 @@ void run(const test_case& tc, const std::string& outdir, std::vector<summary_row
             x = x1;
         }
 
-        printf("  x0    ink red  tgt L     a      b  | okmean L | seen L     a      b  | chk%%   run  blk | solid "
+        printf("  x0   input R G B  | tgt L     a      b  | seen L     a      b  |   dY    | chk%%   run  blk | solid "
                "max mean | entries\n");
-        float worst_ok = 0, worst_seen = 0;
-        int   worst_ok_x = 0, worst_seen_x = 0, bands = 0, ratios = 0;
+        float worst_seen = 0;
+        int   worst_seen_x = 0, worst_y_x = 0, bands = 0, ratios = 0;
         for(int x0 = 0; x0 < W; x0 += BAND)
         {
-            const int x1    = std::min(W, x0 + BAND);
-            double    t[3]  = {0, 0, 0}, ok[3] = {0, 0, 0}, li[3] = {0, 0, 0};
+            const int x1 = std::min(W, x0 + BAND);
+            double    ti[3] = {0, 0, 0}, li[3] = {0, 0, 0};
             size_t    cnt[TONEMAP_COUNT] = {0}, m = 0;
             for(int y = 0; y < h; y++)
                 for(int x = x0; x < x1; x++)
                 {
                     const size_t p = static_cast<size_t>(y) * W + x;
-                    for(int i = 0; i < 3; i++)
-                        t[i] += tg[3 * p + i], ok[i] += g_lab[idx[p]][i], li[i] += g_lin[idx[p]][i];
+                    for(int i = 0; i < 3; i++) ti[i] += tl[3 * p + i], li[i] += g_lin[idx[p]][i];
                     cnt[idx[p]]++;
                     m++;
                 }
-            float lin_mean[3], seen[3];
-            for(int i = 0; i < 3; i++) t[i] /= m, ok[i] /= m, lin_mean[i] = static_cast<float>(li[i] / m);
-            oklab_lin(lin_mean, seen);
-            const uint8_t* c   = &tc.im.rgb[static_cast<size_t>((x0 + x1) / 2) * 3];
-            const int      mx  = std::max(c[0], std::max(c[1], c[2]));
-            const int      red = std::max(0, c[0] - std::max(c[1], c[2]));
-            const texture tx = texture_of(idx, tg, h, x0, x1);
+            float t_mean[3], e_mean[3], tgt[3], seen[3];
+            for(int i = 0; i < 3; i++) t_mean[i] = static_cast<float>(ti[i] / m), e_mean[i] = static_cast<float>(li[i] / m);
+            oklab_lin(t_mean, tgt);
+            oklab_lin(e_mean, seen);
+            const float    dY = luma(e_mean) - luma(t_mean);
+            const uint8_t* c  = &tc.im.rgb[static_cast<size_t>((x0 + x1) / 2) * 3];
+            const texture  tx = texture_of(idx, tg, h, x0, x1);
             s.tex.checker += tx.checker, s.tex.run += tx.run, bands++;
             if(tx.ratio >= 0) s.tex.ratio += tx.ratio, ratios++;
-            printf("  %3d  %3d %3d  %5.3f %+6.3f %+6.3f |  %5.3f   |  %5.3f %+6.3f %+6.3f | %4.1f %5.1f ", x0, 255 - mx,
-                   red, t[0], t[1], t[2], ok[0], seen[0], seen[1], seen[2], 100 * tx.checker, tx.run);
+            printf("  %3d  %3d %3d %3d  | %5.3f %+6.3f %+6.3f | %5.3f %+6.3f %+6.3f | %+7.4f | %4.1f %5.1f ", x0, c[0],
+                   c[1], c[2], tgt[0], tgt[1], tgt[2], seen[0], seen[1], seen[2], dY, 100 * tx.checker, tx.run);
             if(tx.ratio >= 0) printf("%4.2f |", tx.ratio);
             else printf("   - |");
             int    smax = 0, sn = 0;
@@ -506,17 +618,16 @@ void run(const test_case& tc, const std::string& outdir, std::vector<summary_row
             for(auto& r : sruns)
                 if(r.x1 > x0 && r.x0 < x1) smax = std::max(smax, r.x1 - r.x0), ssum += r.x1 - r.x0, sn++;
             printf("     %3d %4.1f |", smax, sn ? ssum / sn : 0.0);
-            for(auto& [e, cn] : top_entries(cnt, 3)) printf(" %s %.0f%%", k_tonemap[e].pattern, 100.0 * cn / m);
+            for(auto& [e, cn] : top_entries(cnt, 3)) printf(" %s %.0f%%", name_of(e), 100.0 * cn / m);
             printf("\n");
-            if(fabs(ok[0] - t[0]) > worst_ok) worst_ok = static_cast<float>(fabs(ok[0] - t[0])), worst_ok_x = x0;
-            if(fabs(seen[0] - t[0]) > worst_seen)
-                worst_seen = static_cast<float>(fabs(seen[0] - t[0])), worst_seen_x = x0;
-            s.worst_seen_c = std::max(s.worst_seen_c, hypot(seen[1] - t[1], seen[2] - t[2]));
+            if(fabsf(seen[0] - tgt[0]) > worst_seen) worst_seen = fabsf(seen[0] - tgt[0]), worst_seen_x = x0;
+            if(fabs(dY) > s.worst_y) s.worst_y = fabs(dY), worst_y_x = x0;
+            s.worst_seen_c = std::max(s.worst_seen_c, static_cast<double>(hypotf(seen[1] - tgt[1], seen[2] - tgt[2])));
         }
-        printf("  largest band |okmean L - tgt L| %.3f at x0 %d, largest |seen L - tgt L| %.3f at x0 %d\n",
-               static_cast<double>(worst_ok), worst_ok_x, static_cast<double>(worst_seen), worst_seen_x);
-        s.worst_ok = worst_ok, s.worst_seen = worst_seen;
-        printf("  largest band a, b distance of seen from tgt %.3f\n", s.worst_seen_c);
+        s.worst_seen = worst_seen;
+        printf("  largest band |seen L - tgt L| %.4f at x0 %d, |dY| %.4f at x0 %d, a, b distance of seen from tgt "
+               "%.4f\n",
+               static_cast<double>(worst_seen), worst_seen_x, s.worst_y, worst_y_x, s.worst_seen_c);
         s.tex.checker /= bands, s.tex.run /= bands;
         s.tex.ratio = ratios ? s.tex.ratio / ratios : -1;
         printf("  band means: checker %.1f%%, run %.1f px, block ratio %.2f over %d of %d bands\n",
@@ -527,9 +638,8 @@ void run(const test_case& tc, const std::string& outdir, std::vector<summary_row
         for(auto& r : sruns)
         {
             if(r.x1 - r.x0 < SOLID_W) continue;
-            printf("%s x %d-%d (%d px) %s L %.3f, tgt L %.3f to %.3f", runs ? "," : "", r.x0, r.x1 - 1, r.x1 - r.x0,
-                   k_tonemap[r.e].pattern[0] ? k_tonemap[r.e].pattern : "paper", g_lab[r.e][0], tg[3 * r.x0],
-                   tg[3 * (r.x1 - 1)]);
+            printf("%s x %d-%d (%d px) %s L %.4f, tgt L %.4f to %.4f", runs ? "," : "", r.x0, r.x1 - 1, r.x1 - r.x0,
+                   name_of(static_cast<unsigned>(r.e)), g_lab[r.e][0], tg[3 * r.x0], tg[3 * (r.x1 - 1)]);
             runs++;
             s.solid_px += r.x1 - r.x0;
         }
@@ -546,7 +656,7 @@ void run(const test_case& tc, const std::string& outdir, std::vector<summary_row
     sum.push_back(s);
 }
 
-// (a) white to black, 960x200. The crop centres on the gap between ipiip and pi.
+// (a) white to black, 960x200. The crop centres on the widest L gap between neutral entries.
 test_case gray_ramp()
 {
     test_case tc;
@@ -554,27 +664,36 @@ test_case gray_ramp()
     tc.im   = blank(200);
     tc.ramp = true;
     for(int y = 0; y < tc.im.h; y++)
-        for(int x = 0; x < W; x++) put_pair(tc.im, x, y, ramp_at(x), 0);
-    int ea = entry_of("ipiip"), eb = entry_of("pi");
-    int mid = W / 2;
-    if(ea >= 0 && eb >= 0) mid = (gray_x_of_l(g_lab[ea][0]) + gray_x_of_l(g_lab[eb][0])) / 2;
-    tc.crop_x = mid - CROP_W / 2;
+        for(int x = 0; x < W; x++)
+        {
+            const int v = 255 - ramp_at(x);
+            put(tc.im, x, y, v, v, v);
+        }
+    tc.crop_x = gray_x_of_l(widest_gap_mid(1.0f)) - CROP_W / 2;
     tc.crop_y = 20;
     tc.dark_x = gray_x_of_l(0.42f) - DARK_W / 2;
     tc.dark_y = 40;
     return tc;
 }
 
-// Dark ramp column whose gray target has Oklab lightness L. Gray DARK_MAX at x 0, 0 at x W - 1.
+// Dark ramp: gray DARK_MAX at x 0, 0 at x W - 1.
 const int DARK_MAX = 110;
-int dark_x_of_l(float l)
+int       dark_at(int x)
 {
-    float v = 255.0f - (g_cw[0] - l) / (g_cw[0] - g_cb[0]) * 255.0f;
-    return static_cast<int>((DARK_MAX - v) * (W - 1) / DARK_MAX + 0.5f);
+    return DARK_MAX - (x * DARK_MAX + (W - 1) / 2) / (W - 1);
 }
 
-// (a2) sRGB gray DARK_MAX to 0 across x, 960x200: target L 0.56 to 0.23. The crop centres on L 0.42
-// (ipipi to ipi), the dark crop on L 0.345 (ii to ipipi, the widest gap below L 0.45).
+// Column of the dark ramp whose gray target has Oklab lightness L.
+int dark_x_of_l(float l)
+{
+    int bx = 0;
+    for(int x = 1; x < W; x++)
+        if(fabsf(gray_target_l(dark_at(x)) - l) < fabsf(gray_target_l(dark_at(bx)) - l)) bx = x;
+    return bx;
+}
+
+// (a2) sRGB gray DARK_MAX to 0 across x, 960x200: target L 0.54 to 0. The crop centres on L 0.42,
+// the dark crop on the widest L gap between neutral entries at or below L 0.45.
 test_case dark_gray_ramp()
 {
     test_case tc;
@@ -582,14 +701,10 @@ test_case dark_gray_ramp()
     tc.im   = blank(200);
     tc.ramp = true;
     for(int y = 0; y < tc.im.h; y++)
-        for(int x = 0; x < W; x++)
-        {
-            int v = DARK_MAX - (x * DARK_MAX + (W - 1) / 2) / (W - 1);
-            put(tc.im, x, y, v, v, v);
-        }
+        for(int x = 0; x < W; x++) put(tc.im, x, y, dark_at(x), dark_at(x), dark_at(x));
     tc.crop_x = dark_x_of_l(0.42f) - CROP_W / 2;
     tc.crop_y = 20;
-    tc.dark_x = dark_x_of_l(0.345f) - DARK_W / 2;
+    tc.dark_x = dark_x_of_l(widest_gap_mid(0.45f)) - DARK_W / 2;
     tc.dark_y = 40;
     return tc;
 }
@@ -602,7 +717,7 @@ test_case dark_red_ramp()
     tc.im   = blank(200);
     tc.ramp = true;
     for(int y = 0; y < tc.im.h; y++)
-        for(int x = 0; x < W; x++) put(tc.im, x, y, DARK_MAX - (x * DARK_MAX + (W - 1) / 2) / (W - 1), 0, 0);
+        for(int x = 0; x < W; x++) put(tc.im, x, y, dark_at(x), 0, 0);
     tc.crop_x = W / 2 - CROP_W / 2;
     tc.crop_y = 20;
     tc.dark_x = W / 2 - DARK_W / 2;
@@ -610,7 +725,7 @@ test_case dark_red_ramp()
     return tc;
 }
 
-// (b) white to pure red, 960x200.
+// (b1) white to (255, 0, 0), 960x200: G and B fall across x.
 test_case red_sat_ramp()
 {
     test_case tc;
@@ -618,7 +733,7 @@ test_case red_sat_ramp()
     tc.im   = blank(200);
     tc.ramp = true;
     for(int y = 0; y < tc.im.h; y++)
-        for(int x = 0; x < W; x++) put_pair(tc.im, x, y, 0, ramp_at(x));
+        for(int x = 0; x < W; x++) put(tc.im, x, y, 255, 255 - ramp_at(x), 255 - ramp_at(x));
     tc.crop_x = 600;
     tc.crop_y = 20;
     tc.dark_x = 780;
@@ -626,7 +741,7 @@ test_case red_sat_ramp()
     return tc;
 }
 
-// (b) pure red to black, 960x200.
+// (b2) (255, 0, 0) to black, 960x200.
 test_case red_dark_ramp()
 {
     test_case tc;
@@ -634,7 +749,7 @@ test_case red_dark_ramp()
     tc.im   = blank(200);
     tc.ramp = true;
     for(int y = 0; y < tc.im.h; y++)
-        for(int x = 0; x < W; x++) put_pair(tc.im, x, y, ramp_at(x), 255 - ramp_at(x));
+        for(int x = 0; x < W; x++) put(tc.im, x, y, 255 - ramp_at(x), 0, 0);
     tc.crop_x = 360;
     tc.crop_y = 20;
     tc.dark_x = 640;
@@ -642,7 +757,8 @@ test_case red_dark_ramp()
     return tc;
 }
 
-// (c) the triangle with ink across, red down, 960x672. ink + red > 255 is paper.
+// (c1) 960x672: R falls from 255 to 0 across x, and G = B lie below R by 0 to 255 down y, at least
+// 0. Paper where the two steps add past 255.
 test_case tri_axes()
 {
     test_case tc;
@@ -650,11 +766,14 @@ test_case tri_axes()
     tc.im   = blank(TONE_H);
     for(int y = 0; y < tc.im.h; y++)
     {
-        int red = (y * 255 + (TONE_H - 1) / 2) / (TONE_H - 1);
+        const int dy = (y * 255 + (TONE_H - 1) / 2) / (TONE_H - 1);
         for(int x = 0; x < W; x++)
         {
-            int ink = ramp_at(x);
-            if(ink + red <= 255) put_pair(tc.im, x, y, ink, red);
+            const int dx = ramp_at(x);
+            if(dx + dy > 255) continue;
+            const int r  = 255 - dx;
+            const int gb = std::max(0, r - dy);
+            put(tc.im, x, y, r, gb, gb);
         }
     }
     tc.crop_x = 400;
@@ -664,8 +783,8 @@ test_case tri_axes()
     return tc;
 }
 
-// (c) a tone triangle: white apex on top, black bottom
-// left, red bottom right, paper outside.
+// (c2) 960x672: a wedge with white at the apex on top, black at the bottom left and (255, 0, 0) at
+// the bottom right, each pixel the sRGB mix of the three by its weights. Paper outside.
 test_case tri_show()
 {
     const int TRI_BASE_W = 700, TRI_BASE_Y = 640, TRI_HEIGHT = 606;
@@ -684,8 +803,7 @@ test_case tri_show()
             const int w_white = 255 - t * 255 / TRI_HEIGHT;
             const int span    = 2 * half;
             const int w_red   = span > 0 ? (255 - w_white) * (x - (cx - half)) / span : 0;
-            const int w_black = 255 - w_white - w_red;
-            put_pair(tc.im, x, y, w_black, w_red);
+            put(tc.im, x, y, w_white + w_red, w_white, w_white);
         }
     }
     tc.crop_x = 560;
@@ -810,7 +928,8 @@ test_case text_block()
     return tc;
 }
 
-// (e) a tone image from tools/img_to_tone.py: 8-bit gray plus alpha, gray the ink, alpha the red.
+// (e) a PNG, 8-bit gray plus alpha, as RGB: R is 255 minus the gray, G and B
+// are R minus the alpha, at least 0.
 bool tone_image(const char* path, test_case& tc)
 {
     unsigned char* png = nullptr;
@@ -849,8 +968,10 @@ bool tone_image(const char* path, test_case& tc)
     for(int y = 0; y < tc.im.h; y++)
         for(int x = 0; x < W; x++)
         {
-            const uint8_t* p = &ga[(static_cast<size_t>(y) * W + x) * 2];
-            put_pair(tc.im, x, y, p[0], p[1]);
+            const uint8_t* p  = &ga[(static_cast<size_t>(y) * W + x) * 2];
+            const int      r  = 255 - p[0];
+            const int      gb = std::max(0, r - p[1]);
+            put(tc.im, x, y, r, gb, gb);
         }
     free(ga);
     tc.crop_x = W / 2 - CROP_W / 2;
@@ -860,34 +981,55 @@ bool tone_image(const char* path, test_case& tc)
     return true;
 }
 
-// For each pair of neighbouring neutral entries, the L of their linear-light mix at 25, 50 and 75%
-// of the darker entry, minus the L-space mix the dither conserves.
-void mix_check()
+// Neighbouring neutral entries: their L, their linear light and the gap in each. The carried
+// error of a neutral pixel stays inside its pair, so the widest linear gap bounds it.
+void neutral_pairs()
 {
-    std::vector<unsigned> nt;
-    for(unsigned e = 0; e < N; e++)
-        if(g_lab[e][1] <= TONEMAP_GRAY_A_MAX) nt.push_back(e);
-    std::sort(nt.begin(), nt.end(), [](unsigned a, unsigned b) { return g_lab[a][0] > g_lab[b][0]; });
-    printf("\n== mix: L of the linear-light mix minus the L-space mix, neighbouring neutral entries\n"
-           "  lighter          L      darker           L      25%%     50%%     75%%\n");
+    const std::vector<unsigned> nt = neutrals();
+    printf("\n== neutral pairs, lightest first: L and linear light of each, and the gaps\n"
+           "  lighter            L      lin    darker             L      lin    dL      dlin\n");
+    float wl = 0, wy = 0;
     for(size_t i = 0; i + 1 < nt.size(); i++)
     {
         const unsigned a = nt[i], b = nt[i + 1];
-        printf("  %-16s %5.3f  %-16s %5.3f ", k_tonemap[a].pattern[0] ? k_tonemap[a].pattern : "paper", g_lab[a][0],
-               k_tonemap[b].pattern, g_lab[b][0]);
-        for(float f : {0.25f, 0.5f, 0.75f})
-        {
-            float lin[3], lab[3];
-            for(int c = 0; c < 3; c++) lin[c] = (1 - f) * g_lin[a][c] + f * g_lin[b][c];
-            oklab_lin(lin, lab);
-            printf(" %+7.4f", lab[0] - ((1 - f) * g_lab[a][0] + f * g_lab[b][0]));
-        }
-        printf("\n");
+        const float    dl = g_lab[a][0] - g_lab[b][0], dy = g_lin[a][1] - g_lin[b][1];
+        wl = std::max(wl, dl), wy = std::max(wy, dy);
+        printf("  %-16s %6.4f %6.4f  %-16s %6.4f %6.4f  %6.4f  %6.4f\n", name_of(a), g_lab[a][0], g_lin[a][1],
+               name_of(b), g_lab[b][0], g_lin[b][1], dl, dy);
     }
+    printf("  %zu neutral entries, widest gap %.4f in L, %.4f in linear light\n", nt.size(), wl, wy);
 }
 
-const char* SUMMARY_HEAD = "test\tentries\tpulls\tfar\twhite\twhite_off\twhite_off_flat\tblack\tblack_off\tworst_ok\t"
-                           "worst_seen\tworst_c\tsolid_px\tsolid_max\tsolid_reach\tchecker\trun\tratio\tms";
+// tones_draw() on a panel without the tables: the driver model refuses the session, and the frame
+// holds every entry once at the start of row 0. Reads back the stock colour each entry got.
+void stock_check()
+{
+    std::vector<uint8_t> frame(static_cast<size_t>(TONE_W) * TONE_H, TONE_PAPER);
+    for(unsigned e = 0; e < N; e++) frame[e] = static_cast<uint8_t>(e);
+    g_stub           = epd_stub_log();
+    g_stub.no_tables = true;
+    tone_draw_stats ds;
+    const bool      ok = tones_draw(frame.data(), &ds);
+    unsigned        n[4] = {0, 0, 0, 0};
+    std::string     list[4];
+    for(unsigned e = 0; e < N; e++)
+    {
+        const uint8_t m    = static_cast<uint8_t>(0x80u >> (e & 7));
+        const int     code = ((epd_plane_red()[e >> 3] & m) ? 2 : 0) | ((epd_plane_bw()[e >> 3] & m) ? 1 : 0);
+        n[code]++;
+        char item[64];
+        snprintf(item, sizeof(item), " %s (L %.3f C %.3f)", name_of(e), g_lab[e][0], hypotf(g_lab[e][1], g_lab[e][2]));
+        list[code] += item;
+    }
+    printf("\n== stock draw: %s, %u refresh, mode %s, opens refused. %u white, %u black, %u red, %u both bits\n",
+           ok ? "ok" : "failed", g_stub.refreshes, g_stub.refresh_mode == EPD_SLOW ? "slow" : "fast", n[0], n[1], n[2],
+           n[3]);
+    printf("  black:%s\n  red:%s\n", list[1].c_str(), list[2].c_str());
+}
+
+const char* SUMMARY_HEAD = "test\tentries\tpulls1\tpulls2\tsends\tplay_bad\tfar\ttint\twhite\twhite_off\twhite_off_flat\t"
+                           "black\tblack_off\tworst_seen\tworst_c\tworst_y\tsolid_px\tsolid_max\tsolid_reach\tchecker\t"
+                           "run\tratio\tms";
 
 void write_summary(const std::string& path, const std::vector<summary_row>& sum)
 {
@@ -895,10 +1037,11 @@ void write_summary(const std::string& path, const std::vector<summary_row>& sum)
     if(!f) return;
     fprintf(f, "%s\n", SUMMARY_HEAD);
     for(auto& s : sum)
-        fprintf(f, "%s\t%u\t%u\t%zu\t%zu\t%zu\t%zu\t%zu\t%zu\t%.4f\t%.4f\t%.4f\t%d\t%d\t%.4f\t%.2f\t%.2f\t%.2f\t%.1f\n",
-                s.name.c_str(), s.entries, s.pulls, s.far, s.white, s.white_off, s.white_off_flat, s.black, s.black_off,
-                s.worst_ok, s.worst_seen, s.worst_seen_c, s.solid_px, s.solid_max, s.solid_reach, s.checker_pct(), s.tex.run,
-                s.tex.ratio, s.ms);
+        fprintf(f, "%s\t%u\t%u\t%u\t%u\t%zu\t%zu\t%zu\t%zu\t%zu\t%zu\t%zu\t%zu\t%.4f\t%.4f\t%.4f\t%d\t%d\t%.4f\t%.2f\t%.2f\t"
+                   "%.2f\t%.1f\n",
+                s.name.c_str(), s.entries, s.pulls1, s.pulls2, s.sends, s.play_bad, s.far, s.tint, s.white, s.white_off,
+                s.white_off_flat, s.black, s.black_off, s.worst_seen, s.worst_seen_c, s.worst_y, s.solid_px, s.solid_max,
+                s.solid_reach, s.checker_pct(), s.tex.run, s.tex.ratio, s.ms);
     fclose(f);
 }
 
@@ -969,8 +1112,8 @@ int compare(const std::string& dir, const std::vector<std::string>& cfgs)
             const int oy = GAP + static_cast<int>(c) / cols * (TH + LABEL + GAP);
             image     lab = blank(LABEL);
 #if HAVE_FREETYPE
-            const uint8_t ink[3] = {0, 0, 0};
-            if(font) ft.draw(lab, 20, 6, 22, cfgs[c].c_str(), ink);
+            const uint8_t label_c[3] = {0, 0, 0};
+            if(font) ft.draw(lab, 20, 6, 22, cfgs[c].c_str(), label_c);
 #endif
             for(int y = 0; y < LABEL; y++) memcpy(&m[(static_cast<size_t>(oy + y) * mw + ox) * 3], px(lab, 0, y), TW * 3);
             unsigned char* png = nullptr;
@@ -1004,6 +1147,8 @@ int main(int argc, char** argv)
     const auto        t0     = std::chrono::steady_clock::now();
     if(!tones_init() || !analysis_init()) return 1;
     printf("init %.1f ms\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    printf("tones_solid_gray: 174 -> %d, 200 -> %d, 0 -> %d, 255 -> %d\n", tones_solid_gray(174), tones_solid_gray(200),
+           tones_solid_gray(0), tones_solid_gray(255));
 
     std::vector<summary_row> sum;
     run(gray_ramp(), outdir, sum);
@@ -1019,14 +1164,17 @@ int main(int argc, char** argv)
         test_case tc;
         if(tone_image(argv[i], tc)) run(tc, outdir, sum);
     }
-    mix_check();
+    neutral_pairs();
+    // last: the driver model then refuses every session, and tones.cpp keeps to the stock draw
+    stock_check();
 
-    printf("\n== summary\n  test                 entries  pulls  longest          flat px    far  far iso  white off  "
-           "black off  checker   run  ratio  solid max\n");
+    printf("\n== summary\n  test                 entries  pulls  sends  play    flat px    far  far iso   tint  "
+           "white off  black off  worst seen L  worst dY  checker   run  ratio  solid max\n");
     for(auto& s : sum)
-        printf("  %-20s %7u %6u  %-16s %8zu %6zu %8zu %10zu %10zu %7.1f%% %5.1f %6.2f %10d\n", s.name.c_str(), s.entries,
-               s.pulls, s.longest.c_str(), s.flat, s.far, s.far_iso, s.white_off, s.black_off, s.checker_pct(),
-               s.tex.run, s.tex.ratio, s.solid_max);
+        printf("  %-20s %7u %3u+%-3u %5u  %4s %10zu %6zu %8zu %6zu %10zu %10zu %13.4f %9.4f %7.1f%% %5.1f %6.2f %10d\n",
+               s.name.c_str(), s.entries, s.pulls1, s.pulls2, s.sends, s.play_bad ? "FAIL" : "ok", s.flat, s.far,
+               s.far_iso, s.tint, s.white_off, s.black_off, s.worst_seen, s.worst_y, s.checker_pct(), s.tex.run,
+               s.tex.ratio, s.solid_max);
     write_summary(outdir + "/summary.tsv", sum);
     return 0;
 }

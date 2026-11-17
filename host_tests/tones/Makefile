@@ -1,9 +1,9 @@
 # Host harness for the tone dither in main/tones.cpp. Run from this directory: make run
 #
-# tones.cpp builds unchanged against the ESP-IDF stub headers in stub/ and the firmware's
-# components/epd97/epd97.h. epd_stub.cpp defines the epd97 calls tones_draw() makes. Each aborts,
-# and the harness never calls tones_draw(). FreeType from pkg-config draws the text test.
-# FREETYPE=0 builds without it. IMAGE picks the tone images.
+# tones.cpp and tone_plan.cpp build unchanged against the ESP-IDF stub headers in stub/ and the
+# firmware's components/epd97 headers. epd_stub.cpp is a model of the epd97 calls tones_draw()
+# makes: it plays no panel and checks every pull against the plan. FreeType from pkg-config draws
+# the text test. FREETYPE=0 builds without it. IMAGE picks the images.
 
 ROOT     := ../..
 OUT      := out
@@ -24,8 +24,9 @@ CXXFLAGS += $(shell pkg-config --cflags freetype2)
 LIBS     := $(shell pkg-config --libs freetype2)
 endif
 
-SRCS := tones_host.cpp epd_stub.cpp $(ROOT)/main/tones.cpp
-HDRS := $(ROOT)/main/tones.h $(ROOT)/main/tonemap.h $(ROOT)/components/epd97/epd97.h $(wildcard stub/*.h) lodepng.h
+SRCS := tones_host.cpp epd_stub.cpp $(ROOT)/main/tones.cpp $(ROOT)/main/tone_plan.cpp
+HDRS := $(ROOT)/main/tones.h $(ROOT)/main/tonemap.h $(ROOT)/main/tonemap_entries.inc $(ROOT)/main/tonemap_squeeze.h \
+        $(ROOT)/main/tone_plan.h $(wildcard $(ROOT)/components/epd97/*.h) $(wildcard stub/*.h) epd_stub.h lodepng.h
 
 # make sweep: one build per config with the dither settings of main/tones.cpp overridden, each run
 # into out/sweep/<config>/, then the side by side comparison. CFG_<config> holds the overrides.

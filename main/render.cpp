@@ -1358,6 +1358,7 @@ bool render_page(const std::string& url, int offset, uint8_t* frame, render_stat
             err = "no memory for the band buffer";
         } else
         {
+            int64_t dither_us = 0;
             for(int y0 = 0; y0 < PAGE_H; y0 += BAND_ROWS)
             {
                 int y1 = std::min(PAGE_H, y0 + BAND_ROWS);
@@ -1366,12 +1367,15 @@ bool render_page(const std::string& url, int offset, uint8_t* frame, render_stat
                 doc->draw(0, 0, static_cast<pixel_t>(-offset), &clip);
                 c.end_band(y1);
                 // page row y lands on panel row TAB_H + y
+                const int64_t td = esp_timer_get_time();
                 for(int y = y0; y < y1; y++)
                     c.q.row(&c.fb[static_cast<size_t>(y - y0) * VIEW_W * 3], TAB_H + y,
                             frame + static_cast<size_t>(TAB_H + y) * TONE_W);
+                dither_us += esp_timer_get_time() - td;
                 leds_load(5 + (y1 * 3 + PAGE_H - 1) / PAGE_H, 8); // draw fills the last three LEDs
             }
-            ok = true;
+            ok           = true;
+            st.dither_ms = static_cast<int>(dither_us / 1000);
         }
         c.free_window();
         st.draw_ms  = ms_since(t0);

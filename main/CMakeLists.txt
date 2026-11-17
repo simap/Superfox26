@@ -1,7 +1,7 @@
 # MINIMAL_BUILD is on, so every component main uses is listed here.
 idf_component_register(SRCS "main.cpp" "browser.cpp" "console.cpp" "config.cpp" "wifi.c" "fetch.cpp"
                             "url.cpp" "fonts.cpp" "image.cpp" "render.cpp" "leds.cpp" "buttons.cpp" "sizecache.cpp"
-                            "tabs.cpp" "tones.cpp"
+                            "tabs.cpp" "tones.cpp" "tone_plan.cpp"
                             "image_legacy.cpp"
                             "image_webp.cpp"
                        INCLUDE_DIRS "."
@@ -16,6 +16,11 @@ target_compile_options(${COMPONENT_LIB} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-e
 # The dither runs per pixel over the whole panel. At the project's -Os its helpers stay out of line
 # and the row loop spills around every call.
 set_source_files_properties(tones.cpp PROPERTIES COMPILE_OPTIONS "-O2")
+# tools/idf.sh -DTONES_BENCH=1 build: the firmware times the tone code at boot (tones_bench.inc) and
+# stops before the browser starts. -DTONES_BENCH=0 turns it off again, the value stays in the cache.
+if(TONES_BENCH)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE TONES_BENCH=1)
+endif()
 
 # The data partition image: a LittleFS volume built from build/fsroot, which holds the three
 # TTF faces tools/stage_fonts.py copies from the host (B26_FONT_DIR and B26_FONT_* in the

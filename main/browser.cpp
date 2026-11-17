@@ -51,7 +51,8 @@ void refresh()
     s_state = "refresh";
     tone_draw_stats ds;
     bool            ok = tones_draw(tones_frame(), &ds);
-    ESP_LOGI(TAG, "draw %s, %u steps, %u ms", ok ? "ok" : "failed", (unsigned)ds.steps, (unsigned)ds.total_ms);
+    ESP_LOGI(TAG, "draw %s, %u + %u pulls, %u ms", ok ? "ok" : "failed", (unsigned)ds.pulls1, (unsigned)ds.pulls2,
+             (unsigned)ds.total_ms);
 }
 
 // Sleeps up to ms, less when browser_next() is called. True when it was.
@@ -149,9 +150,9 @@ void browser_task(void*)
         if(ok)
             ESP_LOGI(TAG,
                      "rendered: html %u bytes, doc_h %d, offset %d, fetch %d ms, parse %d ms, layout %d ms, "
-                     "images %d ms, draw %d ms, images %u refs %u in view %u failed, PSRAM low %u",
+                     "images %d ms, draw %d ms of which dither %d ms, images %u refs %u in view %u failed, PSRAM low %u",
                      (unsigned)st.html_bytes, st.doc_h, st.offset, st.fetch_ms, st.parse_ms, st.layout_ms,
-                     st.images_ms, st.draw_ms, (unsigned)st.images, (unsigned)st.img_in_view, (unsigned)st.img_fail,
+                     st.images_ms, st.draw_ms, st.dither_ms, (unsigned)st.images, (unsigned)st.img_in_view, (unsigned)st.img_fail,
                      (unsigned)st.psram_low);
         s_index = (s_index + 1) % static_cast<int>(urls.size());
         if(!ok)

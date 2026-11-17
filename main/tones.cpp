@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 #include "esp_heap_caps.h"
@@ -11,44 +12,57 @@
 #include "esp_timer.h"
 
 #include "epd97.h"
+#include "tone_plan.h"
 #include "tonemap.h"
+#include "tonemap_squeeze.h"
 
 static const char* TAG = "tones";
 
-// The seq unit the tone map was measured at, and the erase that precedes every draw (139 frames at unit 4, measured 5.8 s with the supply cut).
-static const uint8_t TONES_UNIT    = 4;
-static const char*   TONES_ERASE   = "iiiippppiiiippppiippiippipiippppp";
-// Carried error limits in Oklab units. L spans 0.23 (black) to 1.0 (paper). The widest gap between
-// neutral entries is 0.14 in L, so the L limit must pass that. Chroma error is held tighter so a
-// run of pinks cannot build up into a red dot on a light area.
-static const float ERR_CLAMP_L = 0.25f;
-static const float ERR_CLAMP_C = 0.08f;
-// Candidates searched per coloured pixel: the entry the mapping table gives for the pixel without
-// error, and its nearest neighbours in the weighted Oklab distance. A host model of the table found
-// misses against a full search at 12 and 16 candidates on light reds, none at 24. Gray pixels search
-// the neutral entries directly.
-static const int NB = 24;
-// An error below this in every axis is dropped: a paper pixel then costs no search or diffusion.
-static const float ERR_ZERO = 1e-3f;
-// A pixel whose channels differ by more than this is a colour, not a gray, for the lightness rule.
-static const int CHROMA_MIN = 8;
-// Mapping table resolution: ink and red in 4-unit cells. TONEMAP_GRAY_MAX_RED is a multiple of 4,
-// so the gray rule is exact per cell.
-static const int LUT_N = 64;
+// Carried error limit per channel in linear light, as a share of the paper's light. Black is 0 and
+// paper 1. The widest gap between neighbouring neutral entries is 0.215 (L 0.9647 to L 0.8805), so
+// the limit passes it.
+static const float ERR_MAX = 0.25f;
+// A carried error below this in every channel counts as none: a paper pixel then costs no search
+// or diffusion.
+static const float ERR_ZERO = 1e-4f;
+// A target whose a, b chroma after the squeeze is below this is neutral. Float rounding leaves a
+// gray's chroma near 1e-7, and the squeeze sets a blue or a green to exactly 0. The palest coloured
+// entry has chroma 0.0078.
+static const float NEUTRAL_C = 1e-3f;
+// A neutral target within this Oklab L of a neutral entry is on that entry. The table gives L to 4
+// decimals, and in the midtones one gray byte is 0.003 to 0.006 in L from the next. At 0.002 a gray
+// byte lands on 20 of the 22 neutral entries. It misses L 0.676, which lies 0.002 below the entry at
+// L 0.678, and L 0.058, between bytes 0 and 1.
+static const float ON_ENTRY_L = 0.002f;
+// Candidates searched per coloured pixel: the nearest entry to its target without error, and that
+// entry's nearest neighbours in the weighted Oklab distance, itself first. The carried error moves
+// the search point far from the target where a red lies outside the entries' linear light hull. On
+// the host harness, against a search of all entries, 24 candidates change 6 to 13% of the pixels of
+// the red ramp and the colour wedges and leave seams in the wedges, 48 change 0.3% at most.
+static const int NB = 48;
+// Targets kept by RGB, 2^CACHE_BITS slots. A page has few distinct colours. In a photo the miss
+// costs one Oklab conversion, the squeeze and a nearest entry search pruned by L.
+static const int CACHE_BITS = 10;
+// Luminance of linear sRGB. A neutral pixel takes this share of each channel of its carried error.
+static const float LUMA[3] = {0.2126f, 0.7152f, 0.0722f};
+// Stock draw, for a panel without the tables: an entry is red when its a, b chroma is above
+// STOCK_RED_C (half the red reference's 0.18), else black when its L is below STOCK_BLACK_L, else
+// white.
+static const float STOCK_RED_C   = 0.09f;
+static const float STOCK_BLACK_L = 0.5f;
 
 // Dither settings. The host harness builds each combination with -D overrides and compares them
 // (host_tests/tones/README.md).
 // Kernel: KERNEL_ATKINSON (6 taps, diffuses 6/8 of the error), KERNEL_FLOYD_STEINBERG (4 taps),
 // KERNEL_JJN or KERNEL_STUCKI (12 taps). All fit the three error rows.
-// Atkinson is the page default: it keeps text and graphics edges solid (host test: 509 near-edge
-// white pixels off paper against 1709 for Stucki with the same noise). The full-error kernels are
+// Atkinson is the page default: it keeps text and graphics edges solid. The full-error kernels are
 // for photo regions, where its dropped quarter of the error shows as steps in dark gradients.
 #ifndef TONES_DITHER_KERNEL
 #define TONES_DITHER_KERNEL KERNEL_ATKINSON
 #endif
-// Threshold noise amplitude in Oklab L: the search point's L moves by up to this much from a 64x64
-// table. The carried error is formed without it, so the noise moves dots and not the mean tone.
-// 0 turns it off.
+// Threshold noise amplitude in Oklab L, coloured pixels only: the search point's L moves by up to
+// this much from a 64x64 table. The carried error is formed without it, so the noise moves dots
+// and not the mean tone. 0 turns it off.
 #ifndef TONES_DITHER_NOISE_L
 #define TONES_DITHER_NOISE_L 0.0f
 #endif
@@ -67,10 +81,8 @@ static const int LUT_N = 64;
 #ifndef TONES_DITHER_HYBRID_NEAR
 #define TONES_DITHER_HYBRID_NEAR 0.0f
 #endif
-// Share of a coloured pixel's chroma residual that is diffused. Near black the target's b lies
-// above every dark entry's b, so chroma error diffused in full builds up to ERR_CLAMP_C and pulls
-// the picks to lighter reds. On the harness dark red ramp the band L then runs up to 0.029 above
-// the target with a full-error kernel, 0.009 at 0.5.
+// Share of a coloured pixel's residual off its luminance that is diffused. The residual's
+// luminance is always diffused in full. 1 diffuses the whole residual.
 #ifndef TONES_ERR_KEEP_C
 #define TONES_ERR_KEEP_C 1.0f
 #endif
@@ -117,24 +129,40 @@ const dither_taps& KERNEL       = k_kernels[TONES_DITHER_KERNEL];
 const float        NOISE_STEP   = TONES_DITHER_NOISE_L / 128.0f; // per unit of s_noise
 const float        NOISE_REL    = TONES_DITHER_NOISE_REL / 64.0f; // per unit of s_noise, doubled
 const float        HYBRID_NEAR2 = TONES_DITHER_HYBRID_NEAR * TONES_DITHER_HYBRID_NEAR;
+const unsigned     CACHE_SLOTS  = 1u << CACHE_BITS;
 
 static_assert(static_cast<size_t>(TONE_W) * TONE_H == static_cast<size_t>(EPD_PLANE_BYTES) * 8, "frame and planes differ");
 static_assert(TONE_W == EPD_W && TONE_H == EPD_H, "frame and panel differ");
 
-float    s_lab[TONEMAP_COUNT][3];
-bool     s_neutral[TONEMAP_COUNT];
+// The target of one pixel colour, as the dither uses it. lin is the squeezed colour in linear light.
+// A neutral target has lin equal on all three channels and holds in lo and hi the two neutral
+// entries around it, lo the darker, the same entry when it is on one. A coloured target holds its
+// nearest entry in lo. key is the RGB with bit 24 set, 0 for an empty slot.
+struct target
+{
+    uint32_t key;
+    float    lin[3];
+    uint8_t  lo, hi;
+    bool     neutral;
+};
+
+float    s_lab[TONEMAP_COUNT][3]; // entry Oklab
+float    s_lin[TONEMAP_COUNT][3]; // entry linear light
 uint8_t  s_nb[TONEMAP_COUNT][NB];
-uint8_t  s_neutrals[TONEMAP_COUNT]; // the neutral entries, for gray pixels
+uint8_t  s_by_l[TONEMAP_COUNT];      // all entries, darkest first, for the nearest entry search
+uint8_t  s_neutrals[TONEMAP_COUNT];  // the neutral entries, lightest first
+float    s_neutral_l[TONEMAP_COUNT]; // and their L
 int      s_n_neutral = 0;
-uint8_t  s_lut[LUT_N][LUT_N];
-uint8_t  s_lift[256];
-float    s_lin[256];                // sRGB byte to linear
-float    s_cw[3], s_cb[3], s_cr[3]; // paper, black and red corners in Oklab
-float    s_l_min, s_l_max;
+float    s_byte_lin[256]; // sRGB byte to linear
 uint8_t  s_black = 0;
 uint8_t* s_frame = nullptr;
-bool     s_seq_ok = true; // false once the driver reported no seq tables
+bool     s_seq_ok = true; // false once the driver reported no tables
 int8_t   s_noise[NOISE_N][NOISE_N]; // threshold noise, -128 to 127, uniform
+target*  s_cache = nullptr; // CACHE_SLOTS targets in PSRAM, from tones_init()
+#ifdef TONES_BENCH
+int      s_bench_bits = CACHE_BITS; // cache index bits for tones_bench(), 0 for no cache
+uint32_t s_bench_miss = 0, s_bench_look = 0;
+#endif
 
 uint32_t hash32(uint32_t x)
 {
@@ -189,10 +217,9 @@ void build_noise()
     }
 }
 
-void oklab(uint8_t r8, uint8_t g8, uint8_t b8, float out[3])
+// Linear sRGB to Oklab and back.
+inline void lin_to_oklab(const float c[3], float out[3])
 {
-    float c[3] = {r8 / 255.0f, g8 / 255.0f, b8 / 255.0f};
-    for(float& v : c) v = v <= 0.04045f ? v / 12.92f : powf((v + 0.055f) / 1.055f, 2.4f);
     const float l = cbrtf(0.4122214708f * c[0] + 0.5363325363f * c[1] + 0.0514459929f * c[2]);
     const float m = cbrtf(0.2119034982f * c[0] + 0.6806995451f * c[1] + 0.1073969566f * c[2]);
     const float s = cbrtf(0.0883024619f * c[0] + 0.2817188376f * c[1] + 0.6299787005f * c[2]);
@@ -201,14 +228,24 @@ void oklab(uint8_t r8, uint8_t g8, uint8_t b8, float out[3])
     out[2]        = 0.0259040371f * l + 0.7827717662f * m - 0.8086757660f * s;
 }
 
-// Oklab lightness of an sRGB pixel through the linear table.
-inline float pixel_L(int r8, int g8, int b8)
+void oklab_to_lin(const float lab[3], float out[3])
 {
-    float r = s_lin[r8], g = s_lin[g8], b = s_lin[b8];
-    const float l = cbrtf(0.4122214708f * r + 0.5363325363f * g + 0.0514459929f * b);
-    const float m = cbrtf(0.2119034982f * r + 0.6806995451f * g + 0.1073969566f * b);
-    const float s = cbrtf(0.0883024619f * r + 0.2817188376f * g + 0.6299787005f * b);
-    return 0.2104542553f * l + 0.7936177850f * m - 0.0040720468f * s;
+    float l = lab[0] + 0.3963377774f * lab[1] + 0.2158037573f * lab[2];
+    float m = lab[0] - 0.1055613458f * lab[1] - 0.0638541728f * lab[2];
+    float s = lab[0] - 0.0894841775f * lab[1] - 1.2914855480f * lab[2];
+    l       = l * l * l;
+    m       = m * m * m;
+    s       = s * s * s;
+    out[0]  = 4.0767416621f * l - 3.3077115913f * m + 0.2309699292f * s;
+    out[1]  = -1.2684380046f * l + 2.6097574011f * m - 0.3413193965f * s;
+    out[2]  = -0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s;
+}
+
+// sRGB bytes to Oklab, the form tonemap_squeeze_begin() takes.
+void oklab(uint8_t r8, uint8_t g8, uint8_t b8, float out[3])
+{
+    const float c[3] = {s_byte_lin[r8], s_byte_lin[g8], s_byte_lin[b8]};
+    lin_to_oklab(c, out);
 }
 
 int entry_of(const char* pattern)
@@ -226,42 +263,91 @@ inline float dist(const float* a, const float* b)
     return dl * dl + da * da + db * db;
 }
 
-// Oklab target of an (ink, red) pair after the tone curve. ink + red <= 255.
-inline void target(int ink, int red, float t[3])
+inline float clampf(float v, float lo, float hi)
 {
-    int w = 255 - ink - red;
-    for(int i = 0; i < 3; i++) t[i] = (w * s_cw[i] + ink * s_cb[i] + red * s_cr[i]) * (1.0f / 255.0f);
+    return std::max(lo, std::min(hi, v));
 }
 
-// Nearest entry to t over all entries, neutral ones only when gray.
-unsigned nearest_all(const float t[3], bool gray)
+// The nearest entry to t over all entries. The scan starts at t's L in s_by_l and widens to the
+// side nearer in L until the L gap alone is past the best distance.
+unsigned nearest(const float t[3])
 {
-    unsigned best = 0;
-    float    bd   = 1e9f;
-    for(unsigned e = 0; e < N; e++)
+    const int n  = static_cast<int>(N);
+    int       up = static_cast<int>(
+        std::lower_bound(s_by_l, s_by_l + n, t[0], [](uint8_t e, float l) { return s_lab[e][0] < l; }) - s_by_l);
+    int      dn   = up - 1;
+    unsigned best = s_by_l[std::min(up, n - 1)];
+    float    bd   = 1e36f;
+    for(;;)
     {
-        if(gray && !s_neutral[e]) continue;
-        float d = dist(t, s_lab[e]);
+        const float gu = up < n ? s_lab[s_by_l[up]][0] - t[0] : 1e18f;
+        const float gd = dn >= 0 ? t[0] - s_lab[s_by_l[dn]][0] : 1e18f;
+        const float gap = std::min(gu, gd);
+        if(gap * gap >= bd) break;
+        const unsigned e = gu <= gd ? s_by_l[up++] : s_by_l[dn--];
+        const float    d = dist(t, s_lab[e]);
         if(d < bd) bd = d, best = e;
     }
     return best;
 }
 
-// Seq table of entry e at step k: 0 hold, 1 paper, 2 ink, 3 red. Hold past the pattern's end.
-inline int table_at(unsigned e, unsigned k)
+// The two neutral entries around L, lo the darker. Both are the same entry when L is within
+// ON_ENTRY_L of it, above the lightest or below the darkest.
+void bracket(float L, uint8_t* lo, uint8_t* hi)
 {
-    const char* p = k_tonemap[e].pattern;
-    if(k >= strlen(p)) return 0;
-    switch(p[k])
+    int k = 0;
+    while(k < s_n_neutral - 1 && s_neutral_l[k] > L + ON_ENTRY_L) k++;
+    *lo = s_neutrals[k];
+    *hi = k == 0 || L - s_neutral_l[k] <= ON_ENTRY_L ? *lo : s_neutrals[k - 1];
+}
+
+// The target of an sRGB colour: its Oklab through tonemap_squeeze(), L held at or above the black
+// entry's.
+void make_target(uint8_t r, uint8_t g, uint8_t b, target* t)
+{
+    float lab[3];
+    oklab(r, g, b, lab);
+    tonemap_squeeze(lab);
+    lab[0]     = std::max(lab[0], s_lab[s_black][0]);
+    t->neutral = lab[1] * lab[1] + lab[2] * lab[2] < NEUTRAL_C * NEUTRAL_C;
+    if(t->neutral)
     {
-    case 'p': return 1;
-    case 'i': return 2;
-    case 'r': return 3;
-    default: return 0;
+        bracket(lab[0], &t->lo, &t->hi);
+        t->lin[0] = t->lin[1] = t->lin[2] = lab[0] * lab[0] * lab[0];
+    }
+    else
+    {
+        oklab_to_lin(lab, t->lin);
+        t->lo = t->hi = static_cast<uint8_t>(nearest(lab));
     }
 }
 
-void build_planes(const uint8_t* frame, const uint8_t tab[TONEMAP_COUNT])
+inline const target& target_at(uint8_t r, uint8_t g, uint8_t b)
+{
+    const uint32_t key = 0x1000000u | static_cast<uint32_t>(r) << 16 | static_cast<uint32_t>(g) << 8 | b;
+#ifdef TONES_BENCH
+    s_bench_look++;
+    if(s_bench_bits == 0)
+    {
+        static target tmp;
+        make_target(r, g, b, &tmp);
+        s_bench_miss++;
+        return tmp;
+    }
+    target& t = s_cache[(key * 0x9e3779b1u) >> (32 - s_bench_bits)];
+    if(t.key != key) s_bench_miss++;
+#else
+    target&        t   = s_cache[(key * 0x9e3779b1u) >> (32 - CACHE_BITS)];
+#endif
+    if(t.key != key)
+    {
+        make_target(r, g, b, &t);
+        t.key = key;
+    }
+    return t;
+}
+
+void build_planes(const uint8_t* frame, const uint8_t code[TONEMAP_COUNT])
 {
     uint8_t* bw  = epd_plane_bw();
     uint8_t* red = epd_plane_red();
@@ -271,7 +357,7 @@ void build_planes(const uint8_t* frame, const uint8_t tab[TONEMAP_COUNT])
         uint8_t        b = 0, r = 0;
         for(unsigned bit = 0; bit < 8; bit++)
         {
-            int t = tab[px[bit]];
+            const uint8_t t = code[px[bit]];
             if(t & 1) b |= static_cast<uint8_t>(0x80u >> bit);
             if(t & 2) r |= static_cast<uint8_t>(0x80u >> bit);
         }
@@ -280,57 +366,138 @@ void build_planes(const uint8_t* frame, const uint8_t tab[TONEMAP_COUNT])
     }
 }
 
-// The three stock colours from the entries' measured ink and red, for a panel without seq tables.
-// Stock red is the red bit alone (plane pair 2), stock black the bw bit alone (pair 1).
+// The three stock colours, for a panel without the tables. Stock red is the red bit alone (plane
+// pair 2), stock black the bw bit alone (pair 1).
 bool draw_stock(const uint8_t* frame)
 {
-    uint8_t tab[TONEMAP_COUNT];
+    uint8_t code[TONEMAP_COUNT];
     for(unsigned e = 0; e < N; e++)
-        tab[e] = k_tonemap[e].red >= TONEMAP_REF_RED ? 2 : k_tonemap[e].ink >= TONEMAP_REF_INK ? 1 : 0;
-    build_planes(frame, tab);
+        code[e] = hypotf(s_lab[e][1], s_lab[e][2]) > STOCK_RED_C ? 2 : s_lab[e][0] < STOCK_BLACK_L ? 1 : 0;
+    build_planes(frame, code);
     return refresh_display(EPD_SLOW);
+}
+
+// A session on the phase's table, reopened when the open one differs. Phase 1 opens
+// EPD_VERB_TABLE_PHASE1 at unit 1 (the driver sets its drive), phase 2 EPD_VERB_TABLE_SEQ at
+// TONE_NUDGE_FRAMES.
+esp_err_t session_open(tone_phase ph)
+{
+    const epd_verb_table_t table = ph == TONE_PHASE_1 ? EPD_VERB_TABLE_PHASE1 : EPD_VERB_TABLE_SEQ;
+    const uint8_t          unit  = ph == TONE_PHASE_1 ? 1 : TONE_NUDGE_FRAMES;
+    if(epd_verb_is_open() && epd_verb_table() == table && (table != EPD_VERB_TABLE_SEQ || epd_verb_unit() == unit))
+        return ESP_OK;
+    return epd_verb_open_table(unit, 0, table);
+}
+
+// Every pull of phase 1, then every pull of phase 2. At pull k each counted entry plays
+// tone_plan_code(), the others code 0. The COG swaps its two plane registers after every pull, so
+// a pull without a plane send plays the planes of two pulls back. A pull skips the send only when
+// it is not the first of its phase and every counted entry's code is 0 or 3 and equals its code at
+// the pull before. ESP_ERR_NOT_SUPPORTED only when the first session open reports it, with nothing
+// played. The caller closes the session.
+esp_err_t play(const uint8_t* frame, const uint32_t count[TONEMAP_COUNT], tone_draw_stats* st)
+{
+    tone_plan plan;
+    if(!tone_plan_build(count, &plan))
+    {
+        ESP_LOGE(TAG, "no plan: the tone map is not expanded");
+        return ESP_ERR_INVALID_STATE;
+    }
+    uint8_t code[TONEMAP_COUNT], prev[TONEMAP_COUNT];
+    memset(prev, 0, sizeof(prev));
+    bool opened = false;
+    for(int p = 0; p < TONE_PHASE_COUNT; p++)
+    {
+        const tone_phase ph  = static_cast<tone_phase>(p);
+        const unsigned   len = plan.len[ph];
+        if(len == 0) continue;
+        const int64_t t1  = esp_timer_get_time();
+        esp_err_t     err = session_open(ph);
+        st->open_ms += static_cast<uint32_t>((esp_timer_get_time() - t1) / 1000);
+        if(err != ESP_OK)
+        {
+            if(err == ESP_ERR_NOT_SUPPORTED && !opened) return err;
+            ESP_LOGE(TAG, "phase %d open failed: %s", p + 1, esp_err_to_name(err));
+            return err == ESP_ERR_NOT_SUPPORTED ? ESP_FAIL : err;
+        }
+        opened = true;
+        for(unsigned k = 0; k < len; k++)
+        {
+            bool repeat = k > 0;
+            for(unsigned e = 0; e < N; e++)
+            {
+                if(!count[e])
+                {
+                    code[e] = 0;
+                    continue;
+                }
+                code[e] = tone_plan_code(plan, e, ph, k);
+                if(code[e] != prev[e] || (code[e] != 0 && code[e] != 3)) repeat = false;
+            }
+            uint32_t ms = 0;
+            if(repeat) err = epd_verb_pull(1, false, &ms);
+            else
+            {
+                build_planes(frame, code);
+                err = epd_verb_pass(1, &ms);
+                st->sends++;
+            }
+            st->pull_ms += ms;
+            memcpy(prev, code, sizeof(prev));
+            if(err != ESP_OK)
+            {
+                ESP_LOGE(TAG, "phase %d pull %u of %u failed: %s", p + 1, k + 1, len, esp_err_to_name(err));
+                return err;
+            }
+            (ph == TONE_PHASE_1 ? st->pulls1 : st->pulls2)++;
+        }
+    }
+    return ESP_OK;
 }
 } // namespace
 
 bool tones_init()
 {
+    char why[192];
+    if(!tone_plan_init(why, sizeof(why)))
+    {
+        ESP_LOGE(TAG, "tone map refused: %s", why);
+        return false;
+    }
+    for(int v = 0; v < 256; v++)
+    {
+        const float c = v / 255.0f;
+        s_byte_lin[v] = c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
+    }
+    const int eb = entry_of(TONEMAP_BLACK_PATTERN);
+    if(eb < 0 || strcmp(k_tonemap[TONE_PAPER].pattern, TONEMAP_PAPER_PATTERN) != 0)
+    {
+        ESP_LOGE(TAG, "tone map lacks the black entry, or paper is not entry %d", TONE_PAPER);
+        return false;
+    }
+    s_black     = static_cast<uint8_t>(eb);
     s_n_neutral = 0;
     for(unsigned e = 0; e < N; e++)
     {
-        oklab(k_tonemap[e].r, k_tonemap[e].g, k_tonemap[e].b, s_lab[e]);
-        s_neutral[e] = s_lab[e][1] <= TONEMAP_GRAY_A_MAX;
-        if(s_neutral[e]) s_neutrals[s_n_neutral++] = static_cast<uint8_t>(e);
-    }
-    // lightest first, so a gray's bracketing pair is found by one scan
-    std::sort(s_neutrals, s_neutrals + s_n_neutral, [](uint8_t a, uint8_t b) { return s_lab[a][0] > s_lab[b][0]; });
-    int eb = entry_of("iiiii"), er = entry_of(TONEMAP_CIE_RED_PATTERN);
-    if(eb < 0 || er < 0 || entry_of("") != TONE_PAPER)
-    {
-        ESP_LOGE(TAG, "tone map lacks a corner entry, or paper is not entry %d", TONE_PAPER);
-        return false;
-    }
-    s_black = static_cast<uint8_t>(eb);
-    memcpy(s_cw, s_lab[TONE_PAPER], sizeof(s_cw));
-    memcpy(s_cb, s_lab[eb], sizeof(s_cb));
-    memcpy(s_cr, s_lab[er], sizeof(s_cr));
-    s_l_min = s_cb[0];
-    s_l_max = s_cw[0];
-    for(int v = 0; v < 256; v++)
-    {
-        s_lift[v] = static_cast<uint8_t>(255.0f * powf(v / 255.0f, TONEMAP_GAMMA) + 0.5f);
-        float c   = v / 255.0f;
-        s_lin[v]  = c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
-    }
-
-    for(int i = 0; i < LUT_N; i++)
-        for(int r = 0; r < LUT_N; r++)
+        const tone_entry& t = k_tonemap[e];
+        s_lab[e][0] = t.L, s_lab[e][1] = t.a, s_lab[e][2] = t.b;
+        oklab_to_lin(s_lab[e], s_lin[e]);
+        s_by_l[e] = static_cast<uint8_t>(e);
+        // Any r or R pull makes a pink, so only a pattern without them is neutral. The table gives
+        // such an entry a and b of 0, and the neutral path takes its light as L cubed.
+        if(strpbrk(t.pattern, "rR")) continue;
+        if(t.a != 0.0f || t.b != 0.0f)
         {
-            int   ink = std::min(255, i * 4 + 2), red = std::min(255, r * 4 + 2);
-            if(ink + red > 255) red = 255 - ink;
-            float t[3];
-            target(ink, red, t);
-            s_lut[i][r] = static_cast<uint8_t>(nearest_all(t, red < TONEMAP_GRAY_MAX_RED));
+            ESP_LOGE(TAG, "neutral entry %u (%s) has a %.4f b %.4f, not 0", e, t.pattern, static_cast<double>(t.a),
+                     static_cast<double>(t.b));
+            return false;
         }
+        s_lin[e][0] = s_lin[e][1] = s_lin[e][2] = t.L * t.L * t.L;
+        s_neutrals[s_n_neutral++] = static_cast<uint8_t>(e);
+    }
+    std::sort(s_neutrals, s_neutrals + s_n_neutral, [](uint8_t a, uint8_t b) { return s_lab[a][0] > s_lab[b][0]; });
+    for(int k = 0; k < s_n_neutral; k++) s_neutral_l[k] = s_lab[s_neutrals[k]][0];
+    std::sort(s_by_l, s_by_l + N, [](uint8_t a, uint8_t b) { return s_lab[a][0] < s_lab[b][0]; });
 
     for(unsigned e = 0; e < N; e++)
     {
@@ -341,17 +508,21 @@ bool tones_init()
         std::sort(d.begin(), d.end());
         for(int k = 0; k < NB; k++) s_nb[e][k] = static_cast<uint8_t>(d[k].second);
     }
+    tonemap_squeeze_begin(oklab);
     build_noise();
 
-    s_frame = static_cast<uint8_t*>(heap_caps_malloc(static_cast<size_t>(TONE_W) * TONE_H, MALLOC_CAP_SPIRAM));
+    // Both in PSRAM: the browser task needs its stack as one block of internal RAM.
+    if(!s_cache) s_cache = static_cast<target*>(heap_caps_malloc(CACHE_SLOTS * sizeof(target), MALLOC_CAP_SPIRAM));
     if(!s_frame)
+        s_frame = static_cast<uint8_t*>(heap_caps_malloc(static_cast<size_t>(TONE_W) * TONE_H, MALLOC_CAP_SPIRAM));
+    if(!s_cache || !s_frame)
     {
-        ESP_LOGE(TAG, "no PSRAM for the frame");
+        ESP_LOGE(TAG, "no PSRAM for the frame or the target cache");
         return false;
     }
+    memset(s_cache, 0, CACHE_SLOTS * sizeof(target));
     memset(s_frame, TONE_PAPER, static_cast<size_t>(TONE_W) * TONE_H);
-    ESP_LOGI(TAG, "%u entries, paper L %.2f, black L %.2f, red L %.2f a %.2f, gamma %.2f", N, s_cw[0], s_cb[0],
-             s_cr[0], s_cr[1], static_cast<double>(TONEMAP_GAMMA));
+    ESP_LOGI(TAG, "%u entries, %d neutral, black entry %u", N, s_n_neutral, (unsigned)s_black);
     return true;
 }
 
@@ -362,21 +533,20 @@ uint8_t tones_black()
 
 int tones_solid_gray(int g)
 {
-    auto gray_l = [](int v) {
-        float t[3];
-        target(s_lift[255 - std::max(0, std::min(255, v))], 0, t);
-        return t[0];
-    };
-    // the neutral entry nearest to g's target, then the gray whose target is nearest to that entry
-    float    l    = gray_l(g);
-    unsigned best = s_neutrals[0];
-    for(int k = 1; k < s_n_neutral; k++)
-        if(fabsf(s_lab[s_neutrals[k]][0] - l) < fabsf(s_lab[best][0] - l)) best = s_neutrals[k];
+    g = std::max(0, std::min(255, g));
+    target tg;
+    make_target(static_cast<uint8_t>(g), static_cast<uint8_t>(g), static_cast<uint8_t>(g), &tg);
+    const float l = cbrtf(tg.lin[0]);
+    // Of the grays whose target is on a neutral entry, the one whose entry is nearest to g's target
+    // in L, then nearest to g.
     int   out = g;
     float bd  = 1e9f;
     for(int v = 0; v < 256; v++)
     {
-        float d = fabsf(gray_l(v) - s_lab[best][0]);
+        target t;
+        make_target(static_cast<uint8_t>(v), static_cast<uint8_t>(v), static_cast<uint8_t>(v), &t);
+        if(!t.neutral || t.lo != t.hi) continue;
+        const float d = fabsf(s_lab[t.lo][0] - l) + 1e-6f * static_cast<float>(abs(v - g));
         if(d < bd) bd = d, out = v;
     }
     return out;
@@ -410,78 +580,63 @@ void tone_dither::row(const uint8_t* c, int y, uint8_t* out)
     int           d     = (y & 1) ? -1 : 1;
     for(int i = 0; i < w; i++)
     {
-        int x  = d > 0 ? i : w - 1 - i;
-        int r  = c[3 * x], g = c[3 * x + 1], b = c[3 * x + 2];
-        int mx  = std::max(r, std::max(g, b));
-        int mn  = std::min(r, std::min(g, b));
-        int ink = 255 - mx;
-        int red = std::max(0, r - std::max(g, b));
-        // A colour that is neither neutral nor red-dominant (blue, green, purple) has only its brightest
-        // channel in the ink rule and would land near paper. Its ink is raised until the target lightness
-        // equals the pixel's own Oklab lightness, so blue text reads as a dark gray. Grays and reds keep
-        // the judged mapping.
-        if(red == 0 && mx - mn > CHROMA_MIN)
+        const int     x = d > 0 ? i : w - 1 - i;
+        const uint8_t r = c[3 * x], g = c[3 * x + 1], b = c[3 * x + 2];
+        const float*  e = cur + (x + 2) * 3;
+        float         ec[3];
+        bool          none = true;
+        for(int k = 0; k < 3; k++)
         {
-            int by_l = static_cast<int>(255.0f * (s_l_max - pixel_L(r, g, b)) / (s_l_max - s_l_min) + 0.5f);
-            ink      = std::max(ink, std::min(255, by_l));
+            ec[k] = clampf(e[k], -ERR_MAX, ERR_MAX);
+            none  = none && fabsf(ec[k]) < ERR_ZERO;
         }
-        ink = s_lift[ink];
-        if(ink + red > 255) red = 255 - ink;
-        bool   gray = red < TONEMAP_GRAY_MAX_RED;
-        float* e    = cur + (x + 2) * 3;
         // paper with no carried error: the common case on a text page
-        if(mx == 255 && red == 0 && fabsf(e[0]) < ERR_ZERO && fabsf(e[1]) < ERR_ZERO && fabsf(e[2]) < ERR_ZERO)
+        if(none && (r & g & b) == 255)
         {
             out[x] = TONE_PAPER;
             continue;
         }
-        float t[3];
-        target(ink, red, t);
-
-        float el = std::max(-ERR_CLAMP_L, std::min(ERR_CLAMP_L, e[0]));
-        el       = std::max(s_l_min - t[0], std::min(s_l_max - t[0], el));
-        float v[3] = {t[0] + el, t[1], t[2]};
-        // A gray pixel carries only lightness error: neutral entries cannot pay chroma back, so a
-        // carried tint would only bias which gray is picked and ride through to the next colour.
-        if(!gray)
+        const target& t  = target_at(r, g, b);
+        const int     nz = noise[x & (NOISE_N - 1)];
+        unsigned      best;
+        float         res[3];
+        float         q[3] = {0.0f, 0.0f, 0.0f}; // the search point in Oklab
+        if(t.neutral)
         {
-            v[1] += std::max(-ERR_CLAMP_C, std::min(ERR_CLAMP_C, e[1]));
-            v[2] += std::max(-ERR_CLAMP_C, std::min(ERR_CLAMP_C, e[2]));
-        }
-
-        // A pixel whose target is paper or black takes no noise. Its dots come from carried error
-        // alone, so text and the paper around it stay clean.
-        const int nz = (ink == 0 && red == 0) || ink == 255 ? 0 : noise[x & (NOISE_N - 1)];
-        unsigned  best;
-        if(gray)
-        {
-            // A gray mixes only the two neutral entries that bracket its target, and the carried error
-            // is held inside that pair. A pixel on an entry stays on it, and no error from an edge can
-            // turn into a dot of a tone two steps away.
-            int k = 0;
-            while(k < s_n_neutral - 1 && s_lab[s_neutrals[k]][0] > t[0]) k++;
-            unsigned lo = s_neutrals[k], hi = s_neutrals[k > 0 ? k - 1 : 0];
-            // below the darkest entry, or exactly on an entry (black text, a solid fill): no mixing
-            if(s_lab[lo][0] > t[0] || t[0] - s_lab[lo][0] < 1e-4f) hi = lo;
-            v[0] = std::max(s_lab[lo][0], std::min(s_lab[hi][0], v[0]));
-            if(lo == hi) best = lo;
-            else
+            // A neutral pixel mixes only the two neutral entries around its target, and the carried
+            // error is held inside that pair. A pixel on an entry takes it and leaves no error, so
+            // black text and a solid fill stay solid and no error from an edge can turn into a dot of
+            // a tone two steps away. Neutral entries cannot pay a tint back, so the pixel carries the
+            // luminance of the error alone.
+            if(t.lo == t.hi)
             {
-                float dlo = v[0] - s_lab[lo][0], dhi = s_lab[hi][0] - v[0];
-                float gap = s_lab[hi][0] - s_lab[lo][0];
-                best      = dlo - dhi + NOISE_REL * nz * gap > 0 ? hi : lo;
+                out[x] = t.lo;
+                continue;
             }
-        } else
+            const float lo = s_lin[t.lo][0], hi = s_lin[t.hi][0];
+            const float v  = clampf(t.lin[0] + LUMA[0] * ec[0] + LUMA[1] * ec[1] + LUMA[2] * ec[2], lo, hi);
+            // The decision point: the pair's midpoint in Oklab L, moved by the noise, compared in
+            // linear light as its cube.
+            const float llo = s_lab[t.lo][0], lhi = s_lab[t.hi][0];
+            const float m   = 0.5f * (llo + lhi - NOISE_REL * nz * (lhi - llo));
+            best            = v > m * m * m ? t.hi : t.lo;
+            res[0] = res[1] = res[2] = v - s_lin[best][0];
+            if(HYBRID_NEAR2 > 0) q[0] = cbrtf(v), q[1] = q[2] = 0.0f;
+        }
+        else
         {
-            const uint8_t* cand = s_nb[s_lut[ink >> 2][red >> 2]];
+            float v[3];
+            for(int k = 0; k < 3; k++) v[k] = clampf(t.lin[k] + ec[k], 0.0f, 1.0f);
+            lin_to_oklab(v, q);
+            const uint8_t* cand = s_nb[t.lo];
             unsigned       next = cand[0];
             float          bd = 1e9f, nd = 1e9f;
-            float          q[3] = {v[0] + NOISE_STEP * nz, v[1], v[2]};
+            const float    p[3] = {q[0] + NOISE_STEP * nz, q[1], q[2]};
             best                = cand[0];
             for(int k = 0; k < NB; k++)
             {
                 unsigned f  = cand[k];
-                float    dd = dist(q, s_lab[f]);
+                float    dd = dist(p, s_lab[f]);
                 if(dd < bd) nd = bd, next = best, bd = dd, best = f;
                 else if(dd < nd) nd = dd, next = f;
             }
@@ -494,14 +649,17 @@ void tone_dither::row(const uint8_t* c, int y, uint8_t* out)
                 if(s_lab[lo][0] > s_lab[hi][0]) std::swap(lo, hi), std::swap(dlo, dhi);
                 best = dlo - dhi + NOISE_REL * nz * dist(s_lab[lo], s_lab[hi]) > 0 ? hi : lo;
             }
+            for(int k = 0; k < 3; k++) res[k] = v[k] - s_lin[best][k];
+            if(TONES_ERR_KEEP_C != 1.0f)
+            {
+                const float yl = LUMA[0] * res[0] + LUMA[1] * res[1] + LUMA[2] * res[2];
+                for(float& rk : res) rk = yl + TONES_ERR_KEEP_C * (rk - yl);
+            }
         }
         out[x] = static_cast<uint8_t>(best);
 
-        const float kc     = TONES_ERR_KEEP_C;
-        float       res[3] = {v[0] - s_lab[best][0], gray ? 0.0f : (v[1] - s_lab[best][1]) * kc,
-                              gray ? 0.0f : (v[2] - s_lab[best][2]) * kc};
         const dither_taps& kt =
-            HYBRID_NEAR2 > 0 && dist(v, s_lab[best]) < HYBRID_NEAR2 ? k_kernels[KERNEL_ATKINSON] : KERNEL;
+            HYBRID_NEAR2 > 0 && dist(q, s_lab[best]) < HYBRID_NEAR2 ? k_kernels[KERNEL_ATKINSON] : KERNEL;
         for(int j = 0; j < kt.n; j++)
         {
             const dither_tap& tp = kt.t[j];
@@ -520,98 +678,34 @@ bool tones_draw(const uint8_t* frame, tone_draw_stats* st)
 {
     tone_draw_stats local;
     if(!st) st = &local;
-    *st        = tone_draw_stats();
-    int64_t t0 = esp_timer_get_time();
+    *st              = tone_draw_stats();
+    const int64_t t0 = esp_timer_get_time();
 
     uint32_t count[TONEMAP_COUNT] = {0};
     for(size_t p = 0; p < static_cast<size_t>(TONE_W) * TONE_H; p++) count[frame[p]]++;
-    unsigned steps = 0;
-    for(unsigned e = 0; e < N; e++)
-    {
-        if(!count[e]) continue;
-        st->entries++;
-        steps = std::max(steps, static_cast<unsigned>(strlen(k_tonemap[e].pattern)));
-    }
+    for(unsigned e = 0; e < N; e++) st->entries += count[e] != 0;
 
-    if(!s_seq_ok)
+    bool ok = false;
+    if(s_seq_ok)
     {
-        bool ok      = draw_stock(frame);
-        st->total_ms = static_cast<uint32_t>((esp_timer_get_time() - t0) / 1000);
-        return ok;
-    }
-
-    epd_erase_stats_t es;
-    esp_err_t         err = epd_verb_erase(TONES_ERASE, TONES_UNIT, &es);
-    if(err == ESP_ERR_NOT_SUPPORTED)
-    {
-        ESP_LOGW(TAG, "panel has no seq tables, drawing the three stock colours");
-        s_seq_ok     = false;
-        bool ok      = draw_stock(frame);
-        st->total_ms = static_cast<uint32_t>((esp_timer_get_time() - t0) / 1000);
-        return ok;
-    }
-    if(err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "erase failed: %s", esp_err_to_name(err));
-        st->total_ms = static_cast<uint32_t>((esp_timer_get_time() - t0) / 1000);
-        return false;
-    }
-    st->erase_ms = es.pull_ms;
-    if(steps == 0)
-    {
-        // an all-paper frame: the erase is the whole draw
+        const esp_err_t err = play(frame, count, st);
+        epd_verb_close();
         epd_clear();
-        st->total_ms = static_cast<uint32_t>((esp_timer_get_time() - t0) / 1000);
-        return true;
-    }
-
-    int64_t t1 = esp_timer_get_time();
-    err        = epd_verb_open_table(TONES_UNIT, 0, EPD_VERB_TABLE_SEQ);
-    if(err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "seq open failed: %s", esp_err_to_name(err));
-        st->total_ms = static_cast<uint32_t>((esp_timer_get_time() - t0) / 1000);
-        return false;
-    }
-    st->open_ms = static_cast<uint32_t>((esp_timer_get_time() - t1) / 1000);
-
-    // Every pixel plays character k of its entry's pattern, hold past its end. The COG swaps its two
-    // plane registers after every pull, so a pull without a send repeats the planes from two pulls
-    // back. The send is skipped only when every used entry has the same table at k and k - 1 and that
-    // table is hold or red.
-    uint8_t tab[TONEMAP_COUNT], prev[TONEMAP_COUNT];
-    bool    ok = true;
-    for(unsigned k = 0; k < steps; k++)
-    {
-        bool repeat = k > 0;
-        for(unsigned e = 0; e < N; e++)
+        if(err == ESP_ERR_NOT_SUPPORTED)
         {
-            tab[e] = static_cast<uint8_t>(table_at(e, k));
-            if(repeat && count[e] && !(tab[e] == prev[e] && (tab[e] == 0 || tab[e] == 3))) repeat = false;
+            ESP_LOGW(TAG, "panel has no tables, drawing the three stock colours");
+            s_seq_ok = false;
         }
-        uint32_t ms = 0;
-        if(repeat) err = epd_verb_pull(1, false, &ms);
-        else
-        {
-            build_planes(frame, tab);
-            err = epd_verb_pass(1, &ms);
-            st->sends++;
-        }
-        st->pull_ms += ms;
-        st->steps = k + 1;
-        memcpy(prev, tab, sizeof(prev));
-        if(err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "step %u of %u failed: %s", k + 1, steps, esp_err_to_name(err));
-            ok = false;
-            break;
-        }
+        ok = err == ESP_OK;
     }
-    epd_verb_close();
-    epd_clear();
+    if(!s_seq_ok) ok = draw_stock(frame);
     st->total_ms = static_cast<uint32_t>((esp_timer_get_time() - t0) / 1000);
-    ESP_LOGI(TAG, "draw: %u entries, %u steps, %u sends, erase %u ms, open %u ms, pulls %u ms, total %u ms",
-             (unsigned)st->entries, (unsigned)st->steps, (unsigned)st->sends, (unsigned)st->erase_ms,
-             (unsigned)st->open_ms, (unsigned)st->pull_ms, (unsigned)st->total_ms);
+    ESP_LOGI(TAG, "draw %s: %u entries, %u + %u pulls, %u sends, open %u ms, pulls %u ms, total %u ms",
+             ok ? "ok" : "failed", (unsigned)st->entries, (unsigned)st->pulls1, (unsigned)st->pulls2,
+             (unsigned)st->sends, (unsigned)st->open_ms, (unsigned)st->pull_ms, (unsigned)st->total_ms);
     return ok;
 }
+
+#ifdef TONES_BENCH
+#include "tones_bench.inc"
+#endif

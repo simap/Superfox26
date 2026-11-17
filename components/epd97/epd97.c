@@ -156,9 +156,6 @@ static bool      s_verb_open;
 static uint8_t   s_verb_unit;
 static bool      s_verb_red;          // a pass in this session sent red plane bits
 static epd_verb_table_t s_verb_table;
-// BUSY ceiling for one pull of the open verb session. The erase table sets it
-// from its frame count.
-static uint32_t  s_verb_busy_ms = EPD_VERB_BUSY_MS;
 
 static uint32_t  s_power_off_ms;
 static bool      s_power_off_valid;
@@ -1454,48 +1451,20 @@ static esp_err_t verb_check(uint8_t unit_frames)
 static const char* verb_table_name(epd_verb_table_t table)
 {
   switch (table) {
-    case EPD_VERB_TABLE_SEQ:   return "seq";
-    case EPD_VERB_TABLE_ERASE: return "erase";
-    default:                   return "verb";
+    case EPD_VERB_TABLE_SEQ:    return "seq";
+    case EPD_VERB_TABLE_PHASE1: return "phase1";
+    default:                    return "verb";
   }
 }
 
-// One line per group of the erase table in s_verb_lut: level and frames per
-// played phase, "-" for a skipped one. The seq ground records at the end
-// share one line.
-static void erase_log_groups(void)
-{
-  static const char* const k_lvl[4] = { "GND", "VDH", "VDL", "VDHR" };
-  static const uint8_t k_ground[8] = { 0x00, 1, 1, 0, 1, 0, 1, 1 };
-  unsigned used = 10u;
-  while (used > 0u && memcmp(&s_verb_lut[(used - 1u) * 8u], k_ground, 8u) == 0) used--;
-  for (unsigned g = 0; g < used; g++) {
-    const uint8_t* q = &s_verb_lut[g * 8u];
-    char ph[4][16];
-    const unsigned cnt[4] = { q[1], q[2], q[4], q[5] };
-    for (unsigned p = 0; p < 4u; p++) {
-      const bool played = (p < 2u) ? (q[3] != 0u) : (p == 2u || q[5] != 0u);
-      if (played) {
-        snprintf(ph[p], sizeof ph[p], "%s %u", k_lvl[(q[0] >> (6u - 2u * p)) & 3u], cnt[p]);
-      } else {
-        snprintf(ph[p], sizeof ph[p], "-");
-      }
-    }
-    LOGF("erase g%u: A %s, B %s, C %s, D %s", g, ph[0], ph[1], ph[2], ph[3]);
-  }
-  if (used < 10u) LOGF("erase g%u to g9: C GND 1, A B D skipped", used);
-}
-
-// epd_verb_open_ex() with the erase pattern. pattern is read only for
-// EPD_VERB_TABLE_ERASE.
-static esp_err_t verb_open(uint8_t unit_frames, uint8_t vcom_level,
-                           epd_verb_table_t table, bool with_planes, const char* pattern)
+esp_err_t epd_verb_open_ex(uint8_t unit_frames, uint8_t vcom_level,
+                           epd_verb_table_t table, bool with_planes)
 {
   const esp_err_t pre = verb_check(unit_frames);
   if (pre != ESP_OK) return pre;
   if (vcom_level > 3u) return ESP_ERR_INVALID_ARG;
   if (table != EPD_VERB_TABLE_VERB && table != EPD_VERB_TABLE_SEQ &&
-      table != EPD_VERB_TABLE_ERASE) {
+      table != EPD_VERB_TABLE_PHASE1) {
     return ESP_ERR_INVALID_ARG;
   }
 
@@ -1505,18 +1474,14 @@ static esp_err_t verb_open(uint8_t unit_frames, uint8_t vcom_level,
     if (unit_frames > EPD_SEQ_UNIT_MAX) return ESP_ERR_INVALID_ARG;
     epd_build_lutb_seq(s_verb_lut, unit_frames);
     frames = epd_lutb_seq_frames(s_verb_lut);
-  } else if (table == EPD_VERB_TABLE_ERASE) {
+  } else if (table == EPD_VERB_TABLE_PHASE1) {
     vcom_level = 0;
-    const uint32_t built = epd_build_lutb_erase(s_verb_lut, pattern, unit_frames);
-    if (built == 0u) {
-      LOGF("erase pattern rejected: empty, not p and i only, or over %u phases at unit %u",
-           (unsigned)EPD_ERASE_PHASES, (unsigned)unit_frames);
-      return ESP_ERR_INVALID_ARG;
-    }
-    frames = epd_lutb_erase_frames(s_verb_lut);
-    if (frames != built) {
-      LOGF("erase table failed its shape check (%u against %u frames), not sent",
-           (unsigned)frames, (unsigned)built);
+    unit_frames = EPD_PHASE1_DRIVE;
+    epd_build_lutb_phase1(s_verb_lut);
+    frames = epd_lutb_phase1_frames(s_verb_lut);
+    if (frames != (uint32_t)EPD_PHASE1_PULL_FRAMES) {
+      LOGF("phase 1 table plays %u frames, the planner expects %u, not sent", (unsigned)frames,
+           (unsigned)EPD_PHASE1_PULL_FRAMES);
       return ESP_ERR_INVALID_STATE;
     }
   } else {
@@ -1526,11 +1491,6 @@ static esp_err_t verb_open(uint8_t unit_frames, uint8_t vcom_level,
   if (frames == 0u) {
     LOGF("verb table has a zero or uneven count, not sent");
     return ESP_ERR_INVALID_STATE;
-  }
-  s_verb_busy_ms = EPD_VERB_BUSY_MS;
-  if (table == EPD_VERB_TABLE_ERASE) {
-    s_verb_busy_ms = (uint32_t)(((uint64_t)frames * EPD_B_FRAME_US / 1000u) *
-                                EPD_ERASE_BUSY_PCT / 100u) + EPD_ERASE_BUSY_PAD_MS;
   }
 
   // The panel latches one table per session, so any open session ends here.
@@ -1557,8 +1517,9 @@ static esp_err_t verb_open(uint8_t unit_frames, uint8_t vcom_level,
     return ESP_FAIL;
   }
 
-  // Both planes zero select table 0 for every pixel, so the session opens on
-  // hold. write_plane() sends the window registers ahead of the bw plane.
+  // Both planes zero select code 0 for every pixel. That is hold on the verb
+  // and seq sets and S on the phase 1 set, and nothing is driven before the
+  // first pull. write_plane() sends the window registers ahead of the bw plane.
   // with_planes sends the caller's planes here instead, before the latch.
   write_plane(0x10, with_planes ? s_bw : NULL, NULL);
   write_plane(0x13, with_planes ? s_red : NULL, NULL);
@@ -1592,18 +1553,16 @@ static esp_err_t verb_open(uint8_t unit_frames, uint8_t vcom_level,
        (unsigned)((frames * EPD_B_FRAME_US) / 1000u),
        (unsigned)(EPD_B_FRAME_US / 1000u), (unsigned)((EPD_B_FRAME_US % 1000u) / 100u),
        (unsigned)(now_ms() - t0));
-  if (table == EPD_VERB_TABLE_ERASE) {
-    LOGF("erase pattern %s, every pixel table drives the same, VCOM at ground, "
-         "BUSY ceiling %u ms", pattern, (unsigned)s_verb_busy_ms);
-    erase_log_groups();
-    return ESP_OK;
-  }
   if (table == EPD_VERB_TABLE_SEQ) {
     LOGF("seq tables: 0 hold, 1 paper VDL, 2 ink VDH, %u driven of %u frames. "
-         "3 red fixed: VDL every %u frames, %u VDL and %u VDHR. One frame a group, "
-         "phase C only",
-         (unsigned)unit_frames, (unsigned)EPD_SEQ_PULL_FRAMES,
-         (unsigned)EPD_SEQ_RED_PERIOD, (unsigned)EPD_SEQ_RED_VDL, (unsigned)EPD_SEQ_RED_VDHR);
+         "3 w: %u VDHR then ground. One frame a group, phase C only",
+         (unsigned)unit_frames, (unsigned)EPD_SEQ_PULL_FRAMES, (unsigned)EPD_SEQ_W_FRAMES);
+    return ESP_OK;
+  }
+  if (table == EPD_VERB_TABLE_PHASE1) {
+    LOGF("phase 1 tables: 0 S shake 6 VDH 6 VDL, 1 I %u VDH, 2 P %u VDL, 3 M 8 VDL 4 VDH, "
+         "no hold, slotted, %u frames a pull",
+         (unsigned)EPD_PHASE1_DRIVE, (unsigned)EPD_PHASE1_DRIVE, (unsigned)EPD_PHASE1_PULL_FRAMES);
     return ESP_OK;
   }
   // Net field per verb, source minus VCOM, as epd_build_lutb_verb() sets it.
@@ -1615,57 +1574,6 @@ static esp_err_t verb_open(uint8_t unit_frames, uint8_t vcom_level,
     LOGF("vcom %s: hold 0, push VDH-%s, pull VDL-%s, weak pull -%s", vc, vc, vc, vc);
   }
   return ESP_OK;
-}
-
-esp_err_t epd_verb_open_ex(uint8_t unit_frames, uint8_t vcom_level,
-                           epd_verb_table_t table, bool with_planes)
-{
-  if (table == EPD_VERB_TABLE_ERASE) return ESP_ERR_INVALID_ARG;
-  return verb_open(unit_frames, vcom_level, table, with_planes, NULL);
-}
-
-esp_err_t epd_verb_erase(const char* pattern, uint8_t unit, epd_erase_stats_t* stats)
-{
-  epd_erase_stats_t st = { 0 };
-  if (stats) *stats = st;
-  esp_err_t err = verb_check(unit);
-  if (err != ESP_OK) return err;
-  // Checked before anything closes, so a bad pattern leaves an open session
-  // as it is.
-  static uint8_t probe[LUTB_BYTES];
-  st.frames = epd_build_lutb_erase(probe, pattern, unit);
-  if (st.frames == 0u) {
-    LOGF("erase pattern rejected: empty, not p and i only, or over %u phases at unit %u",
-         (unsigned)EPD_ERASE_PHASES, (unsigned)unit);
-    return ESP_ERR_INVALID_ARG;
-  }
-
-  uint32_t t = now_ms();
-  if (s_verb_open) {
-    epd_verb_close();
-    st.prev_close_ms = now_ms() - t;
-  }
-
-  t = now_ms();
-  err = verb_open(unit, 0, EPD_VERB_TABLE_ERASE, false, pattern);
-  if (err != ESP_OK) {
-    if (stats) *stats = st;
-    return err;
-  }
-  st.open_ms = now_ms() - t;
-
-  // The planes went out as zero at open, and the table ignores them.
-  err = epd_verb_pull(1, false, &st.pull_ms);
-  if (err == ESP_OK) {
-    t = now_ms();
-    epd_verb_close();
-    st.close_ms = now_ms() - t;
-  }
-  LOGF("erase %s: %u frames, close before %u ms, open %u ms, pull %u ms, close %u ms",
-       err == ESP_OK ? "done" : "FAILED", (unsigned)st.frames, (unsigned)st.prev_close_ms,
-       (unsigned)st.open_ms, (unsigned)st.pull_ms, (unsigned)st.close_ms);
-  if (stats) *stats = st;
-  return err;
 }
 
 esp_err_t epd_verb_pass(unsigned pulls, uint32_t *panel_ms_total)
@@ -1698,7 +1606,7 @@ esp_err_t epd_verb_pull(unsigned pulls, bool resend, uint32_t *panel_ms_total)
   unsigned done = 0;
   int rc = 0;
   for (unsigned i = 0; i < pulls; i++) {
-    rc = retrigger(s_verb_busy_ms);
+    rc = retrigger(EPD_VERB_BUSY_MS);
     if (rc != 0) break;
     total += s_last_panel_ms;
     done++;

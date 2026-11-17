@@ -2,14 +2,16 @@
 
 ESP-IDF project for the Supercon 2026 badge. Fetches a list of web pages in turn, renders each with
 the litehtml fork into a 960 x 672 tone frame and draws it on the three pigment panel through the
-measured tone map: 97 measured tones from paper through grays and pinks to black and red, played as
+measured tone map: 103 measured tones from paper through grays and pinks to black and red, played as
 pull patterns through the epd97 driver. One page per minute by default. WiFi credentials and the page list are
 set over the USB serial console, so a Web Serial page can configure a badge.
 
 It combines two pieces of work in this tree:
 
-- The epd97 panel driver with its seq and erase waveform tables, copied as is into
-  `components/epd97`, the board settings from its sdkconfig.defaults, and the tone map `main/tonemap.h`.
+- The epd97 panel driver with its phase 1 and seq waveform tables, copied into
+  `components/epd97`, the board settings from its sdkconfig.defaults, the tone map `main/tonemap.h`
+  with `main/tonemap_entries.inc`, the squeeze `main/tonemap_squeeze.h` and the draw plan
+  `main/tone_plan.cpp`.
 - `browsers`: the litehtml fork (`browsers/litehtml/fork`, branch `epaper`) built by path through
   `components/litehtml`, and the three-color container from `browsers/litehtml/harness/device`
   ported to the device in `main/render.cpp`. `browsers/BADGE-INTEGRATION.md` is the design the port
@@ -134,45 +136,55 @@ the LEDs turn violet, one LED for the first tab up to all eight for the last. Th
    row by row into rows 38 to 671 of the tone frame, one tone map entry index per pixel (`tones.cpp`).
    The tab bar is rendered into rows 0 to 37 after the page. Text is antialiased by FreeType and
    blended by coverage, so glyph edges carry real tones.
-5. `tones_draw()` plays the frame onto the panel: the erase pull, then one seq pull per pattern step
-   with every pixel playing its entry's pattern in lockstep. About 10 s with the current map:
-   `EPD_KEEP_SUPPLY=1` (top-level CMakeLists.txt) keeps the panel supply on across the erase to seq
-   table switch, which saves the 1.5 s off floor and the settle of each switch.
+5. `tones_draw()` plays the frame onto the panel: the pulls of phase 1, then the pulls of phase 2,
+   with every pixel playing its entry's code in lockstep. `EPD_KEEP_SUPPLY=1` (top-level
+   CMakeLists.txt) keeps the panel supply on across the phase 1 to phase 2 table switch, which saves
+   the 1.5 s off floor and the settle of the switch.
 6. `reset_string_ids()`, the size cache is saved if it changed, then wait for the rest of the cycle, or
    for `next`.
 
 ## Tones
 
-The panel is driven through the measured tone map (`main/tonemap.h`, a copy; the
-method is in `main/tonemap.h`). Each of the 97 entries is a
-pull pattern of paper, ink and red steps at seq unit 4 and the colour it was photographed at. A pixel's
-RGB is folded onto the paper, black, red triangle (`ink = 255 - max(R,G,B)`, `red = max(0, R - max(G,B))`),
-placed in Oklab as the barycentric mix of the three corner entries, and matched to the nearest entry by
-Oklab distance with chroma weighted 3. A pixel with red under 8 takes only neutral entries and carries
-only lightness error. A colour that is neither neutral nor red-dominant (blue, green, purple) gets its
-ink raised until the target lightness equals the pixel's own Oklab lightness, so link blue reads as a
-dark gray instead of folding to paper. The decision between the two nearest entries is moved off their
-midpoint by a 64x64 blue noise table, up to a quarter of their gap, which breaks Atkinson's regular
-checkerboards and halves the solid runs along a ramp without moving a pixel that sits on an entry. The
-residual is diffused with the Atkinson kernel, serpentine, in Oklab, with the carried error clamped to
-0.25 in L and 0.08 in a and b. Floyd-Steinberg, Jarvis and Stucki are selectable in tones.cpp for a
-later photo-region dither; the host harness sweep in `host_tests/tones` compares them. Candidates per coloured
-pixel are the entry a 64x64 (ink, red) table gives for the pixel without error and its 24 nearest
-neighbours. `TONEMAP_GAMMA` (1.0) is a power on the ink weight.
+The panel is driven through the measured tone map (`main/tonemap.h` and
+`main/tonemap_entries.inc`). Each of the 103 entries is a measured tone in Oklab L, a, b, on the scale
+where the black reference is L 0 and the paper L 1, and the pattern of pulls that makes it. A pattern
+with no r or R is neutral: black and white only, a and b 0. There are 22 neutral entries.
 
-`host_tests/tones` (`make run`) renders gray and red ramps, the colour triangle, a text block and a
-sample image through the same dither on the host and writes PNG previews in the entries' measured
-colours plus a report of entry use, pull count and deviation from the target.
+A pixel's target is its sRGB colour in Oklab, brought into the panel's range by `tonemap_squeeze()`
+(`main/tonemap_squeeze.h`), with L held at the black entry's or above. The squeeze keeps only the part
+of the chroma along the hue of sRGB red, so a blue or a green becomes the gray of its lightness and link
+blue reads as a dark gray. A target with chroma below 0.001 after the squeeze is neutral. A neutral
+pixel mixes only the two neutral entries around its L and holds its error inside that pair. Within
+0.002 in L of a neutral entry it takes that entry alone and leaves no error, so black text, paper and
+solid UI fills stay solid. Any other pixel takes the nearest entry by the Oklab distance with a and b
+weighted 2 (`TONEMAP_CIE_CHROMA_WEIGHT`), searched over the 48 nearest neighbours of the entry nearest
+its target. A 1024 slot cache keyed on the RGB holds each colour's target and nearest entry. The
+decision between the two nearest entries is moved off their midpoint by a 64x64 blue noise table, up
+to a quarter of their gap, which breaks Atkinson's regular checkerboards without moving a pixel that
+sits on an entry. The carried error is in linear light: target plus carried error minus the chosen
+entry, each entry's light taken from its L, a, b. It is clamped to 0.25 of the paper's light per
+channel and diffused with the Atkinson kernel, serpentine. A neutral pixel takes the luminance of the
+error it receives. Floyd-Steinberg, Jarvis and Stucki are selectable in tones.cpp. The host harness
+sweep in `host_tests/tones` compares them.
 
-Drawing: `epd_verb_erase` with the erase preamble (139 frames, about 5.8 s), `epd_verb_open_table`
-on the seq set, then for step k every pixel's plane bits are character k of its pattern (p sets bw,
-i sets red, r both, hold neither) and one pull of 10 frames at 23.7 ms. The planes are not resent
-when every used entry repeats a hold or red step. Steps are the longest pattern in the frame, 16 for
-the current map. On a panel without the seq tables (not driver B) the frame is reduced to the three
-stock colours and refreshed with the panel's own waveform.
+`host_tests/tones` (`make run`) renders gray and red ramps, two colour wedges, a text block and a
+sample image through the same dither on the host and writes PNG previews in the entries' colours plus
+a report of entry use, pulls and deviation from the target. It also plays each frame through
+`tones_draw()` into a model of the driver and checks every pull against the plan.
+
+Drawing follows `main/tone_plan.h`. `tone_plan_build()` makes the plan of the entries in the frame.
+Phase 1 opens `EPD_VERB_TABLE_PHASE1` at unit 1 and plays its pulls of 17 frames, phase 2 opens
+`EPD_VERB_TABLE_SEQ` at unit 4 and plays its pulls of 10 frames, at 23.7 ms a frame. At each pull every
+pixel's plane bits are its entry's code from `tone_plan_code()`. A pull skips the plane send only when
+it is not the first of its phase and every entry in the frame repeats code 0 or 3. The plan pays back
+each entry's DC on the same pixel and holds every pixel within the stock waveform's push limits. A
+page with reds plays 14 + 27 pulls in the host harness, about 12 s of BUSY time. On a panel without the
+tables (not driver B, or its OTP read failed) the frame is reduced to the three stock colours, red for
+an entry with chroma above 0.09, else black for L below 0.5, else white, and refreshed with the
+panel's own waveform.
 
 Not yet measured on hardware: the dither time per page, the draw time, the look of the neutral gap
-between the L 0.75 and L 0.62 entries, and the colour of antialiased text edges.
+between the L 0.5965 and L 0.469 entries, and the colour of antialiased text edges.
 
 The size cache (`sizecache.cpp`) holds up to 512 URL hashes with kind and natural size, 24 bytes each,
 least recently used eviction, in `/data/imgsize.bin`. A page seen before needs no image traffic for

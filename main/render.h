@@ -21,6 +21,7 @@ struct render_stats
     int    doc_h      = 0;
     int    offset     = 0; // first document row shown, after clamping
     int    fetch_ms = 0, parse_ms = 0, layout_ms = 0, images_ms = 0, draw_ms = 0;
+    int    dither_ms = 0; // the part of draw_ms in tone_dither::row()
     size_t images = 0, img_fail = 0;      // image references, and references whose size or file failed
     size_t img_probes = 0, img_cache_hits = 0; // how each reference got its size
     size_t img_in_view = 0, img_fetched_bytes = 0, img_skipped = 0; // the window's images

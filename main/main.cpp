@@ -44,6 +44,11 @@ extern "C" void app_main(void)
         return;
     }
 
+#ifdef TONES_BENCH
+    tones_bench();
+    return; // console only, the panel is not drawn
+#endif
+
     if(!render_init())
     {
         ESP_LOGE(TAG, "fonts missing on the data partition, idf.py flash writes build/data.bin with them");

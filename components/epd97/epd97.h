@@ -225,25 +225,32 @@ bool epd_keep_awake(void);
 #define EPD_VERB_PULLS_MAX   8   // pulls per pass call
 #define EPD_SEQ_UNIT_MAX     9   // driven frames per paper or ink pull, at most
 #define EPD_SEQ_PULL_FRAMES 10   // frames per seq pull, whatever the unit
-#define EPD_SEQ_RED_PERIOD   4   // red: VDL every 4th frame, VDHR between. Fixed.
-#define EPD_SEQ_RED_VDL      2   // red VDL frames per pull, frames 0 and 4
-#define EPD_SEQ_RED_VDHR     7   // red VDHR frames per pull
+#define EPD_SEQ_W_FRAMES     9   // w: VDHR frames per pull, whatever the unit
+// The phase 1 pull length and drive are set by the shapes in epd97_lut.h,
+// which checks them against these at compile time.
+#define EPD_PHASE1_PULL_FRAMES 17   // frames per phase 1 pull
+#define EPD_PHASE1_DRIVE        8   // VDH or VDL frames of a phase 1 I or P pull
 
-// Which table set a verb session latches. EPD_VERB_TABLE_SEQ is the sequence
-// set in epd97_lut.h: 0 hold, 1 paper VDL, 2 ink VDH, 3 red (VDL then VDHR),
-// one frame a group, driven for unit_frames groups, VCOM at ground. One seq
-// pull is EPD_SEQ_PULL_FRAMES frames and unit_frames is 1 to EPD_SEQ_UNIT_MAX.
-// vcom_level is ignored for it.
-// EPD_VERB_TABLE_ERASE is the erase set in epd97_lut.h, built from a p and i
-// pattern (epd_build_lutb_erase). Every pixel gets the same drive whatever
-// the planes hold. Only epd_verb_erase() opens it.
+// Which table set a verb session latches. EPD_VERB_TABLE_SEQ is the phase 2
+// nudge set in epd97_lut.h: 0 hold, 1 paper VDL, 2 ink VDH, 3 w VDHR, one
+// frame a group, paper and ink driven for unit_frames groups, w for
+// EPD_SEQ_W_FRAMES, VCOM at ground. One seq pull is EPD_SEQ_PULL_FRAMES
+// frames and unit_frames is 1 to EPD_SEQ_UNIT_MAX. vcom_level is range
+// checked (0 to 3) then forced to 0 for it.
+// EPD_VERB_TABLE_PHASE1 is the single table phase 1 set
+// (epd_build_lutb_phase1): 0 S shake, 1 I ink, 2 P paper, 3 M mono shake,
+// with no hold code. EPD_PHASE1_PULL_FRAMES frames a pull. unit_frames and
+// vcom_level are range checked as for every set (unit_frames 1 to
+// EPD_VERB_UNIT_MAX, vcom_level 0 to 3), then forced to EPD_PHASE1_DRIVE
+// and 0.
 typedef enum {
-  EPD_VERB_TABLE_VERB  = 0,
-  EPD_VERB_TABLE_SEQ   = 1,
-  EPD_VERB_TABLE_ERASE = 2
+  EPD_VERB_TABLE_VERB   = 0,
+  EPD_VERB_TABLE_SEQ    = 1,
+  EPD_VERB_TABLE_PHASE1 = 2
 } epd_verb_table_t;
 
-// Power up and latch the verb table, with both planes sent as zero (all hold).
+// Power up and latch the verb table, with both planes sent as zero, which
+// selects code 0 for every pixel. Nothing is driven until the first pull.
 // Closes an open normal session or verb session first. ESP_ERR_NOT_SUPPORTED
 // on a panel that is not driver B, ESP_ERR_INVALID_ARG for unit_frames 0 or
 // above EPD_VERB_UNIT_MAX or vcom_level above 3, ESP_ERR_INVALID_STATE before
@@ -251,40 +258,25 @@ typedef enum {
 // panel or during a refresh. A failed step closes everything and returns
 // ESP_FAIL (COG did not come up) or ESP_ERR_TIMEOUT (booster not ready).
 esp_err_t epd_verb_open(uint8_t unit_frames, uint8_t vcom_level);
-// Same, with the table set chosen. With the seq set both planes zero select
-// paper for every pixel, and nothing is pulled until epd_verb_pass().
+// Same, with the table set chosen. Code 0 is hold on the verb and seq sets
+// and S on EPD_VERB_TABLE_PHASE1, and on every set nothing is pulled until
+// epd_verb_pass() or epd_verb_pull().
 esp_err_t epd_verb_open_table(uint8_t unit_frames, uint8_t vcom_level,
                               epd_verb_table_t table);
 // Same, and with_planes true sends epd_plane_bw() and epd_plane_red() at open,
 // before the table is latched, instead of zeros. Pair it with
 // epd_verb_pull(pulls, false, ...) so the first pull does not resend them.
-// ESP_ERR_INVALID_ARG for EPD_VERB_TABLE_ERASE, which needs a pattern.
 esp_err_t epd_verb_open_ex(uint8_t unit_frames, uint8_t vcom_level,
                            epd_verb_table_t table, bool with_planes);
-
-// What epd_verb_erase() cost. All times in ms.
-typedef struct {
-  uint32_t frames;         // frames the erase pull plays
-  uint32_t prev_close_ms;  // closing the verb session that was open, 0 if none
-  uint32_t open_ms;        // supply up or reset, zero planes, table latch, soft start
-  uint32_t pull_ms;        // BUSY low to BUSY high of the one pull
-  uint32_t close_ms;       // closing the erase session
-} epd_erase_stats_t;
-
-// Wipe the whole panel in one pull. Closes an open session, opens a session on
-// EPD_VERB_TABLE_ERASE built from pattern at unit frames per character, sends
-// both planes as zero, pulls once and closes. pattern holds only lowercase p
-// (VDL) and i (VDH). The BUSY ceiling of the pull follows its frame count
-// (EPD_ERASE_BUSY_PCT, EPD_ERASE_BUSY_PAD_MS). stats (may be NULL) gets the
-// times, with the fields of steps that did not run left 0. ESP_ERR_INVALID_ARG
-// for unit 0 or above EPD_VERB_UNIT_MAX, or a pattern the builder rejects.
-// Other errors as epd_verb_open() and epd_verb_pull(). A failed step closes
-// the session and cuts the supply.
-esp_err_t epd_verb_erase(const char* pattern, uint8_t unit, epd_erase_stats_t* stats);
 // Table set of the open verb session. EPD_VERB_TABLE_VERB when none is open.
 epd_verb_table_t epd_verb_table(void);
 // epd_verb_pass() with the plane send optional. resend false triggers the
-// planes the session already holds.
+// planes the session already holds. The COG swaps its two plane registers
+// after every pull, so a pixel the last pull drove on code 1 is on code 2
+// for the next pull, and the reverse. Codes 0 and 3 are unchanged. A pull
+// with resend false, and every pull after the first in one call, is then
+// correct only when every pixel holds code 0 or 3 and the codes repeat the
+// previous pull. On EPD_VERB_TABLE_PHASE1 those codes are S and M.
 esp_err_t epd_verb_pull(unsigned pulls, bool resend, uint32_t *panel_ms_total);
 // Send epd_plane_bw() and epd_plane_red(), then trigger the latched table
 // `pulls` times. Never rewrites the table. *panel_ms_total (may be NULL) gets
@@ -300,6 +292,10 @@ void      epd_verb_close(void);
 bool      epd_verb_is_open(void);
 // unit_frames of the open verb session, 0 when none is open.
 uint8_t   epd_verb_unit(void);
+
+// There is no row window. Every pull and every refresh scans the whole
+// panel. A DUW and DRFW band narrowed before the trigger burns a line into
+// the panel at the band's bottom edge.
 
 // -----------------------------------------------------------------------------
 // What is attached, and what the last refresh cost

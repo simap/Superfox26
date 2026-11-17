@@ -329,21 +329,28 @@
 #ifndef EPD_B_FRAME_US
 #define EPD_B_FRAME_US 23700u
 #endif
+// --- Push limit, never exceeded ----------------------------------------------
+// A pixel is never driven on one rail longer than the stock OTP waveform
+// drives it. A run is the frames on one rail until the other rail drives
+// that pixel, ground frames between drives not counted. Stock set 6
+// (room temperature) counted that way: black's tail 66
+// VDH, red's paper push 82 VDL, red's 30 VDHR, at the stock 28.8 ms frame
+// inferred from the measured 35.4 s refresh. The limits in our frames are
+// the same times at EPD_B_FRAME_US. The tone planner has to keep every
+// pattern under them, phase 1, pad and nudge included. The verb path does
+// not check them.
+#define EPD_STOCK_FRAME_US   28800u
+#define EPD_STOCK_PUSH_VDH   66u
+#define EPD_STOCK_PUSH_VDL   82u
+#define EPD_STOCK_PUSH_VDHR  30u
+#define EPD_PUSH_MAX_VDH   ((EPD_STOCK_PUSH_VDH * EPD_STOCK_FRAME_US) / EPD_B_FRAME_US)   // 80
+#define EPD_PUSH_MAX_VDL   ((EPD_STOCK_PUSH_VDL * EPD_STOCK_FRAME_US) / EPD_B_FRAME_US)   // 99
+#define EPD_PUSH_MAX_VDHR  ((EPD_STOCK_PUSH_VDHR * EPD_STOCK_FRAME_US) / EPD_B_FRAME_US)  // 36
 // BUSY ceiling for one verb pull, in ms. The longest verb pull is 35 frames,
 // 830 ms at EPD_B_FRAME_US. A seq pull is 10 frames, 237 ms. A pull that runs
 // past this closes the session and cuts the supply.
 #ifndef EPD_VERB_BUSY_MS
 #define EPD_VERB_BUSY_MS 5000u
-#endif
-// BUSY ceiling for the erase pull: its frame count at EPD_B_FRAME_US, times
-// EPD_ERASE_BUSY_PCT percent, plus EPD_ERASE_BUSY_PAD_MS. Frames run 26.3 ms
-// at 15 C and about 29 ms without the quick profile's oscillator write, so
-// the ceiling has to sit well above 100 percent.
-#ifndef EPD_ERASE_BUSY_PCT
-#define EPD_ERASE_BUSY_PCT 200u
-#endif
-#ifndef EPD_ERASE_BUSY_PAD_MS
-#define EPD_ERASE_BUSY_PAD_MS 2000u
 #endif
 
 // --- OTP dump ----------------------------------------------------------------
