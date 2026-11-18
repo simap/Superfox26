@@ -1,34 +1,36 @@
 #include "sizecache.h"
 
-#include <cstdio>
+#include <cstdint>
 #include <cstring>
-#include <vector>
+#include "esp_attr.h"
 #include "esp_log.h"
-#include "esp_rom_crc.h"
+#include "esp_random.h"
 
-#include "config.h"
+static const char*    TAG       = "sizecache";
+static const int      SETS      = 128;
+static const int      WAYS      = 4;
+static const uint32_t KIND_MASK = SETS - 1; // the set index bits of the hash, which hold kind in an entry
 
-static const char* TAG  = "sizecache";
-static const char* FILE_PATH = CFG_BASE "/imgsize.bin";
-static const int   CAP  = 512;
-static const char  MAGIC[4] = {'I', 'S', 'Z', '1'};
+static_assert((SETS & (SETS - 1)) == 0 && (WAYS & (WAYS - 1)) == 0, "SETS and WAYS are powers of 2");
 
 namespace
 {
+// key is the 64 bit FNV-1a hash of the URL with its low 7 bits, the set index, replaced by kind. It is
+// two 32 bit halves so the entry is 12 bytes at 4 byte alignment. kind is 1 to 127 in an entry in use.
+// kind 0 marks an empty entry, so key_lo is the one 32 bit store that empties an entry and the one that
+// fills it. A change of this layout needs a new layout version in main/rtcstate.cpp.
 struct entry
 {
-    uint64_t hash;
+    uint32_t key_lo; // hash bits 7 to 31, kind in bits 0 to 6
+    uint32_t key_hi; // hash bits 32 to 63
     uint16_t w, h;
-    uint8_t  kind;
-    uint8_t  flags;
-    uint32_t total; // unused, kept for the file layout
-    uint32_t last_used;
 };
-static_assert(sizeof(entry) == 24, "entry layout");
+static_assert(sizeof(entry) == 12, "entry layout");
 
-std::vector<entry> s_entries;
-uint32_t           s_tick  = 0; // bumps on every get and put, drives the eviction order
-bool               s_dirty = false;
+// RTC slow memory, not initialised at boot. Deep sleep, a software reset and a panic restart keep it.
+// The magic word of main/rtcstate.cpp tells whether it is valid.
+RTC_NOINIT_ATTR entry s_table[SETS][WAYS];
+static_assert(sizeof(s_table) == 6144, "table size");
 
 uint64_t fnv1a(const std::string& s)
 {
@@ -41,102 +43,69 @@ uint64_t fnv1a(const std::string& s)
     return h;
 }
 
-entry* find(uint64_t hash)
+entry* set_of(uint64_t hash)
 {
-    for(auto& e : s_entries)
-        if(e.hash == hash) return &e;
-    return nullptr;
+    return s_table[hash & (SETS - 1)];
+}
+
+bool in_use(const entry& e)
+{
+    return (e.key_lo & KIND_MASK) != 0;
+}
+
+bool matches(const entry& e, uint64_t hash)
+{
+    return in_use(e) && e.key_hi == static_cast<uint32_t>(hash >> 32) &&
+           (e.key_lo & ~KIND_MASK) == (static_cast<uint32_t>(hash) & ~KIND_MASK);
 }
 } // namespace
 
-void sizecache_init()
+void sizecache_init(bool kept)
 {
-    s_entries.reserve(CAP);
-    FILE* f = fopen(FILE_PATH, "rb");
-    if(!f) return;
-    char     magic[4];
-    uint32_t count = 0, crc = 0;
-    bool     ok = fread(magic, 1, 4, f) == 4 && memcmp(magic, MAGIC, 4) == 0 && fread(&count, 4, 1, f) == 1 &&
-              fread(&crc, 4, 1, f) == 1 && count <= static_cast<uint32_t>(CAP);
-    if(ok)
+    if(kept)
     {
-        s_entries.resize(count);
-        ok = fread(s_entries.data(), sizeof(entry), count, f) == count;
-        if(ok) ok = esp_rom_crc32_le(0, reinterpret_cast<const uint8_t*>(s_entries.data()), count * sizeof(entry)) == crc;
-    }
-    fclose(f);
-    if(!ok)
-    {
-        ESP_LOGW(TAG, "%s unreadable or corrupt, starting empty", FILE_PATH);
-        s_entries.clear();
+        ESP_LOGI(TAG, "table kept in RTC memory");
         return;
     }
-    for(auto& e : s_entries) s_tick = std::max(s_tick, e.last_used);
-    ESP_LOGI(TAG, "%u image sizes from %s", (unsigned)s_entries.size(), FILE_PATH);
+    memset(s_table, 0, sizeof(s_table));
+    ESP_LOGI(TAG, "table cleared");
 }
 
 bool sizecache_get(const std::string& url, int& kind, int& w, int& h)
 {
-    entry* e = find(fnv1a(url));
-    if(!e) return false;
-    e->last_used = ++s_tick;
-    kind         = e->kind;
-    w            = e->w;
-    h            = e->h;
-    return true;
+    uint64_t hash = fnv1a(url);
+    entry*   set  = set_of(hash);
+    for(int i = 0; i < WAYS; i++)
+    {
+        if(!matches(set[i], hash)) continue;
+        kind = set[i].key_lo & KIND_MASK;
+        w    = set[i].w;
+        h    = set[i].h;
+        return true;
+    }
+    return false;
 }
 
 void sizecache_put(const std::string& url, int kind, int w, int h)
 {
-    if(w <= 0 || h <= 0 || w > 65535 || h > 65535 || kind <= 0) return;
+    if(w <= 0 || h <= 0 || w > 65535 || h > 65535 || kind <= 0 || kind > static_cast<int>(KIND_MASK)) return;
     uint64_t hash = fnv1a(url);
-    entry*   e    = find(hash);
-    if(!e)
-    {
-        if(static_cast<int>(s_entries.size()) >= CAP)
-        {
-            size_t victim = 0;
-            for(size_t i = 1; i < s_entries.size(); i++)
-                if(s_entries[i].last_used < s_entries[victim].last_used) victim = i;
-            s_entries[victim] = s_entries.back();
-            s_entries.pop_back();
-        }
-        s_entries.push_back(entry{});
-        e       = &s_entries.back();
-        e->hash = hash;
-    } else if(e->kind == kind && e->w == w && e->h == h)
-    {
-        e->last_used = ++s_tick;
-        return;
-    }
-    e->kind      = static_cast<uint8_t>(kind);
-    e->w         = static_cast<uint16_t>(w);
-    e->h         = static_cast<uint16_t>(h);
-    e->flags     = 0;
-    e->total     = 0;
-    e->last_used = ++s_tick;
-    s_dirty      = true;
-}
-
-void sizecache_save()
-{
-    if(!s_dirty) return;
-    FILE* f = fopen(FILE_PATH, "wb");
-    if(!f)
-    {
-        ESP_LOGW(TAG, "cannot write %s", FILE_PATH);
-        return;
-    }
-    uint32_t count = s_entries.size();
-    uint32_t crc   = esp_rom_crc32_le(0, reinterpret_cast<const uint8_t*>(s_entries.data()), count * sizeof(entry));
-    bool     ok    = fwrite(MAGIC, 1, 4, f) == 4 && fwrite(&count, 4, 1, f) == 1 && fwrite(&crc, 4, 1, f) == 1 &&
-              fwrite(s_entries.data(), sizeof(entry), count, f) == count;
-    if(fclose(f) != 0) ok = false;
-    if(ok) s_dirty = false;
-    else ESP_LOGW(TAG, "write of %s failed", FILE_PATH);
-}
-
-int sizecache_count()
-{
-    return static_cast<int>(s_entries.size());
+    entry*   set  = set_of(hash);
+    entry*   e    = nullptr;
+    for(int i = 0; i < WAYS && !e; i++)
+        if(matches(set[i], hash)) e = &set[i];
+    for(int i = 0; i < WAYS && !e; i++)
+        if(!in_use(set[i])) e = &set[i];
+    if(!e) e = &set[esp_random() & (WAYS - 1)];
+    uint32_t lo = (static_cast<uint32_t>(hash) & ~KIND_MASK) | static_cast<uint32_t>(kind);
+    uint32_t hi = static_cast<uint32_t>(hash >> 32);
+    if(e->key_lo == lo && e->key_hi == hi && e->w == w && e->h == h) return;
+    // A reset between two of these stores leaves the entry empty or complete, never a key with the
+    // size of another URL. volatile keeps the stores in this order.
+    volatile entry* v = e;
+    v->key_lo         = 0;
+    v->w              = static_cast<uint16_t>(w);
+    v->h              = static_cast<uint16_t>(h);
+    v->key_hi         = hi;
+    v->key_lo         = lo;
 }

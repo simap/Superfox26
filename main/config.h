@@ -1,5 +1,5 @@
-// The data partition: a LittleFS volume at CFG_BASE with the fonts (fonts/sans.ttf, bold.ttf,
-// mono.ttf, from the partition image) and the page list in urls.txt, written by the console.
+// The data partition: a LittleFS volume at CFG_BASE with the font pack (fonts/, from the partition
+// image, file names in fonts.cpp) and the page list in urls.txt, written by the console.
 // One page per line: URL, then optionally the scroll offset in pixels and the seconds the page
 // stays up. Without urls.txt the list is PAGE_URLS from urls.h. The list is cached in RAM behind
 // a mutex, so the console and the browser task can use it from different tasks.

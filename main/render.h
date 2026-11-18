@@ -40,3 +40,7 @@ bool render_page(const std::string& url, int offset, uint8_t* frame, render_stat
 
 // Render the tab bar into frame rows 0 to TAB_H - 1: one tab per page, the current one filled.
 bool render_tabs(const std::vector<page_entry>& pages, size_t current, uint8_t* frame);
+
+// Render html into the whole frame, all TONE_H rows, with no network. The frame is cleared to paper
+// first. html must reference nothing by URL, since the container would fetch it.
+bool render_html(const std::string& html, uint8_t* frame);

@@ -19,6 +19,10 @@
 #include <string.h>
 
 #include "sdkconfig.h"
+// Compiles the DLOGF lines in at any CONFIG_LOG_MAXIMUM_LEVEL. They print only
+// when the "epd" tag is at debug level, for example after
+// esp_log_level_set("epd", ESP_LOG_DEBUG).
+#define LOG_LOCAL_LEVEL ESP_LOG_DEBUG
 #include "esp_log.h"
 #include "esp_attr.h"
 #include "esp_timer.h"
@@ -47,6 +51,12 @@ static const char* TAG = "epd";
 #define LOGF(...) ESP_LOGI(TAG, __VA_ARGS__)
 #else
 #define LOGF(...) do { if (0) ESP_LOGI(TAG, __VA_ARGS__); } while (0)
+#endif
+// Debug level, for lines that repeat on every pull.
+#if EPD_LOG
+#define DLOGF(...) ESP_LOGD(TAG, __VA_ARGS__)
+#else
+#define DLOGF(...) do { if (0) ESP_LOGD(TAG, __VA_ARGS__); } while (0)
 #endif
 #if EPD_LOG_VERBOSE
 #define VLOGF(...) LOGF(__VA_ARGS__)
@@ -149,13 +159,13 @@ static bool      s_headless;
 static bool      s_otp_standin;
 static bool      s_planes_only;
 
-// Verb session. s_session_open and s_lut_latched are also set while it is open,
+// Tone session. s_session_open and s_lut_latched are also set while it is open,
 // so every path that closes a session closes this one.
-static uint8_t   s_verb_lut[LUTB_BYTES];
-static bool      s_verb_open;
-static uint8_t   s_verb_unit;
-static bool      s_verb_red;          // a pass in this session sent red plane bits
-static epd_verb_table_t s_verb_table;
+static uint8_t   s_tone_lut[LUTB_BYTES];
+static bool      s_tone_open;
+static uint8_t   s_tone_unit;
+static bool      s_tone_red;          // a pass in this session sent red plane bits
+static epd_tone_table_t s_tone_table;
 
 static uint32_t  s_power_off_ms;
 static bool      s_power_off_valid;
@@ -165,7 +175,7 @@ static bool      s_supply_on;
 static uint32_t  s_last_panel_ms;
 static uint32_t  s_last_frame_ms;
 static uint32_t  s_last_send_ms;
-// Quick waits for this open (EPD_QUICK_OPEN). Set by the fast and verb
+// Quick waits for this open (EPD_QUICK_OPEN). Set by the fast and tone
 // openers on driver B, cleared by cog_stop_ex().
 static bool      s_quick;
 static int64_t   s_last_send_end_us;  // 0 until the first send
@@ -820,8 +830,8 @@ static int wait_busy(unsigned want_idle, uint32_t timeout_ms, const char* tag)
   const bool feed_wdt = false;
 #endif
   uint32_t waited = 0;
-  LOGF("BUSY '%s' wait up to %us (want_idle=%u, pin=%u)",
-       tag, (unsigned)(timeout_ms / 1000u), want_idle, (unsigned)busy_idle());
+  DLOGF("BUSY '%s' wait up to %us (want_idle=%u, pin=%u)",
+        tag, (unsigned)(timeout_ms / 1000u), want_idle, (unsigned)busy_idle());
   int result = -1;
   while (waited < timeout_ms) {
     if (want_idle ? busy_idle() : !busy_idle()) {
@@ -1195,11 +1205,11 @@ bool refresh_display(epd_refresh_t mode)
     LOGF("refresh_display() before a successful epd_begin()");
     return false;
   }
-  // A verb or seq session holds its own table latched. Close it so this
+  // A tone session holds its own table latched. Close it so this
   // refresh opens a session on the waveform it needs. cal reopens on demand.
-  if (s_verb_open) {
-    LOGF("closing the open verb session for the refresh");
-    epd_verb_close();
+  if (s_tone_open) {
+    LOGF("closing the open tone session for the refresh");
+    epd_tone_close();
   }
   s_refreshing = true;
   const uint32_t t_frame = now_ms();
@@ -1330,11 +1340,11 @@ bool refresh_display(epd_refresh_t mode)
   return rc == 0 || headless_gave_up;
 }
 
-static void verb_close(bool cut);
+static void tone_close(bool cut);
 
 void epd_sleep(void)
 {
-  verb_close(true);
+  tone_close(true);
   if (s_session_open) {
     s_session_open = false;
     s_lut_latched = false;
@@ -1345,9 +1355,9 @@ void epd_sleep(void)
 
 bool epd_clear_screen(void)
 {
-  if (s_verb_open) {
-    LOGF("closing the open verb session for the clear");
-    epd_verb_close();
+  if (s_tone_open) {
+    LOGF("closing the open tone session for the clear");
+    epd_tone_close();
   }
   LOGF("clearing the panel");
   epd_clear();
@@ -1406,99 +1416,99 @@ void epd_set_fast_pulls(unsigned n)
 unsigned epd_fast_pulls(void) { return s_fast_pulls; }
 
 // -----------------------------------------------------------------------------
-// Verb pass
+// Tone pass
 // -----------------------------------------------------------------------------
 // A pass that sent red plane bits may have moved red pigment, so the panel is
 // then treated as holding red.
-static void verb_close(bool cut)
+static void tone_close(bool cut)
 {
-  if (!s_verb_open) return;
+  if (!s_tone_open) return;
   bod_hold_off();
   cog_stop_ex(cut);
   bod_restore();
-  if (s_verb_red) s_prev_has_red = true;
-  s_verb_open = false;
-  s_verb_unit = 0;
-  s_verb_red = false;
-  s_verb_table = EPD_VERB_TABLE_VERB;
+  if (s_tone_red) s_prev_has_red = true;
+  s_tone_open = false;
+  s_tone_unit = 0;
+  s_tone_red = false;
+  s_tone_table = EPD_TONE_TABLE_CAL;
   s_session_open = false;
   s_lut_latched = false;
-  LOGF("verb session closed%s", s_supply_on ? ", supply kept on" : "");
+  LOGF("tone session closed%s", s_supply_on ? ", supply kept on" : "");
 }
 
-void epd_verb_close(void) { verb_close(EPD_KEEP_SUPPLY == 0); }
+void epd_tone_close(void) { tone_close(EPD_KEEP_SUPPLY == 0); }
 
-esp_err_t epd_verb_open(uint8_t unit_frames, uint8_t vcom_level)
+esp_err_t epd_tone_open(uint8_t unit_frames, uint8_t vcom_level)
 {
-  return epd_verb_open_table(unit_frames, vcom_level, EPD_VERB_TABLE_VERB);
+  return epd_tone_open_table(unit_frames, vcom_level, EPD_TONE_TABLE_CAL);
 }
 
-esp_err_t epd_verb_open_table(uint8_t unit_frames, uint8_t vcom_level,
-                              epd_verb_table_t table)
+esp_err_t epd_tone_open_table(uint8_t unit_frames, uint8_t vcom_level,
+                              epd_tone_table_t table)
 {
-  return epd_verb_open_ex(unit_frames, vcom_level, table, false);
+  return epd_tone_open_ex(unit_frames, vcom_level, table, false);
 }
 
-// Preconditions every verb open shares.
-static esp_err_t verb_check(uint8_t unit_frames)
+// Preconditions every tone open shares.
+static esp_err_t tone_check(uint8_t unit_frames)
 {
   if (!s_ready || s_headless || s_refreshing) return ESP_ERR_INVALID_STATE;
   if (!s_driver_b || s_otp_standin) return ESP_ERR_NOT_SUPPORTED;
-  if (unit_frames == 0u || unit_frames > EPD_VERB_UNIT_MAX) return ESP_ERR_INVALID_ARG;
+  if (unit_frames == 0u || unit_frames > EPD_TONE_UNIT_MAX) return ESP_ERR_INVALID_ARG;
   return ESP_OK;
 }
 
-static const char* verb_table_name(epd_verb_table_t table)
+static const char* tone_table_name(epd_tone_table_t table)
 {
   switch (table) {
-    case EPD_VERB_TABLE_SEQ:    return "seq";
-    case EPD_VERB_TABLE_PHASE1: return "phase1";
-    default:                    return "verb";
+    case EPD_TONE_TABLE_SEQ:    return "seq";
+    case EPD_TONE_TABLE_PHASE1: return "phase1";
+    default:                    return "cal";
   }
 }
 
-esp_err_t epd_verb_open_ex(uint8_t unit_frames, uint8_t vcom_level,
-                           epd_verb_table_t table, bool with_planes)
+esp_err_t epd_tone_open_ex(uint8_t unit_frames, uint8_t vcom_level,
+                           epd_tone_table_t table, bool with_planes)
 {
-  const esp_err_t pre = verb_check(unit_frames);
+  const esp_err_t pre = tone_check(unit_frames);
   if (pre != ESP_OK) return pre;
   if (vcom_level > 3u) return ESP_ERR_INVALID_ARG;
-  if (table != EPD_VERB_TABLE_VERB && table != EPD_VERB_TABLE_SEQ &&
-      table != EPD_VERB_TABLE_PHASE1) {
+  if (table != EPD_TONE_TABLE_CAL && table != EPD_TONE_TABLE_SEQ &&
+      table != EPD_TONE_TABLE_PHASE1) {
     return ESP_ERR_INVALID_ARG;
   }
 
   uint32_t frames;
-  if (table == EPD_VERB_TABLE_SEQ) {
+  if (table == EPD_TONE_TABLE_SEQ) {
     vcom_level = 0;
     if (unit_frames > EPD_SEQ_UNIT_MAX) return ESP_ERR_INVALID_ARG;
-    epd_build_lutb_seq(s_verb_lut, unit_frames);
-    frames = epd_lutb_seq_frames(s_verb_lut);
-  } else if (table == EPD_VERB_TABLE_PHASE1) {
+    epd_build_lutb_seq(s_tone_lut, unit_frames);
+    frames = epd_lutb_seq_frames(s_tone_lut);
+  } else if (table == EPD_TONE_TABLE_PHASE1) {
     vcom_level = 0;
     unit_frames = EPD_PHASE1_DRIVE;
-    epd_build_lutb_phase1(s_verb_lut);
-    frames = epd_lutb_phase1_frames(s_verb_lut);
+    epd_build_lutb_phase1(s_tone_lut);
+    frames = epd_lutb_phase1_frames(s_tone_lut);
     if (frames != (uint32_t)EPD_PHASE1_PULL_FRAMES) {
       LOGF("phase 1 table plays %u frames, the planner expects %u, not sent", (unsigned)frames,
            (unsigned)EPD_PHASE1_PULL_FRAMES);
       return ESP_ERR_INVALID_STATE;
     }
   } else {
-    epd_build_lutb_verb(s_verb_lut, unit_frames, vcom_level);
-    frames = epd_lutb_verb_frames(s_verb_lut);
+    epd_build_lutb_cal(s_tone_lut, unit_frames, vcom_level);
+    frames = epd_lutb_cal_frames(s_tone_lut);
   }
   if (frames == 0u) {
-    LOGF("verb table has a zero or uneven count, not sent");
+    LOGF("tone table has a zero or uneven count, not sent");
     return ESP_ERR_INVALID_STATE;
   }
 
   // The panel latches one table per session, so any open session ends here.
-  if (s_verb_open) {
-    LOGF("closing the open verb session to latch unit %u", (unsigned)unit_frames);
-    epd_verb_close();
+  if (s_tone_open) {
+    LOGF("closing the open tone session to latch unit %u", (unsigned)unit_frames);
+    epd_tone_close();
   } else if (s_session_open) {
-    LOGF("closing the open %s session for the verb table",
+    LOGF("closing the open %s session for the tone table",
          s_planes_only ? "planes-only" : "refresh");
     cog_close();
     s_session_open = false;
@@ -1511,13 +1521,13 @@ esp_err_t epd_verb_open_ex(uint8_t unit_frames, uint8_t vcom_level,
   bus_bitbang();
   s_quick = EPD_QUICK_OPEN && s_driver_b;
   if (cog_initial() != 0) {
-    LOGF("verb open: cog_initial failed");
+    LOGF("tone open: cog_initial failed");
     cog_stop();
     s_refreshing = false;
     return ESP_FAIL;
   }
 
-  // Both planes zero select code 0 for every pixel. That is hold on the verb
+  // Both planes zero select code 0 for every pixel. That is hold on the cal
   // and seq sets and S on the phase 1 set, and nothing is driven before the
   // first pull. write_plane() sends the window registers ahead of the bw plane.
   // with_planes sends the caller's planes here instead, before the latch.
@@ -1525,13 +1535,13 @@ esp_err_t epd_verb_open_ex(uint8_t unit_frames, uint8_t vcom_level,
   write_plane(0x13, with_planes ? s_red : NULL, NULL);
   send_upd(UPD_STEPS);
   // The update registers overwrite 0xB0, and nothing after this touches it.
-  send_index(0xB0, s_verb_lut, (uint16_t)LUTB_BYTES);
+  send_index(0xB0, s_tone_lut, (uint16_t)LUTB_BYTES);
 
   bod_hold_off();
   dcdc_soft_start();
   delay_ms(100);
-  if (!busy_idle() && wait_busy(1, 10000, "verb pre-0x15 ready") < 0) {
-    LOGF("verb open: booster never reported ready in 10 s");
+  if (!busy_idle() && wait_busy(1, 10000, "tone pre-0x15 ready") < 0) {
+    LOGF("tone open: booster never reported ready in 10 s");
     cog_stop();
     bod_restore();
     s_refreshing = false;
@@ -1542,30 +1552,30 @@ esp_err_t epd_verb_open_ex(uint8_t unit_frames, uint8_t vcom_level,
   s_session_open = true;
   s_lut_latched = true;
   s_session_images = 0;
-  s_verb_open = true;
-  s_verb_unit = unit_frames;
-  s_verb_red = with_planes && frame_has_red();
-  s_verb_table = table;
+  s_tone_open = true;
+  s_tone_unit = unit_frames;
+  s_tone_red = with_planes && frame_has_red();
+  s_tone_table = table;
   s_refreshing = false;
   LOGF("%s session open, unit %u frames, pull %u frames = %u ms at %u.%u ms per frame, open %u ms",
-       verb_table_name(table),
+       tone_table_name(table),
        (unsigned)unit_frames, (unsigned)frames,
        (unsigned)((frames * EPD_B_FRAME_US) / 1000u),
        (unsigned)(EPD_B_FRAME_US / 1000u), (unsigned)((EPD_B_FRAME_US % 1000u) / 100u),
        (unsigned)(now_ms() - t0));
-  if (table == EPD_VERB_TABLE_SEQ) {
+  if (table == EPD_TONE_TABLE_SEQ) {
     LOGF("seq tables: 0 hold, 1 paper VDL, 2 ink VDH, %u driven of %u frames. "
          "3 w: %u VDHR then ground. One frame a group, phase C only",
          (unsigned)unit_frames, (unsigned)EPD_SEQ_PULL_FRAMES, (unsigned)EPD_SEQ_W_FRAMES);
     return ESP_OK;
   }
-  if (table == EPD_VERB_TABLE_PHASE1) {
+  if (table == EPD_TONE_TABLE_PHASE1) {
     LOGF("phase 1 tables: 0 S shake 6 VDH 6 VDL, 1 I %u VDH, 2 P %u VDL, 3 M 8 VDL 4 VDH, "
          "no hold, slotted, %u frames a pull",
          (unsigned)EPD_PHASE1_DRIVE, (unsigned)EPD_PHASE1_DRIVE, (unsigned)EPD_PHASE1_PULL_FRAMES);
     return ESP_OK;
   }
-  // Net field per verb, source minus VCOM, as epd_build_lutb_verb() sets it.
+  // Net field per code, source minus VCOM, as epd_build_lutb_cal() sets it.
   static const char* const k_rail[4] = { "GND", "VDH", "VDL", "VDHR" };
   const char* vc = k_rail[vcom_level];
   if (vcom_level == 0u) {
@@ -1576,22 +1586,22 @@ esp_err_t epd_verb_open_ex(uint8_t unit_frames, uint8_t vcom_level,
   return ESP_OK;
 }
 
-esp_err_t epd_verb_pass(unsigned pulls, uint32_t *panel_ms_total)
+esp_err_t epd_tone_pass(unsigned pulls, uint32_t *panel_ms_total)
 {
-  return epd_verb_pull(pulls, true, panel_ms_total);
+  return epd_tone_pull(pulls, true, panel_ms_total);
 }
 
-esp_err_t epd_verb_pull(unsigned pulls, bool resend, uint32_t *panel_ms_total)
+esp_err_t epd_tone_pull(unsigned pulls, bool resend, uint32_t *panel_ms_total)
 {
   if (panel_ms_total) *panel_ms_total = 0;
-  if (!s_verb_open || s_refreshing) return ESP_ERR_INVALID_STATE;
-  if (pulls == 0u || pulls > EPD_VERB_PULLS_MAX) return ESP_ERR_INVALID_ARG;
+  if (!s_tone_open || s_refreshing) return ESP_ERR_INVALID_STATE;
+  if (pulls == 0u || pulls > EPD_TONE_PULLS_MAX) return ESP_ERR_INVALID_ARG;
 
   s_refreshing = true;
   const uint32_t t_frame = now_ms();
   bus_bitbang();
   if (resend) {
-    if (frame_has_red()) s_verb_red = true;
+    if (frame_has_red()) s_tone_red = true;
     // Both planes go out unmerged: draw_red sends the red plane as it is.
     send_planes(false, true);
   } else {
@@ -1606,7 +1616,7 @@ esp_err_t epd_verb_pull(unsigned pulls, bool resend, uint32_t *panel_ms_total)
   unsigned done = 0;
   int rc = 0;
   for (unsigned i = 0; i < pulls; i++) {
-    rc = retrigger(EPD_VERB_BUSY_MS);
+    rc = retrigger(EPD_TONE_BUSY_MS);
     if (rc != 0) break;
     total += s_last_panel_ms;
     done++;
@@ -1616,23 +1626,23 @@ esp_err_t epd_verb_pull(unsigned pulls, bool resend, uint32_t *panel_ms_total)
   s_session_images++;
 
   if (rc != 0) {
-    LOGF("verb pull %u of %u did not finish, closing the session",
+    LOGF("tone pull %u of %u did not finish, closing the session",
          done + 1u, pulls);
-    verb_close(true);
+    tone_close(true);
   }
   bod_restore();
 
   s_last_frame_ms = now_ms() - t_frame;
   s_refreshing = false;
-  LOGF("verb pass %u of %u pulls, panel %u ms, send %u ms, frame %u ms",
+  LOGF("tone pass %u of %u pulls, panel %u ms, send %u ms, frame %u ms",
        done, pulls, (unsigned)total, (unsigned)s_last_send_ms,
        (unsigned)s_last_frame_ms);
   return rc == 0 ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
-bool    epd_verb_is_open(void) { return s_verb_open; }
-uint8_t epd_verb_unit(void)    { return s_verb_unit; }
-epd_verb_table_t epd_verb_table(void) { return s_verb_open ? s_verb_table : EPD_VERB_TABLE_VERB; }
+bool    epd_tone_is_open(void) { return s_tone_open; }
+uint8_t epd_tone_unit(void)    { return s_tone_unit; }
+epd_tone_table_t epd_tone_table(void) { return s_tone_open ? s_tone_table : EPD_TONE_TABLE_CAL; }
 
 // The variant's own read. Driver 8 gets its unlock and address writes on both
 // COGs here, where the probe sends them to the left COG only.
@@ -1657,7 +1667,7 @@ size_t epd_otp_dump_ex(const epd_otp_probe_t* probe, uint8_t* dst, size_t cap)
   if (cap > (size_t)EPD_OTP_DUMP_MAX) cap = (size_t)EPD_OTP_DUMP_MAX;
 
   // The read needs a fresh power-up and reset, so an open session ends here.
-  verb_close(true);
+  tone_close(true);
   if (s_session_open) {
     s_session_open = false;
     s_lut_latched = false;
@@ -1680,7 +1690,7 @@ size_t epd_reg_read(const epd_reg_probe_t* probe, uint8_t* dst, size_t cap)
   if (probe == NULL || dst == NULL || cap == 0u) return 0;
   if (cap > (size_t)EPD_OTP_DUMP_MAX) cap = (size_t)EPD_OTP_DUMP_MAX;
 
-  verb_close(true);
+  tone_close(true);
   if (s_session_open) {
     s_session_open = false;
     s_lut_latched = false;

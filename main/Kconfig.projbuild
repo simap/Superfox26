@@ -2,8 +2,9 @@ menu "browser26"
 
     config B26_CYCLE_SECONDS
         int "Seconds between the start of one page and the start of the next"
-        default 60
+        default 3600
         help
+            The page list can give each page its own time (the console's url commands).
             A page that takes longer (render plus refresh) is followed by the next
             page at once.
 

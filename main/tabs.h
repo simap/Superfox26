@@ -5,6 +5,7 @@
 // engine (tabs_html), so it gets rounded corners and the same fonts as the pages.
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -34,6 +35,9 @@ std::string tabs_icon_bmp(const std::string& file, bool partial, std::string* fo
 // A 32x32 32-bit BMP for a page without an icon: a black-bordered white box with the first letter or
 // digit of host in black.
 std::string tabs_placeholder_bmp(const std::string& host);
+
+// A data: URL of the PNG file in [begin, end), for an <img> in HTML built on the device.
+std::string tabs_png_url(const uint8_t* begin, const uint8_t* end);
 
 // HTML for the bar: pages in order, the current one filled black. infos runs parallel to pages. tab_h
 // is the bar height in pixels.

@@ -363,6 +363,15 @@ std::string tabs_icon_bmp(const std::string& file, bool partial, std::string* fo
     return ok ? bmp_from_gimage(img) : "";
 }
 
+// logo/panel_32.png, at the left end of the bar (EMBED_FILES in CMakeLists.txt).
+extern const uint8_t logo_32_start[] asm("_binary_panel_32_png_start");
+extern const uint8_t logo_32_end[] asm("_binary_panel_32_png_end");
+
+std::string tabs_png_url(const uint8_t* begin, const uint8_t* end)
+{
+    return "data:image/png;base64," + b64_encode(std::string(begin, end));
+}
+
 std::string tabs_placeholder_bmp(const std::string& host)
 {
     int glyph = -1;
@@ -409,13 +418,14 @@ std::string tabs_html(const std::vector<page_entry>& pages, size_t current, cons
     // gray, the other tabs a light gray, the current tab paper like the page below it. The fills are
     // grays that map onto a neutral tone entry exactly, so they render solid. The border is two 1 px
     // lines: black outside, and inside a raised bevel, white on the top and left, the row gray on the
-    // right.
+    // right. The logo comes first, on the row gray, centred in the rows above the rule.
     int  inner = tab_h - 1;
     int  row = tones_solid_gray(174), fill = tones_solid_gray(200);
     char css[900];
     snprintf(css, sizeof(css),
              "body{margin:0;padding:0;background:#%02x%02x%02x}"
              ".bar{display:flex;height:%dpx;padding:0 6px;border-bottom:1px solid #000;box-sizing:border-box}"
+             ".logo{flex:none;width:%dpx;height:%dpx;margin:%dpx 6px 0 0}"
              ".tab{flex:1 1 0;min-width:0;height:%dpx;margin-right:4px;border:1px solid #000;border-bottom:none;"
              "border-radius:9px 9px 0 0;box-sizing:border-box;background:#%02x%02x%02x}"
              ".in{height:%dpx;border:1px solid #fff;border-right-color:#%02x%02x%02x;border-bottom:none;"
@@ -423,10 +433,13 @@ std::string tabs_html(const std::vector<page_entry>& pages, size_t current, cons
              "font-size:17px;line-height:%dpx;white-space:nowrap;overflow:hidden;color:#000}"
              ".cur{background:#fff}"
              ".in img{width:%dpx;height:%dpx;vertical-align:middle;margin-right:6px;position:relative;top:-1px}",
-             row, row, row, tab_h, inner, fill, fill, fill, inner - 1, row, row, row, inner - 3, ICON, ICON);
+             row, row, row, tab_h, ICON, ICON, (inner - ICON) / 2, inner, fill, fill, fill, inner - 1, row, row, row,
+             inner - 3, ICON, ICON);
     std::string html = "<!doctype html><html><head><meta charset=\"utf-8\"><style>";
     html += css;
-    html += "</style></head><body><div class=\"bar\">";
+    html += "</style></head><body><div class=\"bar\"><img class=\"logo\" src=\"";
+    html += tabs_png_url(logo_32_start, logo_32_end);
+    html += "\">";
     for(size_t i = 0; i < pages.size(); i++)
     {
         const tab_info* t = i < infos.size() ? &infos[i] : nullptr;

@@ -10,9 +10,14 @@
 
 static const char* TAG = "fonts";
 
-// Under CFG_BASE. tools/stage_fonts.py puts them in the partition image.
-static const char* const FACE_FILES[NFACES] = {"/fonts/sans.ttf", "/fonts/bold.ttf", "/fonts/mono.ttf",
-                                               "/fonts/monobold.ttf"};
+// Under CFG_BASE, by slot. tools/stage_fonts.py copies them from data/fonts, the output of
+// tools/fontpack, into the partition image.
+static const char* const FACE_FILES[NFACES] = {
+    "/fonts/sans.ttf",  "/fonts/sans_b.ttf",  "/fonts/sans_i.ttf",  "/fonts/sans_bi.ttf",
+    "/fonts/serif.ttf", "/fonts/serif_b.ttf", "/fonts/serif_i.ttf", "/fonts/serif_bi.ttf",
+    "/fonts/mono.ttf",  "/fonts/mono_b.ttf",  "/fonts/mono_i.ttf",  "/fonts/mono_bi.ttf",
+    "/fonts/fallback.otf",
+};
 
 bool face_set::init()
 {
@@ -21,8 +26,18 @@ bool face_set::init()
         ESP_LOGE(TAG, "FT_Init_FreeType failed");
         return false;
     }
-    // The sans face is the fallback for the other two, so without it there is no text.
+    // Every other text face falls back to sans regular, so without it there is no text.
     return get(FACE_SANS) != nullptr;
+}
+
+int face_set::resolve(int slot)
+{
+    if(slot == FACE_FALLBACK) return get(slot) ? slot : -1;
+    const int base = slot & ~(FACE_BOLD | FACE_ITALIC), style = slot & (FACE_BOLD | FACE_ITALIC);
+    const int chain[] = {slot, base | (style & FACE_BOLD), base | (style & FACE_ITALIC), base, FACE_SANS};
+    for(int s : chain)
+        if(get(s)) return s;
+    return FACE_SANS;
 }
 
 FT_Face face_set::get(int slot)
@@ -36,7 +51,7 @@ FT_Face face_set::get(int slot)
     FT_Error err = FT_New_Face(lib, path.c_str(), 0, &f);
     if(err)
     {
-        ESP_LOGE(TAG, "%s did not open, FreeType error %d", path.c_str(), err);
+        ESP_LOGW(TAG, "%s did not open, FreeType error %d", path.c_str(), err);
         f = nullptr;
     } else
         ESP_LOGI(TAG, "%s: %s %s, %ld glyphs", path.c_str(), f->family_name ? f->family_name : "?",
@@ -48,8 +63,6 @@ FT_Face face_set::get(int slot)
 FT_Face face_set::sized(int slot, int px)
 {
     FT_Face f = get(slot);
-    if(!f && slot == FACE_MONO_BOLD) return sized(FACE_MONO, px);
-    if(!f && slot != FACE_SANS) return sized(FACE_SANS, px);
     if(f && cur_px[slot] != px)
     {
         FT_Set_Pixel_Sizes(f, 0, static_cast<FT_UInt>(px));

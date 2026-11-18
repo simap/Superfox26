@@ -1,0 +1,5 @@
+// Host stub of ESP-IDF esp_log.h: the log calls of main/sizecache.cpp print nothing.
+#pragma once
+
+#define ESP_LOGI(tag, fmt, ...) ((void)(tag))
+#define ESP_LOGW(tag, fmt, ...) ((void)(tag))

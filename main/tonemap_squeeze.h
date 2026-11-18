@@ -10,7 +10,10 @@
 //     panel's edge, the upper hull of the entries over lightness
 //   3 its lightness moves toward the lightness of the panel's strongest
 //     red, by TONEMAP_COMPRESS of what the flat stretch of the image
-//     triangle onto the panel's would move it
+//     triangle onto the panel's would move the image's edge at that
+//     lightness. The move does not scale with the colour's chroma, so a
+//     gray, a blue and a red of one lightness draw at one lightness. Black
+//     and white do not move, since the edge has no chroma there.
 #pragma once
 
 #include <math.h>
@@ -106,18 +109,19 @@ static void tonemap_squeeze(float t[3])
   t[0] = L1;
   t[1] = c * s_squeeze_hue[0];
   t[2] = c * s_squeeze_hue[1];
-  if (c < 1e-6f || TONEMAP_COMPRESS < 0.0f) return;
-  const float edge = squeeze_at(s_squeeze_img, L);
-  float share = edge > 1e-6f ? c / edge : 1.0f;
-  if (share > 1.0f) share = 1.0f;
-  float wr = share * squeeze_at(s_squeeze_img, L1) / s_squeeze_red_c;
+  if (TONEMAP_COMPRESS < 0.0f) return;
+  float wr = squeeze_at(s_squeeze_img, L1) / s_squeeze_red_c;
   if (wr > 1.0f) wr = 1.0f;
   float rest = L1 - wr * s_squeeze_red_l;
   if (rest < 0.0f) rest = 0.0f;
   const float flat = rest + wr * s_squeeze_cusp_l;
   const float L2 = L1 + TONEMAP_COMPRESS * (flat - L1);
-  const float c2 = share * squeeze_at(s_squeeze_pan, L2);
   t[0] = L2;
+  if (c < 1e-6f) return;
+  const float edge = squeeze_at(s_squeeze_img, L);
+  float share = edge > 1e-6f ? c / edge : 1.0f;
+  if (share > 1.0f) share = 1.0f;
+  const float c2 = share * squeeze_at(s_squeeze_pan, L2);
   t[1] *= c2 / c;
   t[2] *= c2 / c;
 }

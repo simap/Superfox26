@@ -5,10 +5,10 @@
 // and at every pull each pixel plays the code of its entry at that pull. A
 // code is the plane bit pair (red << 1) | bw: bit 0 goes to the bw plane, bit
 // 1 to the red plane.
-//   phase 1  EPD_VERB_TABLE_PHASE1, opened at unit 1, EPD_PHASE1_PULL_FRAMES
+//   phase 1  EPD_TONE_TABLE_PHASE1, opened at unit 1, EPD_PHASE1_PULL_FRAMES
 //            frames a pull. Codes TONE_P1_*: 0 S, 1 I, 2 P, 3 M. The table
 //            has no hold code.
-//   phase 2  EPD_VERB_TABLE_SEQ, opened at unit TONE_NUDGE_FRAMES,
+//   phase 2  EPD_TONE_TABLE_SEQ, opened at unit TONE_NUDGE_FRAMES,
 //            EPD_SEQ_PULL_FRAMES frames a pull. Codes TONE_P2_*: 0 h
 //            (ground), 1 p, 2 i, 3 w.
 // All pulls of phase 1 play, then all pulls of phase 2. A phase of 0 pulls
@@ -85,7 +85,7 @@ static const unsigned TONE_SEQ_MAX = 48;
 // and the entry's own S and M count toward it.
 static const unsigned TONE_SHAKE_MIN = 12;
 
-// Driven frames of a phase 2 p or i pull. Phase 2 opens EPD_VERB_TABLE_SEQ
+// Driven frames of a phase 2 p or i pull. Phase 2 opens EPD_TONE_TABLE_SEQ
 // at this unit.
 static const unsigned TONE_NUDGE_FRAMES = 4;
 
@@ -96,7 +96,7 @@ enum tone_phase
     TONE_PHASE_COUNT = 2
 };
 
-// Codes on EPD_VERB_TABLE_PHASE1, the order of EPD_PHASE1_SET_FULL.
+// Codes on EPD_TONE_TABLE_PHASE1, the order of EPD_PHASE1_SET_FULL.
 enum
 {
     TONE_P1_S = 0,
@@ -105,7 +105,7 @@ enum
     TONE_P1_M = 3
 };
 
-// Codes on EPD_VERB_TABLE_SEQ.
+// Codes on EPD_TONE_TABLE_SEQ.
 enum
 {
     TONE_P2_H = 0,

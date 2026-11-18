@@ -1,0 +1,72 @@
+{
+  "output": "../../data/fonts",
+  "cache": "cache",
+  "ranges": {
+    "text": [
+      "U+0020-007E", "U+00A0-00FF", "U+0100-017F", "U+0192", "U+02C6", "U+02DC",
+      "U+2007", "U+2009-200A", "U+2010-2027", "U+202F", "U+2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044",
+      "U+20A0-20C0", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E",
+      "U+2190-2195", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+21D4",
+      "U+2202", "U+2206", "U+220F", "U+2211", "U+2212", "U+2215", "U+2219", "U+221A", "U+221E", "U+222B",
+      "U+2248", "U+2260-2261", "U+2264-2265", "U+22C5",
+      "U+25A0-25A1", "U+25AA-25AB", "U+25B2-25B3", "U+25B6", "U+25B8", "U+25BA", "U+25BC-25BD", "U+25C0",
+      "U+25C2", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6",
+      "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718",
+      "U+FB01-FB02", "U+FFFD"
+    ],
+    "fallback": [
+      "U+0180-06FF", "U+1E00-1EFF", "U+2000-2BFF", "U+3000-30FF", "U+FF00-FFEF", "U+FFFD"
+    ]
+  },
+  "sources": {
+    "liberation": {
+      "url": "https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz",
+      "sha256": "7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0",
+      "archive": "tar.gz",
+      "license": "SIL Open Font License 1.1",
+      "reservedNames": ["Liberation", "Arimo", "Tinos", "Cousine"]
+    },
+    "unifont": {
+      "url": "https://unifoundry.com/pub/unifont/unifont-18.0.01/font-builds/unifont-18.0.01.otf",
+      "sha256": "88d0a14d4aa9a96419720b39ba5da921a59560d76d4ec7d523acc06ed85cd3c2",
+      "archive": "none",
+      "license": "SIL Open Font License 1.1, or GNU GPL 2 or later with the font embedding exception"
+    },
+    "unifont-src": {
+      "url": "https://unifoundry.com/pub/unifont/unifont-18.0.01/unifont-18.0.01.tar.gz",
+      "sha256": "eab60847aac34c8768765cecc7821faf50de2636187b452b9b5fa50a12b00bc3",
+      "archive": "tar.gz",
+      "license": "GNU GPL 2 or later, fonts dual licensed as above"
+    }
+  },
+  "faces": [
+    {"slot": "sans", "file": "sans.ttf", "source": "liberation", "member": "liberation-fonts-ttf-2.1.5/LiberationSans-Regular.ttf", "ranges": "text", "hinting": true, "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"], "nameIds": [0, 1, 2, 3, 4, 5, 6, 13, 14], "rename": {"family": "B26 Sans"}},
+    {"slot": "sans-bold", "file": "sans_b.ttf", "source": "liberation", "member": "liberation-fonts-ttf-2.1.5/LiberationSans-Bold.ttf", "ranges": "text", "hinting": true, "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"], "nameIds": [0, 1, 2, 3, 4, 5, 6, 13, 14], "rename": {"family": "B26 Sans"}},
+    {"slot": "sans-italic", "file": "sans_i.ttf", "source": "liberation", "member": "liberation-fonts-ttf-2.1.5/LiberationSans-Italic.ttf", "ranges": "text", "hinting": true, "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"], "nameIds": [0, 1, 2, 3, 4, 5, 6, 13, 14], "rename": {"family": "B26 Sans"}},
+    {"slot": "sans-bold-italic", "file": "sans_bi.ttf", "source": "liberation", "member": "liberation-fonts-ttf-2.1.5/LiberationSans-BoldItalic.ttf", "ranges": "text", "hinting": true, "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"], "nameIds": [0, 1, 2, 3, 4, 5, 6, 13, 14], "rename": {"family": "B26 Sans"}},
+    {"slot": "serif", "file": "serif.ttf", "source": "liberation", "member": "liberation-fonts-ttf-2.1.5/LiberationSerif-Regular.ttf", "ranges": "text", "hinting": true, "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"], "nameIds": [0, 1, 2, 3, 4, 5, 6, 13, 14], "rename": {"family": "B26 Serif"}},
+    {"slot": "serif-bold", "file": "serif_b.ttf", "source": "liberation", "member": "liberation-fonts-ttf-2.1.5/LiberationSerif-Bold.ttf", "ranges": "text", "hinting": true, "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"], "nameIds": [0, 1, 2, 3, 4, 5, 6, 13, 14], "rename": {"family": "B26 Serif"}},
+    {"slot": "serif-italic", "file": "serif_i.ttf", "source": "liberation", "member": "liberation-fonts-ttf-2.1.5/LiberationSerif-Italic.ttf", "ranges": "text", "hinting": true, "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"], "nameIds": [0, 1, 2, 3, 4, 5, 6, 13, 14], "rename": {"family": "B26 Serif"}},
+    {"slot": "serif-bold-italic", "file": "serif_bi.ttf", "source": "liberation", "member": "liberation-fonts-ttf-2.1.5/LiberationSerif-BoldItalic.ttf", "ranges": "text", "hinting": true, "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"], "nameIds": [0, 1, 2, 3, 4, 5, 6, 13, 14], "rename": {"family": "B26 Serif"}},
+    {"slot": "mono", "file": "mono.ttf", "source": "liberation", "member": "liberation-fonts-ttf-2.1.5/LiberationMono-Regular.ttf", "ranges": "text", "hinting": true, "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"], "nameIds": [0, 1, 2, 3, 4, 5, 6, 13, 14], "rename": {"family": "B26 Mono"}},
+    {"slot": "mono-bold", "file": "mono_b.ttf", "source": "liberation", "member": "liberation-fonts-ttf-2.1.5/LiberationMono-Bold.ttf", "ranges": "text", "hinting": true, "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"], "nameIds": [0, 1, 2, 3, 4, 5, 6, 13, 14], "rename": {"family": "B26 Mono"}},
+    {"slot": "mono-italic", "file": "mono_i.ttf", "source": "liberation", "member": "liberation-fonts-ttf-2.1.5/LiberationMono-Italic.ttf", "ranges": "text", "hinting": true, "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"], "nameIds": [0, 1, 2, 3, 4, 5, 6, 13, 14], "rename": {"family": "B26 Mono"}},
+    {"slot": "mono-bold-italic", "file": "mono_bi.ttf", "source": "liberation", "member": "liberation-fonts-ttf-2.1.5/LiberationMono-BoldItalic.ttf", "ranges": "text", "hinting": true, "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"], "nameIds": [0, 1, 2, 3, 4, 5, 6, 13, 14], "rename": {"family": "B26 Mono"}},
+    {"slot": "fallback", "file": "fallback.otf", "source": "unifont", "ranges": "fallback", "excludeCoveredByAll": ["sans", "sans-bold", "sans-italic", "sans-bold-italic", "serif", "serif-bold", "serif-italic", "serif-bold-italic", "mono", "mono-bold", "mono-italic", "mono-bold-italic"], "hinting": false, "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"], "nameIds": [0, 1, 2, 3, 4, 5, 6, 13, 14]}
+  ],
+  "licenses": [
+    {"file": "LICENSE-Liberation.txt", "source": "liberation", "member": "liberation-fonts-ttf-2.1.5/LICENSE",
+     "header": [
+       "The faces sans*.ttf, serif*.ttf and mono*.ttf in this directory are subsets of the Liberation fonts 2.1.5,",
+       "renamed to B26 Sans, B26 Serif and B26 Mono as the Reserved Font Name clause below requires.",
+       "Their licence follows."
+     ]},
+    {"file": "LICENSE-Unifont.txt", "source": "unifont-src", "member": "unifont-18.0.01/OFL-1.1.txt",
+     "header": [
+       "fallback.otf in this directory is a subset of GNU Unifont 18.0.01. Unifont is dual licensed under the",
+       "SIL Open Font License 1.1 and under the GNU GPL 2 or later with the GNU font embedding exception.",
+       "This pack uses it under the SIL Open Font License 1.1, which follows. Its copyright notice:"
+     ],
+     "copyrightOf": "fallback"}
+  ]
+}

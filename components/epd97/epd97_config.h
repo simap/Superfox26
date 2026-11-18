@@ -142,7 +142,7 @@
 #ifndef EPD_T_PRE_SS
 #define EPD_T_PRE_SS      50u   // after the last 0xA7, before the soft start
 #endif
-// Quick profile for driver B fast and verb sessions, from yig-os
+// Quick profile for driver B fast and tone sessions, from yig-os
 // (DEVICE_INFO.md, 348 ms open): reset 2/4/20 ms, no settle in front of the
 // registers, 0x05 7D 50 ms, 0x05 00 1 ms, load strobes 2/10 ms, 0xB0 10 ms
 // after the last strobe, and the oscillator register 0x03 00 11 after the
@@ -322,10 +322,10 @@
 #define EPD_B_PULLS_MAX 10
 #endif
 
-// --- Verb pass, driver B -----------------------------------------------------
+// --- Tone pass, driver B -----------------------------------------------------
 // Frame period of a driver B pull, in microseconds. yig-os measured 23.7 ms
 // per frame. Used for the pull length logged
-// at epd_verb_open().
+// at epd_tone_open().
 #ifndef EPD_B_FRAME_US
 #define EPD_B_FRAME_US 23700u
 #endif
@@ -337,8 +337,8 @@
 // VDH, red's paper push 82 VDL, red's 30 VDHR, at the stock 28.8 ms frame
 // inferred from the measured 35.4 s refresh. The limits in our frames are
 // the same times at EPD_B_FRAME_US. The tone planner has to keep every
-// pattern under them, phase 1, pad and nudge included. The verb path does
-// not check them.
+// pattern under them, phase 1, pad and nudge included. The driver's tone pass
+// does not check them.
 #define EPD_STOCK_FRAME_US   28800u
 #define EPD_STOCK_PUSH_VDH   66u
 #define EPD_STOCK_PUSH_VDL   82u
@@ -346,11 +346,11 @@
 #define EPD_PUSH_MAX_VDH   ((EPD_STOCK_PUSH_VDH * EPD_STOCK_FRAME_US) / EPD_B_FRAME_US)   // 80
 #define EPD_PUSH_MAX_VDL   ((EPD_STOCK_PUSH_VDL * EPD_STOCK_FRAME_US) / EPD_B_FRAME_US)   // 99
 #define EPD_PUSH_MAX_VDHR  ((EPD_STOCK_PUSH_VDHR * EPD_STOCK_FRAME_US) / EPD_B_FRAME_US)  // 36
-// BUSY ceiling for one verb pull, in ms. The longest verb pull is 35 frames,
+// BUSY ceiling for one tone pull, in ms. The longest cal pull is 35 frames,
 // 830 ms at EPD_B_FRAME_US. A seq pull is 10 frames, 237 ms. A pull that runs
 // past this closes the session and cuts the supply.
-#ifndef EPD_VERB_BUSY_MS
-#define EPD_VERB_BUSY_MS 5000u
+#ifndef EPD_TONE_BUSY_MS
+#define EPD_TONE_BUSY_MS 5000u
 #endif
 
 // --- OTP dump ----------------------------------------------------------------

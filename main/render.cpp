@@ -2,7 +2,7 @@
 // 24-bit RGB band buffer. Each band row is dithered to tone map entries (tone_dither, tones.h) into the
 // tone frame that tones_draw() plays onto the panel. FreeType for text, libpng, libjpeg-turbo, libwebp
 // and own GIF and BMP decoders for images, fetched over HTTP as the engine asks for them.
-// Text: antialiased glyphs blended into the band by coverage in the text colour.
+// Text: antialiased glyphs (text_raster.h) blended into the band by coverage in the text colour.
 
 #include "render.h"
 
@@ -31,6 +31,7 @@
 #include "leds.h"
 #include "sizecache.h"
 #include "tabs.h"
+#include "text_raster.h"
 #include "tones.h"
 #include "url.h"
 
@@ -143,11 +144,14 @@ static std::string b64_decode(const std::string& in)
 
 struct font
 {
-    int          slot = FACE_SANS;
+    int          slot = FACE_SANS; // the slot face_set::resolve picked
     int          px = 16;
     int          decoration = 0;
     font_metrics fm;
 };
+
+// The coverage curves of TEXT_RASTER and FALLBACK_RASTER (text_raster.h), filled by render_init.
+static uint8_t g_text_curve[256], g_fallback_curve[256];
 
 // ---------------------------------------------------------------- container
 
@@ -349,8 +353,12 @@ class bwr_container : public document_container
         probe("courier", "mono");
         probe("menlo", "mono");
         probe("consolas", "mono");
+        probe("monaco", "mono");
         probe("times", "serif");
         probe("georgia", "serif");
+        probe("cambria", "serif");
+        probe("garamond", "serif");
+        probe("palatino", "serif");
         probe("sans", "sans");
         probe("arial", "sans");
         probe("helvetica", "sans");
@@ -368,10 +376,12 @@ class bwr_container : public document_container
                 p += 5;
             }
         }
-        bool bold = d.weight >= 600;
+        const bool bold   = d.weight >= 600;
+        const bool italic = d.style == font_style_italic;
+        const int  base   = cls == "mono" ? FACE_MONO : cls == "serif" ? FACE_SERIF : FACE_SANS;
 
         auto f        = new font();
-        f->slot       = cls == "mono" ? (bold ? FACE_MONO_BOLD : FACE_MONO) : (bold ? FACE_BOLD : FACE_SANS);
+        f->slot       = fonts.resolve(face_slot(base, bold, italic));
         f->px         = std::max(1, static_cast<int>(std::lround(d.size.value())));
         f->decoration = d.decoration_line;
         FT_Face face  = fonts.sized(f->slot, f->px);
@@ -386,10 +396,10 @@ class bwr_container : public document_container
         f->fm.descent      = static_cast<float>((-m.descender + 63) >> 6);
         f->fm.height       = f->fm.ascent + f->fm.descent;
         f->fm.x_height     = static_cast<float>(f->px) * 0.5f;
-        if(!FT_Load_Char(face, 'x', FT_LOAD_DEFAULT))
+        if(!FT_Load_Char(face, 'x', TEXT_RASTER.load))
             f->fm.x_height = static_cast<float>(face->glyph->metrics.height) / 64.0f;
         f->fm.ch_width = static_cast<float>(f->px) * 0.5f;
-        if(!FT_Load_Char(face, '0', FT_LOAD_DEFAULT))
+        if(!FT_Load_Char(face, '0', TEXT_RASTER.load))
             f->fm.ch_width = static_cast<float>(face->glyph->advance.x) / 64.0f;
         f->fm.draw_spaces = (f->decoration != 0);
         f->fm.sub_shift   = static_cast<float>(f->px) / 5.0f;
@@ -404,27 +414,73 @@ class bwr_container : public document_container
         delete f;
     }
 
+    static bool private_use(uint32_t c)
+    {
+        return (c >= 0xE000 && c <= 0xF8FF) || (c >= 0xF0000 && c <= 0xFFFFD) || (c >= 0x100000 && c <= 0x10FFFD);
+    }
+
     // Cached glyph for code point c in font f. With need_bitmap the entry carries the coverage bitmap.
-    // No fallback face: a code point the face lacks gets the face's .notdef glyph.
+    // A code point the face lacks comes from the fallback face at the same pixel size. When that
+    // lacks it too, a private use code point (an icon font's) draws nothing and takes no width, and
+    // any other gets the face's .notdef glyph. text_width and draw_text both call this, so layout
+    // and drawing use the same glyph.
     glyph_cache::entry* glyph(font* f, uint32_t c, bool need_bitmap)
     {
-        uint64_t key = (static_cast<uint64_t>(f->slot) << 40) | (static_cast<uint64_t>(f->px & 0xFFFF) << 21) |
-                       (c & 0x1FFFFF);
-        glyph_cache::entry* e = gcache.find(key);
+        const uint64_t      key = glyph_cache::key(f->slot, f->px, c);
+        glyph_cache::entry* e   = gcache.find(key);
+        if(e && e->face == FACE_FALLBACK) return fallback_glyph(c, f->px, need_bitmap);
         if(e && (!need_bitmap || e->rendered)) return e;
         FT_Face face = fonts.sized(f->slot, f->px);
         if(!face) return nullptr;
         FT_UInt gi = FT_Get_Char_Index(face, c);
-        // The advance always comes from the plain load that text_width uses, so layout and drawing agree.
+        if(!e && !gi)
+        {
+            FT_Face fb = fonts.get(FACE_FALLBACK);
+            if(fb && FT_Get_Char_Index(fb, c))
+            {
+                e           = gcache.insert(key);
+                e->face     = FACE_FALLBACK;
+                e->rendered = true;
+                return fallback_glyph(c, f->px, need_bitmap);
+            }
+            if(private_use(c))
+            {
+                e           = gcache.insert(key);
+                e->face     = static_cast<uint8_t>(f->slot);
+                e->rendered = true;
+                return e;
+            }
+        }
+        return load_glyph(f->slot, f->px, c, gi, e, need_bitmap);
+    }
+
+    glyph_cache::entry* fallback_glyph(uint32_t c, int px, bool need_bitmap)
+    {
+        glyph_cache::entry* e = gcache.find(glyph_cache::key(FACE_FALLBACK, px, c));
+        if(e && (!need_bitmap || e->rendered)) return e;
+        FT_Face fb = fonts.sized(FACE_FALLBACK, px);
+        if(!fb) return nullptr;
+        return load_glyph(FACE_FALLBACK, px, c, FT_Get_Char_Index(fb, c), e, need_bitmap);
+    }
+
+    // Loads glyph gi of slot at px into entry e, a new entry when e is null: the advance, and with
+    // need_bitmap the coverage through the curve of text_raster.h.
+    glyph_cache::entry* load_glyph(int slot, int px, uint32_t c, FT_UInt gi, glyph_cache::entry* e, bool need_bitmap)
+    {
+        FT_Face face = fonts.sized(slot, px);
+        if(!face) return nullptr;
+        const text_raster& r   = slot == FACE_FALLBACK ? FALLBACK_RASTER : TEXT_RASTER;
+        const uint8_t*     lut = slot == FACE_FALLBACK ? g_fallback_curve : g_text_curve;
         if(!e)
         {
-            if(FT_Load_Glyph(face, gi, FT_LOAD_DEFAULT)) return nullptr;
-            e      = gcache.insert(key);
-            e->adv = static_cast<int32_t>(face->glyph->advance.x);
+            if(text_raster_advance(face, gi, r)) return nullptr;
+            e       = gcache.insert(glyph_cache::key(slot, px, c));
+            e->face = static_cast<uint8_t>(slot);
+            e->adv  = static_cast<int32_t>(face->glyph->advance.x);
         }
-        if(need_bitmap)
+        if(need_bitmap && !e->rendered)
         {
-            if(FT_Load_Glyph(face, gi, FT_LOAD_RENDER)) return nullptr;
+            if(text_raster_render(face, gi, r)) return nullptr;
             FT_GlyphSlot     g  = face->glyph;
             const FT_Bitmap& bm = g->bitmap;
             e->left             = static_cast<int16_t>(g->bitmap_left);
@@ -435,7 +491,7 @@ class bwr_container : public document_container
             size_t n            = static_cast<size_t>(e->w) * e->h;
             if(n)
             {
-                // stored as one coverage byte per pixel
+                // stored as one coverage byte per pixel, through the coverage curve
                 e->bm.reset(new uint8_t[n]);
                 for(unsigned y = 0; y < bm.rows; y++)
                 {
@@ -444,7 +500,7 @@ class bwr_container : public document_container
                     for(unsigned x = 0; x < bm.width; x++)
                     {
                         if(bm.pixel_mode == FT_PIXEL_MODE_MONO) d[x] = ((s[x >> 3] >> (7 - (x & 7))) & 1) ? 255 : 0;
-                        else d[x] = s[x];
+                        else d[x] = lut[s[x]];
                     }
                 }
             }
@@ -518,6 +574,8 @@ class bwr_container : public document_container
 
     pixel_t     pt_to_px(float pt) const override { return pt * 96.0f / 72.0f; }
     pixel_t     get_default_font_size() const override { return 16; }
+    // The family of an element no font-family rule reaches. create_font maps it to the serif faces,
+    // as a desktop browser's default. "Arial" here would give the sans faces.
     const char* get_default_font_name() const override { return "Times New Roman"; }
 
     void draw_list_marker(uint_ptr, const list_marker& m) override
@@ -1084,6 +1142,8 @@ static face_set g_fonts;
 bool render_init()
 {
     fetch_init();
+    text_raster_curve(TEXT_RASTER, g_text_curve);
+    text_raster_curve(FALLBACK_RASTER, g_fallback_curve);
     return g_fonts.init();
 }
 
@@ -1219,27 +1279,32 @@ static void update_tab(bwr_container& c, const std::string& key)
     if(changed) tabs_save(key, t);
 }
 
-bool render_tabs(const std::vector<page_entry>& pages, size_t current, uint8_t* frame)
+// Lays out html at VIEW_W and draws its top rows rows into frame rows 0 to rows - 1, in bands of up to
+// BAND_ROWS. For HTML that references nothing by URL: images and stylesheets come only as data URLs.
+// No collect pass runs. key stands in for the page URL.
+static bool draw_local_html(const std::string& html, const char* key, int rows, uint8_t* frame)
 {
-    std::vector<tab_info> infos(pages.size());
-    for(size_t i = 0; i < pages.size(); i++) tabs_load(pages[i].url, infos[i]);
-    std::string html = tabs_html(pages, current, infos, TAB_H);
-    bool        ok   = false;
+    bool ok = false;
     {
-        bwr_container c(g_fonts, "tabs:", TAB_H);
+        bwr_container c(g_fonts, key, rows);
         auto doc = document::createFromString(html, &c, litehtml::master_css, {}, static_release_after_cascade);
         if(!doc) return false;
-        c.phase = 1;
+        c.phase  = 1;
         doc->render(VIEW_W);
-        c.phase = 3;
-        if(c.alloc_window(TAB_H))
+        c.phase  = 3;
+        int band = std::min(rows, BAND_ROWS);
+        if(c.alloc_window(band))
         {
-            c.begin_band(0, TAB_H, TAB_H);
-            position clip(0, 0, VIEW_W, TAB_H);
-            doc->draw(0, 0, 0, &clip);
-            c.end_band(TAB_H);
-            for(int y = 0; y < TAB_H; y++)
-                c.q.row(&c.fb[static_cast<size_t>(y) * VIEW_W * 3], y, frame + static_cast<size_t>(y) * TONE_W);
+            for(int y0 = 0; y0 < rows; y0 += band)
+            {
+                int y1 = std::min(rows, y0 + band);
+                c.begin_band(y0, y1, rows);
+                position clip(0, y0, VIEW_W, y1 - y0);
+                doc->draw(0, 0, 0, &clip);
+                c.end_band(y1);
+                for(int y = y0; y < y1; y++)
+                    c.q.row(&c.fb[static_cast<size_t>(y - y0) * VIEW_W * 3], y, frame + static_cast<size_t>(y) * TONE_W);
+            }
             ok = true;
         }
         c.free_window();
@@ -1247,6 +1312,19 @@ bool render_tabs(const std::vector<page_entry>& pages, size_t current, uint8_t* 
     }
     reset_string_ids();
     return ok;
+}
+
+bool render_tabs(const std::vector<page_entry>& pages, size_t current, uint8_t* frame)
+{
+    std::vector<tab_info> infos(pages.size());
+    for(size_t i = 0; i < pages.size(); i++) tabs_load(pages[i].url, infos[i]);
+    return draw_local_html(tabs_html(pages, current, infos, TAB_H), "tabs:", TAB_H, frame);
+}
+
+bool render_html(const std::string& html, uint8_t* frame)
+{
+    memset(frame, TONE_PAPER, static_cast<size_t>(TONE_W) * TONE_H);
+    return draw_local_html(html, "about:", TONE_H, frame);
 }
 
 bool render_page(const std::string& url, int offset, uint8_t* frame, render_stats& st, std::string& err)
@@ -1390,14 +1468,12 @@ bool render_page(const std::string& url, int offset, uint8_t* frame, render_stat
                  c.n_fonts, c.n_measure, c.n_draw_text, (unsigned)c.gcache.peak, c.gcache.evictions);
         ESP_LOGI(TAG,
                  "images: %u refs, %u probes, %u cache hits, %u in view, %u bytes fetched, "
-                 "%u skipped, %u failed, relayout %d, cache %d entries",
+                 "%u skipped, %u failed, relayout %d",
                  (unsigned)st.images, (unsigned)st.img_probes, (unsigned)st.img_cache_hits, (unsigned)st.img_in_view,
-                 (unsigned)st.img_fetched_bytes, (unsigned)st.img_skipped, (unsigned)st.img_fail, st.relayout ? 1 : 0,
-                 sizecache_count());
+                 (unsigned)st.img_fetched_bytes, (unsigned)st.img_skipped, (unsigned)st.img_fail, st.relayout ? 1 : 0);
         doc.reset();
     }
     // the id table grows across pages without this
     reset_string_ids();
-    sizecache_save();
     return ok;
 }

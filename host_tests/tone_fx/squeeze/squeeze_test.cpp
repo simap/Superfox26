@@ -3,8 +3,8 @@
 // the floor on L at the black entry, as make_target() in main/tones.cpp runs it.
 //
 // Sets, each sRGB through the float Oklab conversion below (a copy of the one in main/tones.cpp):
-//   gray    all 256 grays. Co, Ao and Bo must be exactly 0 and Lo the input L in q15 held at the
-//           black entry's L.
+//   gray    all 256 grays. Co, Ao and Bo must be exactly 0. Lo of white and of black must be the
+//           input L in q15 held at the black entry's L: the two ends do not move.
 //   edge    the image edge, (v, 0, 0) then (255, v, v), 512 colours
 //   random  RANDOM_N colours from xorshift32 with a fixed seed
 //   cube    every sRGB colour, 2^24
@@ -128,7 +128,9 @@ void run(const std::vector<uint32_t>& rgb, set_stats* st, bool gray)
             st->off_hue++;
             st->off_hue_bad += Co[i] != 0 || Ao[i] != 0 || Bo[i] != 0;
         }
-        if(gray && (Co[i] != 0 || Ao[i] != 0 || Bo[i] != 0 || Lo[i] != std::max(lin[i], q15_from(s_black_l))))
+        const uint32_t gv  = rgb[static_cast<size_t>(i)] & 255;
+        const bool     end = gv == 0 || gv == 255;
+        if(gray && (Co[i] != 0 || Ao[i] != 0 || Bo[i] != 0 || (end && Lo[i] != std::max(lin[i], q15_from(s_black_l)))))
         {
             if(st->gray_bad < 5)
                 printf("  gray %u: Lin %d Lo %d Ao %d Bo %d Co %d\n", rgb[i] & 255, lin[i], Lo[i], Ao[i], Bo[i], Co[i]);

@@ -404,14 +404,14 @@ void play_check(const std::vector<uint8_t>& idx, int h, summary_row& s)
     for(size_t i = 0; i < EPD_PLANE_BYTES; i++) clear = clear && !epd_plane_bw()[i] && !epd_plane_red()[i];
     const epd_stub_log& g = g_stub;
     s.pulls1 = g.pulls[TONE_PHASE_1], s.pulls2 = g.pulls[TONE_PHASE_2], s.sends = g.sends;
-    s.play_bad = g.mismatches + g.first_kept + g.bad_open + !ok + !clear + epd_verb_is_open() +
+    s.play_bad = g.mismatches + g.first_kept + g.bad_open + !ok + !clear + epd_tone_is_open() +
                  (g.pulls[TONE_PHASE_1] != plan.len[TONE_PHASE_1]) + (g.pulls[TONE_PHASE_2] != plan.len[TONE_PHASE_2]) +
                  (ds.pulls1 != plan.len[TONE_PHASE_1]) + (ds.pulls2 != plan.len[TONE_PHASE_2]);
     printf("  play: plan %u + %u pulls (B %u), played %u + %u, %u sends, %u opens, %u closes, mismatched pixel "
            "pulls %zu, first pulls kept %u, bad opens %u, %s, session %s, planes %s => %s\n",
            plan.len[TONE_PHASE_1], plan.len[TONE_PHASE_2], plan.mid, g.pulls[TONE_PHASE_1], g.pulls[TONE_PHASE_2],
            g.sends, g.opens, g.closes, g.mismatches, g.first_kept, g.bad_open, ok ? "ok" : "failed",
-           epd_verb_is_open() ? "open" : "closed", clear ? "clear" : "not clear", s.play_bad ? "FAIL" : "pass");
+           epd_tone_is_open() ? "open" : "closed", clear ? "clear" : "not clear", s.play_bad ? "FAIL" : "pass");
 }
 
 void run(const test_case& tc, const std::string& outdir, std::vector<summary_row>& sum)

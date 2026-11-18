@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
-"""Copy the TTF faces into the LittleFS image root under fixed names.
+"""Copy the font pack into the LittleFS image root.
 
 usage: stage_fonts.py FSROOT [FONT_DIR]
 
-Writes FSROOT/fonts/sans.ttf, bold.ttf, mono.ttf and monobold.ttf. FONT_DIR defaults to the
-macOS supplemental fonts. B26_FONT_DIR, B26_FONT_SANS, B26_FONT_BOLD, B26_FONT_MONO and
-B26_FONT_MONO_BOLD in the environment override the directory and the source file names. A copy
-is skipped when the destination already has the same size and a newer time.
+FONT_DIR holds a pack that tools/fontpack wrote: the font files, the licence files and
+manifest.json, which lists them. It defaults to data/fonts in the project, or B26_FONT_DIR in the
+environment. Copies every face and licence file the manifest lists to FSROOT/fonts and removes any
+other file there. The firmware opens the faces by the file names of main/fonts.cpp FACE_FILES, so a
+pack of other fonts keeps those names. A face missing from the pack falls back to another
+(fonts.h face_set::resolve). Only sans.ttf is required.
 """
+import filecmp
+import json
 import os
 import shutil
 import sys
 
-DEFAULT_DIR = "/System/Library/Fonts/Supplemental"
-FACES = [
-    ("sans.ttf", os.environ.get("B26_FONT_SANS", "Arial.ttf")),
-    ("bold.ttf", os.environ.get("B26_FONT_BOLD", "Arial Bold.ttf")),
-    ("mono.ttf", os.environ.get("B26_FONT_MONO", "Courier New.ttf")),
-    ("monobold.ttf", os.environ.get("B26_FONT_MONO_BOLD", "Courier New Bold.ttf")),
-]
+DEFAULT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "fonts")
 
 
 def main():
@@ -26,20 +24,24 @@ def main():
         sys.exit(__doc__)
     root = sys.argv[1]
     font_dir = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("B26_FONT_DIR", DEFAULT_DIR)
+    with open(os.path.join(font_dir, "manifest.json"), encoding="utf-8") as f:
+        manifest = json.load(f)
+    names = [x["file"] for x in manifest["faces"]] + [x["file"] for x in manifest.get("licenses", [])]
+    if "sans.ttf" not in names:
+        sys.exit("%s: the pack has no sans.ttf, which the firmware needs" % font_dir)
     dest_dir = os.path.join(root, "fonts")
     os.makedirs(dest_dir, exist_ok=True)
+    for name in os.listdir(dest_dir):
+        if name not in names:
+            os.remove(os.path.join(dest_dir, name))
     total = 0
-    for dest_name, src_name in FACES:
-        src = os.path.join(font_dir, src_name)
-        dest = os.path.join(dest_dir, dest_name)
-        s = os.stat(src)
-        total += s.st_size
-        if os.path.exists(dest):
-            d = os.stat(dest)
-            if d.st_size == s.st_size and d.st_mtime >= s.st_mtime:
-                continue
-        shutil.copyfile(src, dest)
-    print("fonts staged in %s: %d bytes, %s" % (dest_dir, total, ", ".join(s for _, s in FACES)))
+    for name in names:
+        src = os.path.join(font_dir, name)
+        dest = os.path.join(dest_dir, name)
+        total += os.path.getsize(src)
+        if not os.path.exists(dest) or not filecmp.cmp(src, dest, shallow=False):
+            shutil.copyfile(src, dest)
+    print("fonts staged in %s from %s: %d files, %d bytes" % (dest_dir, os.path.abspath(font_dir), len(names), total))
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 # Name,   Type, SubType, Offset,   Size,     Flags
 # nvs holds the WiFi credentials the driver stores. data is a LittleFS volume with the
-# fonts (fonts/sans.ttf, bold.ttf, mono.ttf, staged by tools/stage_fonts.py at build time)
-# and the URL list written over the serial console (urls.txt).
+# font pack (fonts/, staged by tools/stage_fonts.py from data/fonts at build time) and the
+# URL list written over the serial console (urls.txt).
 nvs,      data, nvs,     0x9000,   0x6000,
 phy_init, data, phy,     0xf000,   0x1000,
 factory,  app,  factory, 0x10000,  0x380000,

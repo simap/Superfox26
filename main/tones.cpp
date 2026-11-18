@@ -318,7 +318,6 @@ TONE_TABLES_RAM std::array<std::array<int16_t, 3>, TONEMAP_COUNT> s_qlin     = t
 TONE_TABLES_RAM std::array<int32_t, TONEMAP_COUNT>                s_pair_mid = make_pairs().mid;
 TONE_TABLES_RAM std::array<int32_t, TONEMAP_COUNT>                s_pair_rel = make_pairs().rel;
 TONE_TABLES_RAM noise_table s_noise = TONES_DITHER_NOISE_BLUE ? tone_tables::noise_blue : white_noise();
-
 const lab_table s_lab   = make_lab(); // flash
 const uint8_t   s_black = static_cast<uint8_t>(entry_of(TONEMAP_BLACK_PATTERN));
 uint8_t*        s_frame  = nullptr;
@@ -970,19 +969,21 @@ bool draw_stock(const uint8_t* frame)
     for(unsigned e = 0; e < N; e++)
         code[e] = hypotf(s_lab[e][1], s_lab[e][2]) > STOCK_RED_C ? 2 : s_lab[e][0] < STOCK_BLACK_L ? 1 : 0;
     build_planes(frame, code);
-    return refresh_display(EPD_SLOW);
+    const bool ok = refresh_display(EPD_SLOW);
+    epd_sleep(); // the supply is not needed after the refresh
+    return ok;
 }
 
 // A session on the phase's table, reopened when the open one differs. Phase 1 opens
-// EPD_VERB_TABLE_PHASE1 at unit 1 (the driver sets its drive), phase 2 EPD_VERB_TABLE_SEQ at
+// EPD_TONE_TABLE_PHASE1 at unit 1 (the driver sets its drive), phase 2 EPD_TONE_TABLE_SEQ at
 // TONE_NUDGE_FRAMES.
 esp_err_t session_open(tone_phase ph)
 {
-    const epd_verb_table_t table = ph == TONE_PHASE_1 ? EPD_VERB_TABLE_PHASE1 : EPD_VERB_TABLE_SEQ;
+    const epd_tone_table_t table = ph == TONE_PHASE_1 ? EPD_TONE_TABLE_PHASE1 : EPD_TONE_TABLE_SEQ;
     const uint8_t          unit  = ph == TONE_PHASE_1 ? 1 : TONE_NUDGE_FRAMES;
-    if(epd_verb_is_open() && epd_verb_table() == table && (table != EPD_VERB_TABLE_SEQ || epd_verb_unit() == unit))
+    if(epd_tone_is_open() && epd_tone_table() == table && (table != EPD_TONE_TABLE_SEQ || epd_tone_unit() == unit))
         return ESP_OK;
-    return epd_verb_open_table(unit, 0, table);
+    return epd_tone_open_table(unit, 0, table);
 }
 
 // Every pull of phase 1, then every pull of phase 2. At pull k each counted entry plays
@@ -1031,11 +1032,11 @@ esp_err_t play(const uint8_t* frame, const uint32_t count[TONEMAP_COUNT], tone_d
                 if(code[e] != prev[e] || (code[e] != 0 && code[e] != 3)) repeat = false;
             }
             uint32_t ms = 0;
-            if(repeat) err = epd_verb_pull(1, false, &ms);
+            if(repeat) err = epd_tone_pull(1, false, &ms);
             else
             {
                 build_planes(frame, code);
-                err = epd_verb_pass(1, &ms);
+                err = epd_tone_pass(1, &ms);
                 st->sends++;
             }
             st->pull_ms += ms;
@@ -1173,7 +1174,9 @@ bool tones_draw(const uint8_t* frame, tone_draw_stats* st)
     if(s_seq_ok)
     {
         const esp_err_t err = play(frame, count, st);
-        epd_verb_close();
+        // The supply stays on from phase 1 to phase 2 (EPD_KEEP_SUPPLY). After the last pull the
+        // panel holds its image without power, so the session closes and the supply is cut.
+        epd_sleep();
         epd_clear();
         if(err == ESP_ERR_NOT_SUPPORTED)
         {

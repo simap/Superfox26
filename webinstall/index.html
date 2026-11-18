@@ -1,0 +1,909 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Superfox26, a browser for the Supercon X badge</title>
+<!-- The logo as PNG at 16, 32 and 64 px. 16 px is logo/favicon.svg, without the "26". The larger two
+     are logo/superfox26.svg. The browser takes the size for its device pixels. -->
+<link rel="icon" type="image/png" sizes="16x16" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAMAAAAoLQ9TAAABy1BMVEX///96HhljGxdTGBVNGRaEHxmKHhiAIx1vJiJiIR1lGhVjGRWkODGeNi90LimEcWyxrqfCwLm6tq+Sg31pODRKGBWTNC3LbmNSJyQ5OTdubmq3ta78+fDOzMV3d3NISUc2GhhnHBe/X1aKVU5QTkwQEBEMDAwnJyaIh4I+PTsNDQ1CQkBINTM5FBKCQDrDcWd+aGORkYwPDw8REREQEBBsa2iFhYAODw9gGRWWRj+qZFubk43c2tJMS0kzMjG/vLYaGhqIHhjBRjycWlGmoJr//PKqqKIXFxeAfnr7+O/LycEhICB5HRi/PDOmXFOYj4rS0Mg9PTsoJya0sqy7ubIZGRmrLCTBZlt6Yl6KioUVFRRoZ2R8e3cODg6LJB7YdWmOV1BGQ0EREhIyMjCfnZhMTEk7OzlBLSuyT0bYin5eMy9APTuBgXzIxr7++/Lb2dGMi4dRUU5DGhhmGxdeGha4TUTSfnOLVU96ZWCdlpCtqaOjnZiCc254QDudKCFGGBWIIBquJBy9OjHRal/Dc2imZ16YXlafXFSwU0q3Ny+MIhtrHRiUIhurJByzJh7BQzrXdGjMaF2uRz95JiFvHBhkHBh5HhmAIBpnGBR2NRiCAAAAAXRSTlMAQObYZgAAAN5JREFUGNNjYIAARiYGBGBmYWVj5+Dk4oYJ8PDy8QsICgmLiEL4YuISklLSMrJy8gqKYAElZRVVNXUNTTUtbR1dIF9P38DQyNhE1cRYzdTMnIHBwtLK2sZW1djY2MRO0N6BgcHRydnF1c0dKGLk4enlzcDg4+vnHxBoAlIRFBwSCjQjLDwiEmhGlKqxWnRMLFAgLj4hMSk2OSU11igtHWxtRmZWdk5uXn5BYVExWKCktKy8orKquqa2Dsyvb2hsam5pbWvv6OyCOL27p7evf8LESZOnwL07ddp0xhlQNgBcWjMKps8CEwAAAABJRU5ErkJggg==">
+<link rel="icon" type="image/png" sizes="32x32" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAB11BMVEX///85FhQ9FxQTEREYEhJVGhZ3HRiTIhucIxxKGRYxFRMcEhJkGxe4Jx+0Jh6sJR2LIRt/HxkzFRNMGRaDHxpaGRVFGBU6FhRUGhZ2HRiDNS+tKSEyMC9hYV2Li4alo56XlpF4eHRFREIrGxpRGRa1KiLOYVfSZlxGGBU5NjSUk43c2dH28+r59u3u6+K8urNcXFlqHBjom46fOTIvMTCbmZTBv7jAvrfx7uXGw7y1s61fYF0bFBRsHRiEIBo+FxVwHRjDSD/qopW2W1ESEhIbGhrNy8ODgn2hKCHein3bg3dSHRk1NDMODg5APz2Bf3tXV1SSPzgsJCO4tq87OzlgX1xlZWF7MSxtbWnm49skIyNNTEqtq6UgIB+dSkLwq51IR0WopqAPDxDh39ePjYhRUU4REREiEhGYl5GIhoFtKiVwb2vk4tnJW1Dnmo1eIR3GUUfz8Od7enVpaGRKSUfSz8g4FhTCRj1wKiXIxr/Qzsa5NCsyLSzX1MxBQT8SERG7YlgnGBcsLCuiJB3PZ1zfjYGxr6jpn5IcEA/qppngj4JiIx41Ghjikobxs6XGbWK9OzLusKLvr6GMMSspFBOLHxnVc2ftqZyZRT1vcG2uTkXFTkS/QDdH/SkYAAAAAXRSTlMAQObYZgAAAtlJREFUOMt1k/lfEkEYxoE4lpTlUES8UK5CdoAsDHQ9kFkVZPIAURYP8KjMFbxTyVRIy4rUSq3sj20WS/moPT+9O/Odnfd95n0FghsSiu4J/iuxRCoj5HcD90sE4lJCoSCVMpW6VHT7rFpTJlMoy7UVOp2uUi9TSW4AemVVtVKvqamtMxjqG4ymSlmluHjfbLE+IB7aGu0U4OVwukyPKotyERLWpseaJ+7mp3ZAUZTH29zSSre1d1wBnb4uvwbSDMMYuwHl6cEBA+k24l8i4t5AsM8YQhBC9Kzb00/jANIDjK7NfAlIfF2DQ2EjD0AUGaZRITJEEdRcZjoSDMpHYwWAjbOIjkd4YMw7DkvwLs51YtJvcnoSGHAluxunXNMzLAZaPLPoOQbkohf+ySrbNEiyCCaTjU7W+ZJPojYG5hDEgJbQ+rtezXooysDC+cRMS4Jz97BwmAMgCXnATCoXUulWXD6oh5AJN8Q5d8xl5AAFnAwPlCnJxVTatYT9WYZoxcvO2lfXRkPYDxAuAOsE+Tq1seqgHP00qtmsRRjYmsd+AGAoXCEoJzOpwTd2ag5n5h4LRWano9ujCL3dBstop2ATaQns7iUd2AcmvLbpTDhblrO8D3iFL1OwniPf7fcNcLxR2UikBrIsmsLAwQEDLx+00+J7P7Hn5gGEkKuOLTgN3fEPO38fu9d6+PFTNot3EazlgIEtRJHPV91pzuS/HFWgcVsotILrpwyRUCgL6XLzVT9Ij/MnuxVZt53DhmLFOO/Anpooajr1ceDrUdoUDXNLAFCOrTqb7ptCWtST308zZ+f7P+R7NtfPhmhiSDPyK6MUXY9LpzpHWhbz5wF/VVou79uYOLJmSP31eUlOQWJZFvbPz5vy+VRT8KKaJIRFN3S0kwVZLvInh/kzX7Vem7sxORKVEv/F8nvRd2whpCKx1nxr+Mo6VUQuR5xKJev4S3P3cAuF4luLfwCBT7VVrnW3aAAAAABJRU5ErkJggg==">
+<link rel="icon" type="image/png" sizes="64x64" href="data:image/png;base64,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">
+<style>
+  :root {
+    --paper: #f3f0e8; --card: #fbfaf6; --ink: #1b1a18; --dim: #6b675f; --line: #d6d1c4; --red: #b3261e;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --paper: #161514; --card: #1f1e1c; --ink: #ebe7dd; --dim: #9a958a; --line: #3a3834; --red: #e0574c; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.5 system-ui, sans-serif; }
+  main { max-width: 50rem; margin: 0 auto; padding: 2rem 1rem 4rem; }
+  header { display: flex; align-items: center; gap: .9rem; margin-bottom: 1.5rem; }
+  .mark { width: 4.5rem; height: 4.5rem; flex: none; }
+  h1 { font-size: 1.5rem; margin: 0; line-height: 1.2; }
+  header p { margin: 0; color: var(--dim); }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+  h2 { font-size: 1.05rem; margin: 0 0 .6rem; }
+  h2 b { display: inline-block; width: 1.5rem; height: 1.5rem; margin-right: .4rem; border-radius: 50%; background: var(--ink);
+         color: var(--card); font-size: .85rem; line-height: 1.5rem; text-align: center; }
+  p { margin: .5rem 0; }
+  .dim, small { color: var(--dim); font-size: .875rem; }
+  .row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin: .6rem 0; }
+  .grow { flex: 1 1 12rem; min-width: 0; }
+  button, input, textarea { font: inherit; color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: .4rem .7rem; background: var(--paper); }
+  input, textarea { width: 100%; }
+  /* A page URL: grows to as many lines as the URL takes, so all of it shows. */
+  textarea { field-sizing: content; resize: none; word-break: break-all; display: block; }
+  input[type=radio] { width: auto; }
+  input[type=number] { width: 5.5rem; }
+  button { cursor: pointer; white-space: nowrap; }
+  button:hover { border-color: var(--ink); }
+  button.main { background: var(--red); border-color: var(--red); color: #fff; font-weight: 600; }
+  button:disabled, .busy button, .busy input { opacity: .5; pointer-events: none; }
+  :focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+  label { display: block; }
+  #msg { min-height: 1.5rem; margin: 0 0 1rem; font-weight: 600; }
+  section > details > summary { font-size: 1.05rem; }
+  section > details[open] > summary { margin-bottom: .6rem; }
+  .pw { position: relative; display: flex; }
+  .pw input { padding-right: 2.6rem; }
+  #eye { position: absolute; right: 0; top: 0; bottom: 0; width: 2.4rem; padding: 0; border: 0; background: none; }
+  #eye svg { width: 1.2rem; height: 1.2rem; vertical-align: middle; fill: none; stroke: currentColor; stroke-width: 2; }
+  #eye[aria-pressed=false] .slash { display: none; }
+  /* The page list: one grid row per page. The column heads and the add form use the same columns. */
+  .page { display: grid; grid-template-columns: 1.4rem 1.5rem minmax(0, 1fr) 4.4rem 4.4rem 11rem; gap: .35rem;
+          align-items: start; padding: .25rem 0; border-radius: 6px; }
+  .page.heads { padding: 0; color: var(--dim); font-size: .8rem; font-weight: 600; }
+  .page input, .page textarea, .page button { padding: .25rem .5rem; }
+  .page input[type=number] { width: 100%; }
+  .page.drag { opacity: .4; }
+  .page.before { box-shadow: 0 -3px 0 var(--red); }
+  .page.after { box-shadow: 0 3px 0 var(--red); }
+  .page.cur .num { color: var(--red); }
+  .grip { align-self: stretch; display: flex; align-items: center; justify-content: center; border-radius: 4px;
+          cursor: grab; color: var(--dim); touch-action: none; }
+  .grip:hover { background: var(--line); color: var(--ink); }
+  .grip svg { width: .6rem; height: 1rem; fill: currentColor; }
+  .num { padding-top: .3rem; text-align: right; font-weight: 600; }
+  .acts { display: flex; gap: .25rem; justify-content: flex-end; }
+  .acts button { font-size: .875rem; line-height: 1.5rem; }
+  .acts .load { flex: 1; }
+  .acts .load.on { background: var(--red); border-color: var(--red); color: #fff; }
+  .acts .icon { flex: none; width: 1.9rem; padding: .25rem 0; }
+  .icon svg { width: .9rem; height: .9rem; vertical-align: -.1rem; fill: none; stroke: currentColor; stroke-width: 2;
+              stroke-linecap: round; stroke-linejoin: round; }
+  @media (max-width: 40rem) {
+    .page { grid-template-columns: 1.4rem 1.5rem 1fr 1fr; }
+    .page.heads { display: none; }
+    .page textarea, .page input[type=url], .acts { grid-column: 3 / -1; }
+    .page .c-scroll { grid-column: 3; }
+    .page .c-min { grid-column: 4; }
+    .grip { grid-row: 1 / span 3; }
+  }
+  #msg.err { color: var(--red); }
+  progress { width: 100%; height: .6rem; accent-color: var(--red); }
+  a { color: inherit; }
+  #nets button { font-size: .875rem; padding: .2rem .6rem; }
+  pre { margin: .6rem 0; height: 16rem; overflow: auto; padding: .6rem; background: var(--paper); border: 1px solid var(--line);
+        border-radius: 6px; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; }
+  summary { cursor: pointer; font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <!-- logo/superfox26.svg -->
+    <svg class="mark" viewBox="-58.5 -23.75 473.5 473.5" role="img" aria-label="Superfox26 logo">
+      <circle cx="196.4" cy="196.4" r="176" fill="#f6f3ea"/>
+      <g fill="#111">
+        <path d="M77.05,86.53v62.42c0,2.51,1,4.92,2.78,6.7l34.05,34.05c3.7,3.7,3.7,9.7,0,13.41l-34.05,34.05c-1.78,1.78-2.78,4.19-2.78,6.7v62.42c0,5.24,4.24,9.48,9.48,9.48h62.42c2.51,0,4.92-1,6.7-2.78l34.05-34.05c3.7-3.7,9.7-3.7,13.41,0l34.05,34.05c1.78,1.78,4.19,2.78,6.7,2.78h62.42c5.24,0,9.48-4.24,9.48-9.48v-62.42c0-2.51-1-4.92-2.78-6.7l-34.05-34.05c-3.7-3.7-3.7-9.7,0-13.41l34.05-34.05c1.78-1.78,2.78-4.19,2.78-6.7v-62.42c0-5.24-4.24-9.48-9.48-9.48h-62.42c-2.51,0-4.92,1-6.7,2.78l-34.05,34.05c-3.7,3.7-9.7,3.7-13.41,0l-34.05-34.05c-1.78-1.78-4.19-2.78-6.7-2.78h-62.42c-5.24,0-9.48,4.24-9.48,9.48Z"/>
+        <path d="M196.41,40c41.78,0,81.05,16.27,110.59,45.81,29.54,29.54,45.81,68.82,45.81,110.6s-16.27,81.05-45.81,110.59c-29.54,29.54-68.82,45.81-110.6,45.81s-81.05-16.27-110.59-45.81c-29.54-29.54-45.81-68.82-45.81-110.6s16.27-81.05,45.81-110.59c29.54-29.54,68.82-45.81,110.6-45.81M196.41,0h0C87.93,0,0,87.93,0,196.4h0c0,108.47,87.93,196.41,196.4,196.41h0c108.47,0,196.4-87.93,196.4-196.4h0C392.81,87.93,304.88,0,196.41,0h0Z"/>
+      </g>
+      <path fill="#f6f3ea" d="M170.3 160.6Q170.3 153.4 168.9 150.6Q167.6 147.8 164.4 147.8Q161.2 147.8 158.6 151L158.6 165.9Q158.6 168 158.5 169.1Q158.3 170.1 157.3 171.4Q156.2 172.7 153.9 173.5L137.1 180L134.8 177.8Q139.2 172.9 139.2 167.4L139.2 148.9Q139.2 147.9 156.3 141Q173.4 134 176.4 134Q179.4 134 184.6 141.2Q189.8 148.4 189.8 152.3L189.8 174.5Q189.8 183.1 180.3 200.3Q170.8 217.5 161.4 230.3L152 243.2Q170 242.9 172.9 242.9Q181.8 242.9 183.8 237.6Q185.5 237.7 186.4 237.7L187.3 237.7L196.4 250.9Q195.9 251.7 195 253Q194.1 254.4 191 256.6Q187.8 258.8 184.1 258.8L138.5 258.8Q135.1 250 135.1 243.7Q135.1 241.6 143.9 228.4Q152.6 215.2 161.5 200.7Q170.3 186.2 170.3 181L170.3 160.6M204.3 235.1L204.3 184.4Q204.3 174.4 210 162Q215.7 149.6 221.5 141.8Q227.4 134 229.3 134Q233.4 134 239.8 136Q246.2 138.1 250.5 140.2L254.9 142.1L254.9 147L250.2 147Q241.9 147 233.8 157.4Q225.6 167.9 224 180.8Q241.8 172.9 244.3 172.9Q246.8 172.9 252.4 180.4Q258 187.8 258 193.2L258 243.7Q258 245 240.2 251.9Q222.5 258.8 218.5 258.8Q214.6 258.8 209.4 251.8Q204.3 244.9 204.3 235.1M232.1 243.9Q235.1 243.9 238.4 241.3L238.4 200.5Q238.4 195.3 235.4 191.9Q232.4 188.5 223.8 188.5L223.8 231.9Q223.8 243.9 232.1 243.9"/>
+      <path d="M356,255 Q352,372 262,442 Q268,415 277,396 Q105,495 -25,369 Q10,364 34,359 Q-59,277 -54,143 Q-34,164 -19,178 Q-15,75 69,1 Q66,24 65,40 Q128,-15 222,-16 Q207,-5 196,3 Q264,4 329,49 Q314,46 303,45 Q360,76 411,127 Q346,103 330,92 A170,170 0 1 0 356,255 Z" fill="#b3261e" stroke="#111" stroke-width="8" stroke-linejoin="round"/>
+      <path d="M313,336 Q244,410 131,411 Q148,404 161,398 Q61,373 -4,282 Q11,291 22,297 Q-17,216 1,118 Q4,134 6,145 Q17,78 76,42 Q66,61 57,79 A182,182 0 0 0 313,336 Z" fill="#f0b4a6"/>
+    </svg>
+    <div>
+      <h1>Superfox26</h1>
+      <p>A browser for the Supercon X badge. Install it and set it up here.</p>
+    </div>
+  </header>
+
+  <p id="msg" role="status"></p>
+
+  <!-- Two screens. start: connect and install. config: the settings of a badge that answers. -->
+  <div id="start">
+    <section>
+      <h2><b>1</b>Connect</h2>
+      <p>Connect the badge with a USB cable and switch it on.</p>
+      <button id="connect" class="main">Connect badge</button>
+    </section>
+
+    <section>
+      <h2><b>2</b>Install</h2>
+      <p id="fw" class="dim">Loading firmware.bin</p>
+      <label><input type="radio" name="mode" id="full" checked> Full install. Erases the WiFi settings and the page list.</label>
+      <label><input type="radio" name="mode" id="update"> Update. Keeps the WiFi settings and the page list.</label>
+      <div class="row">
+        <button id="install" class="main" disabled>Install</button>
+        <button id="tosettings" hidden>Settings</button>
+        <progress id="bar" class="grow" value="0" max="1" hidden></progress>
+      </div>
+      <small>
+        If the bootloader does not answer: hold BOOT, press RESET, release BOOT, then connect and install again.
+        If the first LED flashes red after an install, switch the badge off and on.
+      </small>
+    </section>
+  </div>
+
+  <div id="config" hidden>
+    <section>
+      <h2>Badge</h2>
+      <p id="badge"></p>
+      <p id="fwstate" class="dim"></p>
+      <div class="row">
+        <button id="refresh">Refresh status</button>
+        <button id="tofirmware">Install firmware</button>
+      </div>
+    </section>
+
+    <section>
+      <!-- Closed while the badge is connected to a network. -->
+      <details id="wifibox" open>
+        <summary id="net">WiFi</summary>
+        <form id="wifi">
+          <div class="row">
+            <input id="ssid" class="grow" placeholder="Network name" maxlength="32" required autocapitalize="off" autocomplete="off" spellcheck="false">
+            <span class="pw grow">
+              <input id="pass" type="password" placeholder="Password" maxlength="63" autocomplete="off">
+              <button type="button" id="eye" aria-pressed="false" aria-label="Show the password" title="Show the password">
+                <svg viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path class="slash" d="M4 4l16 16"/></svg>
+              </button>
+            </span>
+          </div>
+          <div class="row">
+            <button class="main">Save</button>
+            <button type="button" id="scan">Scan</button>
+            <button type="button" id="forget">Forget</button>
+          </div>
+          <div id="nets" class="row"></div>
+        </form>
+      </details>
+    </section>
+
+    <section>
+      <h2>Pages</h2>
+      <p id="listinfo" class="dim"></p>
+      <div class="page heads">
+        <span></span><span></span><span>URL</span>
+        <span title="The first row of the page that shows, in pixels">Scroll</span>
+        <span title="Time on the panel. Empty: the default">Minutes</span><span></span>
+      </div>
+      <div id="pages"></div>
+      <form id="add" class="page">
+        <span></span><span></span>
+        <input id="url" type="url" placeholder="Add a page: https://example.com/" pattern="https?://.+" required aria-label="URL of the new page">
+        <input id="off" class="c-scroll" type="number" min="0" placeholder="0" aria-label="Scroll">
+        <input id="min" class="c-min" type="number" min="0" step="any" aria-label="Minutes">
+        <span class="acts"><button class="main load">Add</button></span>
+      </form>
+      <div class="row">
+        <button id="prev">Show previous page</button>
+        <button id="next">Show next page</button>
+        <button id="builtin">Use the built-in list</button>
+      </div>
+    </section>
+  </div>
+
+  <section>
+    <details>
+      <summary>Serial log</summary>
+      <pre id="log"></pre>
+      <form id="raw" class="row">
+        <input id="line" class="grow" placeholder="Console command, for example help" autocapitalize="off" autocomplete="off" spellcheck="false">
+        <button>Send</button>
+      </form>
+    </details>
+  </section>
+</main>
+
+<script type="module">
+import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.7.1/bundle.js";
+
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const VID = 0x303a;        // Espressif. The badge's USB Serial/JTAG port is 303a:1001.
+const PT_OFFSET = 0x8000;  // partition table offset in flash
+
+// ---- firmware.bin: the merged flash image from tools/build_webinstall.sh ----
+
+function parseImage(img) {
+  if (img.length < 0x10000 || img[0] !== 0xe9) throw new Error("firmware.bin is not a merged ESP32 flash image.");
+  const dv = new DataView(img.buffer);
+  const parts = [];
+  for (let o = PT_OFFSET; o < PT_OFFSET + 0xc00 && dv.getUint16(o, true) === 0x50aa; o += 32)
+    parts.push({ type: img[o + 2], offset: dv.getUint32(o + 4, true), size: dv.getUint32(o + 8, true) });
+  const app = parts.find(p => p.type === 0);
+  if (!app) throw new Error("firmware.bin has no partition table.");
+  // esp_app_desc_t follows the image header and the first segment header.
+  const d = app.offset + 0x20;
+  const text = (o, n) => new TextDecoder().decode(img.subarray(o, o + n)).replace(/\0[^]*/, "");
+  if (dv.getUint32(d, true) !== 0xabcd5432) throw new Error("firmware.bin has no app description.");
+  // The build date and time, and the first 8 bytes of the ELF hash. The badge's status command
+  // prints the same two values, so the page can tell if the badge runs this build.
+  const built = `${text(d + 96, 16)} ${text(d + 80, 16)}`;
+  const sha = [...img.subarray(d + 144, d + 152)].map(b => b.toString(16).padStart(2, "0")).join("");
+  return { img, parts, built, sha };
+}
+
+// The regions to write. Bootloader and partition table, then one region per partition: all of them
+// for a full install, the app only for an update. A blank partition (nvs) is written whole, which
+// erases it. Trailing 0xFF is cut at a sector boundary, one sector past the last other byte, so a
+// short run of real 0xFF bytes at the end of an image is still written.
+function segments({ img, parts }, full) {
+  const out = [{ address: 0, data: img.subarray(0, PT_OFFSET + 0x1000) }];
+  for (const p of parts) {
+    if (!full && p.type !== 0) continue;
+    const end = Math.min(p.offset + p.size, img.length);
+    let n = end;
+    while (n > p.offset && img[n - 1] === 0xff) n--;
+    n = n > p.offset ? Math.min(end, (n + 0x1fff) & ~0xfff) : end;
+    out.push({ address: p.offset, data: img.subarray(p.offset, n) });
+  }
+  return out;
+}
+
+const firmware = fetch("firmware.bin", { cache: "no-cache" }).then(async r => {
+  if (!r.ok) throw new Error(`firmware.bin: HTTP ${r.status}`);
+  return parseImage(new Uint8Array(await r.arrayBuffer()));
+});
+firmware.then(
+  fw => $("fw").textContent = `Firmware built ${fw.built}.`,
+  e => $("fw").textContent = e.message);
+
+// ---- the port ----
+
+// The part of Web Serial's port interface this page and esptool-js use, over WebUSB CDC-ACM.
+// For browsers with WebUSB and without Web Serial.
+class UsbPort {
+  constructor(dev) { this.dev = dev; this.dtr = this.rts = false; }
+  getInfo() { return { usbVendorId: this.dev.vendorId, usbProductId: this.dev.productId }; }
+  async open() {
+    const d = this.dev;
+    await d.open();
+    if (!d.configuration) await d.selectConfiguration(1);
+    const data = d.configuration.interfaces.find(i => i.alternate.interfaceClass === 0x0a);
+    const comm = d.configuration.interfaces.find(i => i.alternate.interfaceClass === 0x02);
+    if (!data || !comm) throw new Error("This USB device has no serial interface.");
+    this.comm = comm.interfaceNumber;
+    await d.claimInterface(this.comm);
+    await d.claimInterface(data.interfaceNumber);
+    const ep = dir => data.alternate.endpoints.find(e => e.direction === dir && e.type === "bulk").endpointNumber;
+    const epIn = ep("in"), epOut = ep("out");
+    this.readable = new ReadableStream({
+      async pull(c) {
+        try {
+          for (;;) {
+            const { data } = await d.transferIn(epIn, 4096);
+            if (data && data.byteLength) return c.enqueue(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+          }
+        } catch (e) { c.error(e); }
+      },
+    });
+    this.writable = new WritableStream({ write: chunk => d.transferOut(epOut, chunk).then(() => {}) });
+  }
+  async setSignals({ dataTerminalReady = this.dtr, requestToSend = this.rts }) {
+    this.dtr = dataTerminalReady;
+    this.rts = requestToSend;
+    // SET_CONTROL_LINE_STATE
+    await this.dev.controlTransferOut(
+      { requestType: "class", recipient: "interface", request: 0x22, value: (this.dtr ? 1 : 0) | (this.rts ? 2 : 0), index: this.comm });
+  }
+  async close() {
+    this.readable = this.writable = null;
+    await this.dev.close();
+  }
+}
+
+let port = null;      // SerialPort or UsbPort, open for the console
+let reader = null, readDone = null, closing = false;
+let partial = "";     // the line being received
+let onReply = null;   // set while a command waits for its OK and ERR lines
+let chain = Promise.resolve();
+
+function log(line) {
+  const el = $("log");
+  let t = el.textContent + line + "\n";
+  if (t.length > 60000) t = t.slice(-40000);
+  el.textContent = t;
+  el.scrollTop = el.scrollHeight;
+}
+
+function say(text, err = false) {
+  $("msg").textContent = text;
+  $("msg").className = err ? "err" : "";
+}
+
+function feed(text) {
+  const lines = (partial + text).split("\n");
+  partial = lines.pop();
+  for (let line of lines) {
+    line = line.replace(/\r|\x1b\[[0-9;]*m/g, "");
+    const reply = /^(OK|ERR)\b/.test(line);
+    if (hush === null || !(reply || line === hush)) log(line);
+    if (onReply && reply) onReply(line);
+    if (line.startsWith("EVT ")) event(line);
+  }
+}
+
+// The command of a silent cmd() while it runs, else null. Its echo and its OK and ERR lines stay
+// out of the log, so the page's own status reads do not push the badge's log lines away.
+let hush = null;
+
+const isBusy = s => s === "render" || s === "refresh";
+
+// An event line of the badge: the browser's state or the WiFi link changed. The page follows
+// these lines and sends no status command during a load or a draw.
+function event(line) {
+  if (!badge) return;
+  let m;
+  if ((m = line.match(/^EVT state=(\w+) index=(\d+)/))) {
+    badge.state = m[1];
+    badge.index = +m[2];
+    if (loading) {
+      // The Load in progress: its button follows the load, then the draw, then the end.
+      const now = isBusy(badge.state), n = loading.n;
+      loading.drew ||= badge.state === "refresh";
+      if (loading.busy && !now) {
+        say(loading.drew ? `Page ${n} is on the panel.` : `Page ${n} did not draw. The serial log has the reason.`, !loading.drew);
+        loading = null;
+      } else {
+        loading.busy ||= now;
+        loading.label = badge.state === "render" ? "Loading" : badge.state === "refresh" ? "Drawing" : "Starting";
+      }
+    }
+  } else if ((m = line.match(/^EVT wifi connected=(\d)(?: ip=(\S+))?/))) {
+    badge.connected = m[1] === "1";
+    badge.ip = m[2] || "";
+    badge.rssi = "";   // not known until the next status read
+  } else return;
+  paint();
+}
+
+// No setSignals call here: RTS high with DTR low resets the badge, and a reset during a panel
+// draw halts it until a power cycle.
+async function openConsole(p) {
+  await p.open({ baudRate: 115200 });
+  port = p;
+  partial = "";
+  closing = false;
+  reader = p.readable.getReader();
+  readDone = (async () => {
+    const dec = new TextDecoder();
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        feed(dec.decode(value, { stream: true }));
+      }
+    } catch (e) {
+      log(`[port: ${e.message}]`);
+    }
+    reader.releaseLock();
+    if (!closing) lost("The badge is disconnected.");
+  })();
+}
+
+async function closeConsole() {
+  closing = true;
+  await reader.cancel().catch(() => {});
+  await readDone;
+  await port.close().catch(() => {});
+}
+
+let badge = null;   // the last status of a badge that runs the firmware, else null
+let wifiUp = null;  // the WiFi link state the WiFi section last followed
+
+// The settings screen, or the connect and install screen.
+function show(settings) {
+  $("start").hidden = settings;
+  $("config").hidden = !settings;
+  $("tosettings").hidden = !badge;
+}
+
+function lost(text) {
+  if (port) port.close().catch(() => {});
+  port = null;
+  badge = null;
+  $("install").disabled = true;
+  show(false);
+  say(text, true);
+}
+
+async function knownPorts() {
+  if (navigator.serial) return (await navigator.serial.getPorts()).filter(p => p.getInfo().usbVendorId === VID);
+  return (await navigator.usb.getDevices()).filter(d => d.vendorId === VID).map(d => new UsbPort(d));
+}
+
+// After a reset the port can come back as a new object. Permission for the device stays.
+async function reopenConsole() {
+  const old = port;
+  await sleep(1500);
+  for (let i = 0; i < 20; i++) {
+    for (const p of [old, ...(await knownPorts())]) {
+      try {
+        await openConsole(p);
+        return true;
+      } catch {}
+    }
+    await sleep(500);
+  }
+  return false;
+}
+
+// ---- console commands ----
+
+async function write(text) {
+  const w = port.writable.getWriter();
+  try {
+    await w.write(new TextEncoder().encode(text));
+  } finally {
+    w.releaseLock();
+  }
+}
+
+// Sends one line and collects the OK and ERR lines of the reply. The console has no end mark, so
+// the reply ends 200 ms after its last line. until: a line that must arrive first, for replies with
+// a pause in them. Resolves with the lines received, none when the badge is silent.
+function cmd(line, { until = null, timeout = 3000, silent = false } = {}) {
+  const run = () => new Promise((resolve, reject) => {
+    const lines = [];
+    let ending = !until, quiet;
+    hush = silent ? line : null;
+    const done = () => {
+      clearTimeout(limit);
+      clearTimeout(quiet);
+      onReply = null;
+      hush = null;
+      resolve(lines);
+    };
+    const limit = setTimeout(done, timeout);
+    onReply = l => {
+      lines.push(l);
+      if (l.startsWith("ERR") || (until && until.test(l))) ending = true;
+      if (ending) {
+        clearTimeout(quiet);
+        quiet = setTimeout(done, 200);
+      }
+    };
+    write(line + "\n").catch(e => {
+      done();
+      reject(e);
+    });
+  });
+  return chain = chain.then(run, run);
+}
+
+function check(lines) {
+  const err = lines.find(l => l.startsWith("ERR"));
+  if (err) throw new Error(err.slice(4));
+  if (!lines.length) throw new Error("The badge did not answer.");
+  return lines;
+}
+
+// Quotes a word for the console's line parser.
+const q = s => `"${s.replace(/[\\"]/g, "\\$&")}"`;
+
+async function status(silent = false) {
+  const text = (await cmd("status", { until: /^OK heap/, timeout: 2500, silent })).join("\n");
+  // ip is empty while WiFi is not connected.
+  const m = text.match(/^OK wifi ssid="(.*)" connected=(\d) ip=(\S*) rssi=(-?\d+)/m);
+  if (!m) return null;
+  // A build from before the app line has no date and no hash, and counts as a different build.
+  const app = text.match(/^OK app built="([^"]*)" sha=(\w+)/m) || [];
+  return {
+    ssid: m[1], connected: m[2] === "1", ip: m[3], rssi: m[4],
+    source: (text.match(/ source=(\w+) wake=/) || [])[1],
+    state: (text.match(/ state=(\w+)/) || [])[1],
+    built: app[1] || "", sha: app[2] || "",
+    index: +(text.match(/ index=(\d+)/) || [])[1] || 0,
+    count: +(text.match(/ count=(\d+)/) || [])[1] || 0,
+  };
+}
+
+const STATES = {
+  wait: "showing a page", render: "loading a page", refresh: "drawing the panel",
+  nowifi: "waiting for WiFi", nourls: "waiting for a page list", sleep: "going to sleep", lowbatt: "battery low",
+};
+
+// Reads the status into badge and shows it. Null when no firmware answers.
+// silent: a read the page makes on its own. It stays out of the log, and a missed answer does not
+// count as a lost badge.
+async function refresh(silent = false) {
+  const st = await status(silent);
+  if (!st) {
+    if (!silent) badge = null;
+    return null;
+  }
+  const fw = await firmware.catch(() => null);
+  st.same = !!fw && fw.sha === st.sha;
+  badge = st;
+  $("fwstate").textContent = (st.built ? `Firmware built ${st.built}.` : "Firmware from before build dates were reported.")
+    + (st.same ? " It is the build this page installs." : fw ? ` This page installs the build of ${fw.built}.` : "");
+  if (!$("ssid").value) $("ssid").value = st.ssid;
+  paint();
+  return st;
+}
+
+// Shows badge, after a status read or an event line.
+function paint() {
+  const st = badge;
+  // The badge's index is already one past the page it shows or works on, and wraps to 0. In
+  // another state a notice or nothing is on the panel.
+  st.shown = ["wait", "render", "refresh"].includes(st.state) ? st.index || st.count : 0;
+  $("badge").textContent = `On ${st.source === "usb" ? "USB power" : "battery"}, ${STATES[st.state] || st.state}.`;
+  $("net").textContent = !st.ssid ? "WiFi (no network stored)"
+    : st.connected ? `WiFi (connected to ${[st.ssid, st.ip, st.rssi && st.rssi + " dBm"].filter(Boolean).join(", ")})`
+    : `WiFi (${st.ssid} is stored, not connected)`;
+  // Open or close the section when the link state changes, not on every read, so it stays as the
+  // user set it.
+  if (wifiUp !== st.connected) $("wifibox").open = !(wifiUp = st.connected);
+  mark();
+}
+
+// A silent status read every 30 s while the badge is idle, for the signal level and the power
+// source. None during a load or a draw: the badge's event lines cover those.
+setInterval(() => {
+  if (port && badge && !busy && !loading && !isBusy(badge.state) && !document.hidden) refresh(true).catch(() => {});
+}, 30000);
+
+// Waits while the badge loads or draws a page: one status read, then the badge's event lines.
+// False when no firmware answers.
+async function untilIdle(text) {
+  if (!(await refresh(true))) return false;
+  for (let i = 0; i < 240 && badge && isBusy(badge.state); i++) {
+    say(text);
+    await sleep(500);
+  }
+  // A build without event lines never reports the end, so read once more before giving up.
+  if (badge && isBusy(badge.state) && isBusy((await refresh(true) || {}).state)) throw new Error("The badge is still busy. Try again later.");
+  return true;
+}
+
+function el(tag, props = {}, ...kids) {
+  const e = Object.assign(document.createElement(tag), props);
+  e.append(...kids);
+  return e;
+}
+
+async function loadPages() {
+  const lines = check(await cmd("urls", { until: /^OK \d+ pages/ }));
+  const builtin = lines[0].includes("(builtin)");
+  const def = +(lines[0].match(/seconds 0 = (\d+)/) || [])[1] || 0;
+  $("listinfo").textContent = (builtin ? "The built-in list." : "The list stored on the badge.")
+    + ` A page with no minutes set stays for ${minutes(def)} minutes. The red number is the page on the panel.`;
+  $("min").placeholder = minutes(def);
+  $("builtin").hidden = builtin;
+  const rows = lines.map(l => l.match(/^OK (\d+) (\S+) (\d+) (\d+)$/)).filter(Boolean);
+  if (badge) badge.count = rows.length;
+  $("pages").replaceChildren(...rows.map(([, n, url, off, sec], i) => {
+    // One console command, then the list again, since the numbers change.
+    const act = (line, done) => () => run(async () => {
+      check(await cmd(line()));
+      await loadPages();
+      say(done);
+    });
+    const button = (label, line, done) => {
+      const b = el("button", { type: "button", textContent: label });
+      b.onclick = act(line, done);
+      return b;
+    };
+    const urlIn = el("textarea", { rows: 1, className: "grow", value: url, spellcheck: false });
+    // Enter saves the URL. The handler must not return false: that cancels the key, and every other
+    // key in the field with it.
+    urlIn.onkeydown = e => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      urlIn.blur();
+    };
+    const offIn = el("input", { type: "number", className: "c-scroll", min: 0, value: off });
+    const minIn = el("input", { type: "number", className: "c-min", min: 0, step: "any", value: +sec ? minutes(sec) : "", placeholder: minutes(def) });
+    urlIn.onchange = offIn.onchange = minIn.onchange = act(
+      () => `url put ${n} ${pageUrl(urlIn.value)} ${offIn.value || 0} ${seconds(minIn.value)}`, `Page ${n} changed.`);
+    urlIn.ariaLabel = `URL of page ${n}`;
+    offIn.ariaLabel = "Scroll";
+    minIn.ariaLabel = "Minutes";
+    const load = el("button", { type: "button", className: "load", textContent: "Load", title: "Draw this page on the badge now" });
+    load.onclick = () => run(() => loadPage(+n));
+    const icon = (svg, label, line, done) => Object.assign(button("", line, done), { className: "icon", innerHTML: svg, title: label, ariaLabel: label });
+    const up = icon(UP, "Move up", () => `url move ${n} ${+n - 1}`, `Page ${n} moved up.`);
+    const down = icon(DOWN, "Move down", () => `url move ${n} ${+n + 1}`, `Page ${n} moved down.`);
+    up.disabled = i === 0;
+    down.disabled = i === rows.length - 1;
+    const grip = el("span", { className: "grip", title: "Drag to move this page", innerHTML: GRIP });
+    const card = el("div", { className: "page" },
+      grip, el("span", { className: "num" }, n), urlIn, offIn, minIn,
+      el("span", { className: "acts" }, load, up, down, icon(CROSS, "Remove", () => `url del ${n}`, `Page ${n} removed.`)));
+    draggable(card, grip, +n);
+    return card;
+  }));
+  mark();
+}
+
+const GRIP = `<svg viewBox="0 0 8 12"><circle cx="2" cy="2" r="1.1"/><circle cx="6" cy="2" r="1.1"/><circle cx="2" cy="6" r="1.1"/>`
+  + `<circle cx="6" cy="6" r="1.1"/><circle cx="2" cy="10" r="1.1"/><circle cx="6" cy="10" r="1.1"/></svg>`;
+const UP = `<svg viewBox="0 0 16 16"><path d="M3 10l5-5 5 5"/></svg>`;
+const DOWN = `<svg viewBox="0 0 16 16"><path d="M3 6l5 5 5-5"/></svg>`;
+const CROSS = `<svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg>`;
+
+// The Load in progress, which its button shows: {n, label, busy, drew}, or null.
+let loading = null;
+
+// Shows the page the badge has on its panel or is working on (a red number), and the Load button
+// that is in progress.
+function mark() {
+  [...$("pages").children].forEach((card, i) => {
+    const b = card.querySelector(".load"), on = !!loading && loading.n === i + 1;
+    card.classList.toggle("cur", !!badge && badge.shown === i + 1);
+    b.textContent = on ? loading.label : "Load";
+    b.classList.toggle("on", on);
+  });
+}
+
+// The badge keeps seconds. The page shows minutes, and an empty field is 0, the default.
+const minutes = sec => String(+(sec / 60).toFixed(2));
+const seconds = min => Math.round((parseFloat(min) || 0) * 60);
+
+// Reorder by drag and drop. A card can be dragged only while its handle is held, so the text in
+// its fields can still be selected with the mouse. The red line shows where the page lands.
+let dragFrom = 0;
+function draggable(card, grip, n) {
+  const clear = () => { for (const c of $("pages").children) c.classList.remove("before", "after"); };
+  // A release anywhere ends it. A release off the handle with no drag would leave the card
+  // draggable, and then the mouse drags the row and cannot select the URL text.
+  grip.onpointerdown = () => {
+    card.draggable = true;
+    addEventListener("pointerup", () => card.draggable = false, { once: true });
+  };
+  card.ondragstart = e => {
+    dragFrom = n;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", card.querySelector("textarea").value);
+    card.classList.add("drag");
+  };
+  card.ondragend = () => {
+    card.draggable = false;
+    card.classList.remove("drag");
+    dragFrom = 0;
+    clear();
+  };
+  card.ondragover = e => {
+    if (!dragFrom) return;
+    e.preventDefault();
+    const r = card.getBoundingClientRect();
+    clear();
+    card.classList.add(e.clientY > r.top + r.height / 2 ? "after" : "before");
+  };
+  card.ondrop = e => {
+    if (!dragFrom) return;
+    e.preventDefault();
+    // url move takes the page out, then puts it in at the new number.
+    const from = dragFrom, to = n + (card.classList.contains("after") ? 1 : 0) - (from < n ? 1 : 0);
+    if (from === n || to === from) return;
+    run(async () => {
+      check(await cmd(`url move ${from} ${to}`));
+      await loadPages();
+      say(`Page ${from} moved to place ${to}.`);
+    });
+  };
+}
+
+// Draws page n on the badge now. The badge takes the command only between pages, so this waits for
+// a load or a draw to end first.
+async function loadPage(n) {
+  if (!(await untilIdle(`The badge is busy. Page ${n} loads when that ends.`))) throw new Error("The badge did not answer.");
+  check(await cmd(`load ${n}`));
+  say(`Page ${n} is loading. The draw takes about 21 s after the page has loaded.`);
+  // event() moves this on from the badge's state lines. The timer ends it for a badge that sends
+  // none.
+  const mine = loading = { n, label: "Starting", busy: false, drew: false };
+  mark();
+  setTimeout(() => {
+    if (loading !== mine) return;
+    loading = null;
+    mark();
+  }, 180000);
+}
+
+// The page list file separates its fields with spaces, so a URL cannot hold one.
+function pageUrl(u) {
+  u = u.trim();
+  if (!/^https?:\/\/\S+$/.test(u)) throw new Error("A page URL starts with http:// or https:// and has no spaces.");
+  return u;
+}
+
+// ---- actions ----
+
+let busy = false;
+async function run(fn) {
+  if (busy) return;
+  busy = true;
+  document.body.classList.add("busy");
+  try {
+    await fn();
+  } catch (e) {
+    if (e.name !== "NotFoundError") say(e.message || String(e), true);   // NotFoundError: the chooser was closed
+  }
+  busy = false;
+  document.body.classList.remove("busy");
+}
+
+$("connect").onclick = () => run(async () => {
+  const p = navigator.serial
+    ? await navigator.serial.requestPort({ filters: [{ usbVendorId: VID }] })
+    : new UsbPort(await navigator.usb.requestDevice({ filters: [{ vendorId: VID }] }));
+  if (port) await closeConsole();
+  port = null;
+  await openConsole(p);
+  $("install").disabled = false;
+  await write("\n");   // ends a line left in the badge's input buffer
+  await sleep(300);
+  const st = await refresh();
+  // A badge with the firmware keeps its settings by default.
+  $(st ? "update" : "full").checked = true;
+  if (st) await loadPages();
+  show(!!st && st.same);
+  say(!st ? "The port is open. No Superfox26 firmware answers. Install it."
+    : st.same ? "The badge is connected."
+    : "The badge runs another build of the firmware. Update it, or go to the settings.");
+});
+
+$("tosettings").onclick = () => show(true);
+$("tofirmware").onclick = () => show(false);
+
+async function install() {
+  const fw = await firmware;
+  const segs = segments(fw, $("full").checked);
+  const total = segs.reduce((n, s) => n + s.data.length, 0);
+
+  // A reset during a panel draw halts the badge until a power cycle (README, Cut draw).
+  if (badge) await untilIdle("Waiting for the page draw to end.");
+
+  say("Starting the bootloader.");
+  await closeConsole();
+  const transport = new Transport(port, false);
+  const terminal = { clean() {}, write: log, writeLine: s => /^Writing at/.test(s) || log(s) };
+  let ok = false;
+  $("bar").value = 0;
+  $("bar").hidden = false;
+  try {
+    const loader = new ESPLoader({ transport, baudrate: 115200, romBaudrate: 115200, terminal });
+    try {
+      await loader.main();
+    } catch (e) {
+      throw new Error(`The bootloader did not answer (${e.message}). Hold BOOT, press RESET, release BOOT, then connect and install again.`);
+    }
+    if (loader.chip.CHIP_NAME !== "ESP32-S3") throw new Error(`This is an ${loader.chip.CHIP_NAME}, not the badge.`);
+    say("Writing. Keep the badge connected.");
+    let before = 0, last = 0;
+    await loader.writeFlash({
+      fileArray: segs, flashMode: "keep", flashFreq: "keep", flashSize: "keep", eraseAll: false, compress: true,
+      reportProgress(i, written, size) {
+        if (i !== last) before += segs[last].data.length;
+        last = i;
+        $("bar").value = (before + segs[i].data.length * written / size) / total;
+      },
+    });
+    // Reset into the app: RTS high with DTR low holds the chip in reset.
+    await transport.setDTR(false);
+    await transport.setRTS(true);
+    await sleep(100);
+    await transport.setRTS(false);
+    ok = true;
+  } finally {
+    await transport.disconnect().catch(() => {});
+    $("bar").hidden = true;
+    if (!(await reopenConsole())) lost(ok ? "Installed. Connect the badge again to set it up." : "The badge is disconnected.");
+  }
+  if (!port) return;
+  say("Installed. Waiting for the badge to start.");
+  badge = null;
+  for (let i = 0; i < 10 && !(await refresh()); i++) await sleep(500);
+  show(!!badge);
+  if (!badge) return say("Installed. The badge does not answer yet. Use Connect badge again.", true);
+  await loadPages();
+  say(badge.same ? "Installed." : "Installed, but the badge reports another build than this page holds.", !badge.same);
+}
+$("install").onclick = () => run(install);
+
+$("wifi").onsubmit = e => {
+  e.preventDefault();
+  run(async () => {
+    const ssid = $("ssid").value, pass = $("pass").value;
+    check(await cmd(`wifi ${q(ssid)}${pass ? " " + q(pass) : ""}`));
+    say("Stored. Connecting.");
+    // The badge's wifi event line ends the wait. One status read after it gives the details.
+    if (badge) badge.connected = false;
+    for (let i = 0; i < 50 && badge && !badge.connected; i++) await sleep(500);
+    const st = await refresh();
+    if (st && st.connected) say(`Connected to ${ssid}.`);
+    else say("Not connected. Check the password. The radio is off during a page draw.", true);
+  });
+};
+
+$("eye").onclick = () => {
+  const show = $("pass").type === "password";
+  $("pass").type = show ? "text" : "password";
+  $("eye").setAttribute("aria-pressed", show);
+  $("eye").title = $("eye").ariaLabel = show ? "Hide the password" : "Show the password";
+};
+
+$("scan").onclick = () => run(async () => {
+  say("Scanning.");
+  const lines = check(await cmd("scan", { until: /^OK \d+ networks/, timeout: 12000 }));
+  const best = new Map();   // strongest entry per name, in the badge's order
+  for (const l of lines) {
+    const m = l.match(/^OK ch\s+\d+\s+(-?\d+) dBm \S+\s+(.*)$/);
+    if (m && m[2] !== "(hidden)" && !best.has(m[2])) best.set(m[2], m[1]);
+  }
+  $("nets").replaceChildren(...[...best].map(([name, dbm]) => {
+    const b = el("button", { type: "button", textContent: `${name} (${dbm} dBm)` });
+    b.onclick = () => {
+      $("ssid").value = name;
+      $("pass").value = "";
+      $("pass").focus();
+    };
+    return b;
+  }));
+  say(`${best.size} networks found, 2.4 GHz only.`);
+});
+
+$("forget").onclick = () => confirm("Remove the stored WiFi network from the badge?") && run(async () => {
+  check(await cmd("wifi clear"));
+  $("ssid").value = $("pass").value = "";
+  await refresh();
+  say("The WiFi network is removed.");
+});
+
+$("refresh").onclick = () => run(async () => {
+  if (!(await refresh())) throw new Error("The badge did not answer.");
+  say("Status read.");
+});
+
+$("add").onsubmit = e => {
+  e.preventDefault();
+  run(async () => {
+    const reply = check(await cmd(`url add ${pageUrl($("url").value)} ${$("off").value || 0} ${seconds($("min").value)}`));
+    $("add").reset();
+    await loadPages();
+    say(`Added. ${reply[0].slice(3)}.`);
+  });
+};
+
+for (const id of ["prev", "next"])
+  $(id).onclick = () => run(async () => say(check(await cmd(id))[0].slice(3) + "."));
+
+$("builtin").onclick = () => confirm("Remove the stored page list and use the built-in list?") && run(async () => {
+  check(await cmd("url clear"));
+  await loadPages();
+  say("The built-in list is in use.");
+});
+
+$("raw").onsubmit = e => {
+  e.preventDefault();
+  run(async () => {
+    if (!port) throw new Error("Connect the badge first.");
+    await cmd($("line").value, { timeout: 500 });
+    $("line").value = "";
+  });
+};
+
+if (!navigator.serial && !navigator.usb) {
+  $("connect").disabled = true;
+  say("This browser has no Web Serial and no WebUSB. Use Chrome or Edge.", true);
+}
+</script>
+</body>
+</html>

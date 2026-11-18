@@ -29,10 +29,11 @@ inline void squeeze_one(const int16_t* k, int16_t L, int16_t A, int16_t B, q15* 
 {
     const int16_t L0 = vmax(L, 0);
     const int16_t c  = vmax(adds(mul(A, k[K_H0], 15), mul(B, k[K_H1], 15)), 0);
-    const int16_t e  = vmax(img_edge(k, L0), k[K_LSB]);
+    const int16_t e0 = img_edge(k, L0);
+    const int16_t e  = vmax(e0, k[K_LSB]);
     const int16_t cm = vmin(c, e);
     const int16_t hm = mul(subs(e, k[K_LSB]), k[K_HALF], 15); // floor((e - 1) / 2), r > hm is 2r >= e
-    const int16_t L2 = vmax(adds(L0, mul(cm, k[K_G], 15)), 0);
+    const int16_t L2 = vmax(adds(L0, mul(e0, k[K_G], 15)), 0);
     *lo              = vmax(L2, k[K_LB]);
     // Restoring division, q = floor(cm / e * 2^DIV_BITS). r <= e after every bit, 2r <= 2 * red_c.
     int16_t r = cm, q = 0;

@@ -3,17 +3,20 @@
 // With TONEMAP_GAMMA 1 the float steps reduce to these, per colour:
 //   L0  = max(L, 0)
 //   c   = max(a * hue0 + b * hue1, 0), the chroma along the hue of sRGB red
-//   e   = img(L0), the image edge, the most chroma of an sRGB colour at L0 on that hue
+//   e0  = img(L0), the image edge, the most chroma of an sRGB colour at L0 on that hue
+//   e   = max(e0, 1), the divisor
 //   cm  = min(c, e)
-//   L2  = max(L0 + G * cm, 0), G = TONEMAP_COMPRESS * (cusp_l - red_l) / red_c
+//   L2  = max(L0 + G * e0, 0), G = TONEMAP_COMPRESS * (cusp_l - red_l) / red_c
 //   c2  = cm / e * pan(L2), pan the panel edge
-// L0 + G * cm is 0 or above in real numbers. The floor at 0 catches the -1 the rounding of the
-// product gives near black, where the panel edge would go below 0.
+// The move of L reads the edge and not the colour's chroma, so every colour of one lightness moves
+// alike. e0 is 0 at white and at black, so both stay. L0 + G * e0 is 0 or above in real numbers.
+// The floor at 0 catches the -1 the rounding of the product gives near black, where the panel edge
+// would go below 0.
 //   out L2 held at or above the black entry's L, c2 * hue0, c2 * hue1, and c2.
 // The float code moves L by TONEMAP_COMPRESS * (flat - L) with flat = max(L - wr * red_l, 0) +
-// wr * cusp_l and wr = share * img(L) / red_c = cm / red_c. The image edge lies at or below the ray
+// wr * cusp_l and wr = img(L) / red_c. The image edge lies at or below the ray
 // from black through sRGB red, img(L) <= red_c / red_l * L, so wr * red_l <= L, the clamp at 0
-// never acts and flat - L = cm * (cusp_l - red_l) / red_c. The float result c2 / c * (a, b) is
+// never acts and flat - L = img(L) * (cusp_l - red_l) / red_c. The float result c2 / c * (a, b) is
 // c2 * (hue0, hue1), since the float code set a and b to c * hue0 and c * hue1 the line before.
 //
 // Edge curves. A vector lane has no load by per lane index, so neither edge is read from the 65
@@ -157,14 +160,14 @@ void tone_fx_squeeze(const q15* L, const q15* A, const q15* B, int n, q15* Lo, q
         "ee.vldbc.16.ip  q5, %[k], 2         \n" // HALF
         "ee.vadds.s16    q2, q2, q3          \n" // chord
         "ee.vldbc.16.ip  q3, %[k], 2         \n" // G
-        "ee.vmin.s16     q6, q6, q2          \n" // e = min(e, chord)
-        "ee.vmax.s16     q6, q6, q4          \n" // e = max(e, 1)
+        "ee.vmin.s16     q6, q6, q2          \n" // e0 = min(e, chord)
+        "ee.vmul.s16     q3, q6, q3          \n" // e0 * G
+        "ee.vmax.s16     q6, q6, q4          \n" // e = max(e0, 1)
         "ee.vmin.s16     q1, q1, q6          \n" // cm = min(c, e), the divide's r from here
         "ee.vsubs.s16    q4, q6, q4          \n" // e - 1
-        "ee.vmul.s16     q3, q1, q3          \n" // cm * G
         "ee.vmul.s16     q5, q4, q5          \n" // hm = floor((e - 1) / 2)
         "ee.vldbc.16.ip  q4, %[k], 2         \n" // LB
-        "ee.vadds.s16    q0, q0, q3          \n" // L2 = L0 + cm * G
+        "ee.vadds.s16    q0, q0, q3          \n" // L2 = L0 + e0 * G
         "ee.vcmp.gt.s16  q2, q1, q5          \n" // first bit = r > hm
         "ee.vmax.s16     q0, q0, q7          \n" // L2 = max(L2, 0)
         "ee.vmax.s16     q4, q0, q4          \n" // Lo = max(L2, LB)

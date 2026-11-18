@@ -1,0 +1,18 @@
+{
+  "name": "browser26-fontpack",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Builds the browser26 font pack from source fonts and fontpack.json",
+  "type": "module",
+  "engines": {
+    "node": ">=23.6"
+  },
+  "scripts": {
+    "build": "node fontpack.ts build",
+    "check": "node fontpack.ts check",
+    "test": "node fontpack.ts check"
+  },
+  "dependencies": {
+    "harfbuzzjs": "1.6.4"
+  }
+}

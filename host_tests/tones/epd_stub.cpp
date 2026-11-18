@@ -18,14 +18,14 @@ namespace
 uint8_t          s_bw[EPD_PLANE_BYTES], s_red[EPD_PLANE_BYTES];   // the framebuffer planes
 uint8_t          s_reg_bw[EPD_PLANE_BYTES], s_reg_red[EPD_PLANE_BYTES]; // the COG's plane registers
 bool             s_open  = false;
-epd_verb_table_t s_table = EPD_VERB_TABLE_VERB;
+epd_tone_table_t s_table = EPD_TONE_TABLE_CAL;
 uint8_t          s_unit  = 0;
 unsigned         s_k     = 0; // pulls played in the open session
 
 void pull_once()
 {
     epd_stub_log&    g  = g_stub;
-    const tone_phase ph = s_table == EPD_VERB_TABLE_PHASE1 ? TONE_PHASE_1 : TONE_PHASE_2;
+    const tone_phase ph = s_table == EPD_TONE_TABLE_PHASE1 ? TONE_PHASE_1 : TONE_PHASE_2;
     if(g.frame && g.count)
     {
         uint8_t want[TONEMAP_COUNT];
@@ -62,15 +62,15 @@ bool refresh_display(epd_refresh_t mode)
     return true;
 }
 
-esp_err_t epd_verb_open_table(uint8_t unit_frames, uint8_t vcom_level, epd_verb_table_t table)
+esp_err_t epd_tone_open_table(uint8_t unit_frames, uint8_t vcom_level, epd_tone_table_t table)
 {
     if(g_stub.no_tables) return ESP_ERR_NOT_SUPPORTED;
     epd_stub_log& g = g_stub;
     g.opens++;
-    // Phase 1 opens EPD_VERB_TABLE_PHASE1 before any phase 2 pull, phase 2 EPD_VERB_TABLE_SEQ at
+    // Phase 1 opens EPD_TONE_TABLE_PHASE1 before any phase 2 pull, phase 2 EPD_TONE_TABLE_SEQ at
     // TONE_NUDGE_FRAMES after every phase 1 pull. VCOM is ground.
-    const bool p1 = table == EPD_VERB_TABLE_PHASE1 && g.pulls[TONE_PHASE_2] == 0;
-    const bool p2 = table == EPD_VERB_TABLE_SEQ && unit_frames == TONE_NUDGE_FRAMES &&
+    const bool p1 = table == EPD_TONE_TABLE_PHASE1 && g.pulls[TONE_PHASE_2] == 0;
+    const bool p2 = table == EPD_TONE_TABLE_SEQ && unit_frames == TONE_NUDGE_FRAMES &&
                     g.pulls[TONE_PHASE_1] == g.plan.len[TONE_PHASE_1];
     if(vcom_level != 0 || !(p1 || p2)) g.bad_open++;
     s_open  = true;
@@ -82,11 +82,11 @@ esp_err_t epd_verb_open_table(uint8_t unit_frames, uint8_t vcom_level, epd_verb_
     return ESP_OK;
 }
 
-esp_err_t epd_verb_pull(unsigned pulls, bool resend, uint32_t* panel_ms_total)
+esp_err_t epd_tone_pull(unsigned pulls, bool resend, uint32_t* panel_ms_total)
 {
     if(panel_ms_total) *panel_ms_total = 0;
     if(!s_open) return ESP_ERR_INVALID_STATE;
-    if(pulls == 0 || pulls > EPD_VERB_PULLS_MAX) return ESP_ERR_INVALID_ARG;
+    if(pulls == 0 || pulls > EPD_TONE_PULLS_MAX) return ESP_ERR_INVALID_ARG;
     if(resend)
     {
         memcpy(s_reg_bw, s_bw, sizeof(s_bw));
@@ -99,29 +99,35 @@ esp_err_t epd_verb_pull(unsigned pulls, bool resend, uint32_t* panel_ms_total)
     return ESP_OK;
 }
 
-esp_err_t epd_verb_pass(unsigned pulls, uint32_t* panel_ms_total)
+esp_err_t epd_tone_pass(unsigned pulls, uint32_t* panel_ms_total)
 {
-    return epd_verb_pull(pulls, true, panel_ms_total);
+    return epd_tone_pull(pulls, true, panel_ms_total);
 }
 
-void epd_verb_close(void)
+void epd_tone_close(void)
 {
     if(!s_open) return;
     s_open = false;
     g_stub.closes++;
 }
 
-bool epd_verb_is_open(void)
+// The driver's epd_sleep() closes the session and cuts the supply. The stub has no supply.
+void epd_sleep(void)
+{
+    epd_tone_close();
+}
+
+bool epd_tone_is_open(void)
 {
     return s_open;
 }
 
-epd_verb_table_t epd_verb_table(void)
+epd_tone_table_t epd_tone_table(void)
 {
-    return s_open ? s_table : EPD_VERB_TABLE_VERB;
+    return s_open ? s_table : EPD_TONE_TABLE_CAL;
 }
 
-uint8_t epd_verb_unit(void)
+uint8_t epd_tone_unit(void)
 {
     return s_open ? s_unit : 0;
 }

@@ -1,0 +1,464 @@
+{
+  "generator": {
+    "tool": "tools/fontpack",
+    "subsetter": "harfbuzzjs 1.6.4"
+  },
+  "totalBytes": 985113,
+  "faces": [
+    {
+      "slot": "sans",
+      "file": "sans.ttf",
+      "size": 61784,
+      "sha256": "00ad73afe9b87a7bd19452aaf3bc5dc93830f5b5d9b23992b543763e50f3d927",
+      "glyphs": 437,
+      "codepoints": 416,
+      "requested": 454,
+      "missing": 38,
+      "family": "B26 Sans",
+      "style": "Regular",
+      "source": {
+        "name": "liberation",
+        "url": "https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz",
+        "sha256": "7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0",
+        "member": "liberation-fonts-ttf-2.1.5/LiberationSans-Regular.ttf",
+        "fileSha256": "76d04c18ea243f426b7de1f3ad208e927008f961dc5945e5aad352d0dfde8ee8",
+        "family": "Liberation Sans",
+        "version": "Version 2.1.5",
+        "license": "SIL Open Font License 1.1"
+      },
+      "options": {
+        "ranges": "text",
+        "rangeList": ["U+0020-007E", "U+00A0-00FF", "U+0100-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010-2027", "U+202F", "U+2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20C0", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211", "U+2212", "U+2215", "U+2219", "U+221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+22C5", "U+25A0-25A1", "U+25AA-25AB", "U+25B2-25B3", "U+25B6", "U+25B8", "U+25BA", "U+25BC-25BD", "U+25C0", "U+25C2", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FB01-FB02", "U+FFFD"],
+        "hinting": true,
+        "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"],
+        "nameIds": [0,1,2,3,4,5,6,13,14],
+        "rename": {
+          "family": "B26 Sans"
+        }
+      },
+      "mapped": ["U+0020-007E", "U+00A0-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010", "U+2012-2022", "U+2026", "U+202F-2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20B5", "U+20BF", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211-2212", "U+2215", "U+2219-221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+25A0-25A1", "U+25AA-25AB", "U+25B2", "U+25BA", "U+25BC", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+FB01-FB02"],
+      "notInSource": ["U+2011", "U+2023-2025", "U+2027", "U+20B6-20BE", "U+20C0", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+22C5", "U+25B3", "U+25B6", "U+25B8", "U+25BD", "U+25C0", "U+25C2", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FFFD"]
+    },
+    {
+      "slot": "sans-bold",
+      "file": "sans_b.ttf",
+      "size": 60552,
+      "sha256": "5ced382b45ce1ea2bd91ee772a49bc5530eb38521bde9a158561f140c2d4fb3a",
+      "glyphs": 437,
+      "codepoints": 416,
+      "requested": 454,
+      "missing": 38,
+      "family": "B26 Sans",
+      "style": "Bold",
+      "source": {
+        "name": "liberation",
+        "url": "https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz",
+        "sha256": "7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0",
+        "member": "liberation-fonts-ttf-2.1.5/LiberationSans-Bold.ttf",
+        "fileSha256": "788abee4c806d660e8aee46689dd8540cd4bb98da03dcc9d171ce3efd99a9173",
+        "family": "Liberation Sans",
+        "version": "Version 2.1.5",
+        "license": "SIL Open Font License 1.1"
+      },
+      "options": {
+        "ranges": "text",
+        "rangeList": ["U+0020-007E", "U+00A0-00FF", "U+0100-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010-2027", "U+202F", "U+2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20C0", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211", "U+2212", "U+2215", "U+2219", "U+221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+22C5", "U+25A0-25A1", "U+25AA-25AB", "U+25B2-25B3", "U+25B6", "U+25B8", "U+25BA", "U+25BC-25BD", "U+25C0", "U+25C2", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FB01-FB02", "U+FFFD"],
+        "hinting": true,
+        "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"],
+        "nameIds": [0,1,2,3,4,5,6,13,14],
+        "rename": {
+          "family": "B26 Sans"
+        }
+      },
+      "mapped": ["U+0020-007E", "U+00A0-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010", "U+2012-2022", "U+2026", "U+202F-2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20B5", "U+20BF", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211-2212", "U+2215", "U+2219-221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+25A0-25A1", "U+25AA-25AB", "U+25B2", "U+25BA", "U+25BC", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+FB01-FB02"],
+      "notInSource": ["U+2011", "U+2023-2025", "U+2027", "U+20B6-20BE", "U+20C0", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+22C5", "U+25B3", "U+25B6", "U+25B8", "U+25BD", "U+25C0", "U+25C2", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FFFD"]
+    },
+    {
+      "slot": "sans-italic",
+      "file": "sans_i.ttf",
+      "size": 60104,
+      "sha256": "5920bd5d42acae70c0663ce5605f91e91cc8d31f1e37d6bb85a34b045d5f0305",
+      "glyphs": 437,
+      "codepoints": 416,
+      "requested": 454,
+      "missing": 38,
+      "family": "B26 Sans",
+      "style": "Italic",
+      "source": {
+        "name": "liberation",
+        "url": "https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz",
+        "sha256": "7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0",
+        "member": "liberation-fonts-ttf-2.1.5/LiberationSans-Italic.ttf",
+        "fileSha256": "e5bae5c4cde31f22142753855f4f8fb86da6ff39955ed3c0a11248b0d16948b0",
+        "family": "Liberation Sans",
+        "version": "Version 2.1.5",
+        "license": "SIL Open Font License 1.1"
+      },
+      "options": {
+        "ranges": "text",
+        "rangeList": ["U+0020-007E", "U+00A0-00FF", "U+0100-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010-2027", "U+202F", "U+2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20C0", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211", "U+2212", "U+2215", "U+2219", "U+221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+22C5", "U+25A0-25A1", "U+25AA-25AB", "U+25B2-25B3", "U+25B6", "U+25B8", "U+25BA", "U+25BC-25BD", "U+25C0", "U+25C2", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FB01-FB02", "U+FFFD"],
+        "hinting": true,
+        "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"],
+        "nameIds": [0,1,2,3,4,5,6,13,14],
+        "rename": {
+          "family": "B26 Sans"
+        }
+      },
+      "mapped": ["U+0020-007E", "U+00A0-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010", "U+2012-2022", "U+2026", "U+202F-2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20B5", "U+20BF", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211-2212", "U+2215", "U+2219-221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+25A0-25A1", "U+25AA-25AB", "U+25B2", "U+25BA", "U+25BC", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+FB01-FB02"],
+      "notInSource": ["U+2011", "U+2023-2025", "U+2027", "U+20B6-20BE", "U+20C0", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+22C5", "U+25B3", "U+25B6", "U+25B8", "U+25BD", "U+25C0", "U+25C2", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FFFD"]
+    },
+    {
+      "slot": "sans-bold-italic",
+      "file": "sans_bi.ttf",
+      "size": 60276,
+      "sha256": "8e167211af02b55a90d9fc03f87952d8b76d006b8aca6016dd7ec152553ca65d",
+      "glyphs": 436,
+      "codepoints": 416,
+      "requested": 454,
+      "missing": 38,
+      "family": "B26 Sans",
+      "style": "Bold Italic",
+      "source": {
+        "name": "liberation",
+        "url": "https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz",
+        "sha256": "7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0",
+        "member": "liberation-fonts-ttf-2.1.5/LiberationSans-BoldItalic.ttf",
+        "fileSha256": "698da70fc191cc5f33ad4d6d3fe830fe4624b898ea2e3169955928b7c491f1ee",
+        "family": "Liberation Sans",
+        "version": "Version 2.1.5",
+        "license": "SIL Open Font License 1.1"
+      },
+      "options": {
+        "ranges": "text",
+        "rangeList": ["U+0020-007E", "U+00A0-00FF", "U+0100-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010-2027", "U+202F", "U+2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20C0", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211", "U+2212", "U+2215", "U+2219", "U+221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+22C5", "U+25A0-25A1", "U+25AA-25AB", "U+25B2-25B3", "U+25B6", "U+25B8", "U+25BA", "U+25BC-25BD", "U+25C0", "U+25C2", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FB01-FB02", "U+FFFD"],
+        "hinting": true,
+        "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"],
+        "nameIds": [0,1,2,3,4,5,6,13,14],
+        "rename": {
+          "family": "B26 Sans"
+        }
+      },
+      "mapped": ["U+0020-007E", "U+00A0-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010", "U+2012-2022", "U+2026", "U+202F-2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20B5", "U+20BF", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211-2212", "U+2215", "U+2219-221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+25A0-25A1", "U+25AA-25AB", "U+25B2", "U+25BA", "U+25BC", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+FB01-FB02"],
+      "notInSource": ["U+2011", "U+2023-2025", "U+2027", "U+20B6-20BE", "U+20C0", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+22C5", "U+25B3", "U+25B6", "U+25B8", "U+25BD", "U+25C0", "U+25C2", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FFFD"]
+    },
+    {
+      "slot": "serif",
+      "file": "serif.ttf",
+      "size": 76052,
+      "sha256": "494b96ed0dc4038fdb8a6b6abc14322b615974f6dcd561c9e79d1498289b12cf",
+      "glyphs": 429,
+      "codepoints": 416,
+      "requested": 454,
+      "missing": 38,
+      "family": "B26 Serif",
+      "style": "Regular",
+      "source": {
+        "name": "liberation",
+        "url": "https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz",
+        "sha256": "7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0",
+        "member": "liberation-fonts-ttf-2.1.5/LiberationSerif-Regular.ttf",
+        "fileSha256": "058ea80864aef09a23f45cbec2bb5400bc3dfbdea01c3f10538a21fcb497fb74",
+        "family": "Liberation Serif",
+        "version": "Version 2.1.5",
+        "license": "SIL Open Font License 1.1"
+      },
+      "options": {
+        "ranges": "text",
+        "rangeList": ["U+0020-007E", "U+00A0-00FF", "U+0100-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010-2027", "U+202F", "U+2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20C0", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211", "U+2212", "U+2215", "U+2219", "U+221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+22C5", "U+25A0-25A1", "U+25AA-25AB", "U+25B2-25B3", "U+25B6", "U+25B8", "U+25BA", "U+25BC-25BD", "U+25C0", "U+25C2", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FB01-FB02", "U+FFFD"],
+        "hinting": true,
+        "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"],
+        "nameIds": [0,1,2,3,4,5,6,13,14],
+        "rename": {
+          "family": "B26 Serif"
+        }
+      },
+      "mapped": ["U+0020-007E", "U+00A0-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010", "U+2012-2022", "U+2026", "U+202F-2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20B5", "U+20BF", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211-2212", "U+2215", "U+2219-221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+25A0-25A1", "U+25AA-25AB", "U+25B2", "U+25BA", "U+25BC", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+FB01-FB02"],
+      "notInSource": ["U+2011", "U+2023-2025", "U+2027", "U+20B6-20BE", "U+20C0", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+22C5", "U+25B3", "U+25B6", "U+25B8", "U+25BD", "U+25C0", "U+25C2", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FFFD"]
+    },
+    {
+      "slot": "serif-bold",
+      "file": "serif_b.ttf",
+      "size": 65520,
+      "sha256": "1633e8e6b5aec99fbd82379896dd1953ae9d9cb457c89fe9ed533d6d27b97e5f",
+      "glyphs": 429,
+      "codepoints": 416,
+      "requested": 454,
+      "missing": 38,
+      "family": "B26 Serif",
+      "style": "Bold",
+      "source": {
+        "name": "liberation",
+        "url": "https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz",
+        "sha256": "7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0",
+        "member": "liberation-fonts-ttf-2.1.5/LiberationSerif-Bold.ttf",
+        "fileSha256": "d754ba427cfe0bca54ae052384baa8f842da5bd6550ad4da024ac441e7a7d5ce",
+        "family": "Liberation Serif",
+        "version": "Version 2.1.5",
+        "license": "SIL Open Font License 1.1"
+      },
+      "options": {
+        "ranges": "text",
+        "rangeList": ["U+0020-007E", "U+00A0-00FF", "U+0100-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010-2027", "U+202F", "U+2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20C0", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211", "U+2212", "U+2215", "U+2219", "U+221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+22C5", "U+25A0-25A1", "U+25AA-25AB", "U+25B2-25B3", "U+25B6", "U+25B8", "U+25BA", "U+25BC-25BD", "U+25C0", "U+25C2", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FB01-FB02", "U+FFFD"],
+        "hinting": true,
+        "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"],
+        "nameIds": [0,1,2,3,4,5,6,13,14],
+        "rename": {
+          "family": "B26 Serif"
+        }
+      },
+      "mapped": ["U+0020-007E", "U+00A0-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010", "U+2012-2022", "U+2026", "U+202F-2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20B5", "U+20BF", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211-2212", "U+2215", "U+2219-221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+25A0-25A1", "U+25AA-25AB", "U+25B2", "U+25BA", "U+25BC", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+FB01-FB02"],
+      "notInSource": ["U+2011", "U+2023-2025", "U+2027", "U+20B6-20BE", "U+20C0", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+22C5", "U+25B3", "U+25B6", "U+25B8", "U+25BD", "U+25C0", "U+25C2", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FFFD"]
+    },
+    {
+      "slot": "serif-italic",
+      "file": "serif_i.ttf",
+      "size": 68116,
+      "sha256": "3b71aa038ed7ed5e1be818e5eb4d88e87540296b4d76d758755a8e78e00d1d3e",
+      "glyphs": 429,
+      "codepoints": 416,
+      "requested": 454,
+      "missing": 38,
+      "family": "B26 Serif",
+      "style": "Italic",
+      "source": {
+        "name": "liberation",
+        "url": "https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz",
+        "sha256": "7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0",
+        "member": "liberation-fonts-ttf-2.1.5/LiberationSerif-Italic.ttf",
+        "fileSha256": "0e3dea9f8d613e006ccfa62201f33e265d19167bd0907725c3e145368b04fc2e",
+        "family": "Liberation Serif",
+        "version": "Version 2.1.5",
+        "license": "SIL Open Font License 1.1"
+      },
+      "options": {
+        "ranges": "text",
+        "rangeList": ["U+0020-007E", "U+00A0-00FF", "U+0100-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010-2027", "U+202F", "U+2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20C0", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211", "U+2212", "U+2215", "U+2219", "U+221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+22C5", "U+25A0-25A1", "U+25AA-25AB", "U+25B2-25B3", "U+25B6", "U+25B8", "U+25BA", "U+25BC-25BD", "U+25C0", "U+25C2", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FB01-FB02", "U+FFFD"],
+        "hinting": true,
+        "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"],
+        "nameIds": [0,1,2,3,4,5,6,13,14],
+        "rename": {
+          "family": "B26 Serif"
+        }
+      },
+      "mapped": ["U+0020-007E", "U+00A0-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010", "U+2012-2022", "U+2026", "U+202F-2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20B5", "U+20BF", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211-2212", "U+2215", "U+2219-221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+25A0-25A1", "U+25AA-25AB", "U+25B2", "U+25BA", "U+25BC", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+FB01-FB02"],
+      "notInSource": ["U+2011", "U+2023-2025", "U+2027", "U+20B6-20BE", "U+20C0", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+22C5", "U+25B3", "U+25B6", "U+25B8", "U+25BD", "U+25C0", "U+25C2", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FFFD"]
+    },
+    {
+      "slot": "serif-bold-italic",
+      "file": "serif_bi.ttf",
+      "size": 66416,
+      "sha256": "baaa24acf51647b6e64bba90bda1dd0f0d14395d5290fee4fba9bc9680acbcea",
+      "glyphs": 429,
+      "codepoints": 416,
+      "requested": 454,
+      "missing": 38,
+      "family": "B26 Serif",
+      "style": "Bold Italic",
+      "source": {
+        "name": "liberation",
+        "url": "https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz",
+        "sha256": "7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0",
+        "member": "liberation-fonts-ttf-2.1.5/LiberationSerif-BoldItalic.ttf",
+        "fileSha256": "f17db8af71e24d2066b587546021d4f0b296be389512b658dec3c09affeb11a7",
+        "family": "Liberation Serif",
+        "version": "Version 2.1.5",
+        "license": "SIL Open Font License 1.1"
+      },
+      "options": {
+        "ranges": "text",
+        "rangeList": ["U+0020-007E", "U+00A0-00FF", "U+0100-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010-2027", "U+202F", "U+2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20C0", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211", "U+2212", "U+2215", "U+2219", "U+221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+22C5", "U+25A0-25A1", "U+25AA-25AB", "U+25B2-25B3", "U+25B6", "U+25B8", "U+25BA", "U+25BC-25BD", "U+25C0", "U+25C2", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FB01-FB02", "U+FFFD"],
+        "hinting": true,
+        "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"],
+        "nameIds": [0,1,2,3,4,5,6,13,14],
+        "rename": {
+          "family": "B26 Serif"
+        }
+      },
+      "mapped": ["U+0020-007E", "U+00A0-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010", "U+2012-2022", "U+2026", "U+202F-2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20B5", "U+20BF", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211-2212", "U+2215", "U+2219-221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+25A0-25A1", "U+25AA-25AB", "U+25B2", "U+25BA", "U+25BC", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+FB01-FB02"],
+      "notInSource": ["U+2011", "U+2023-2025", "U+2027", "U+20B6-20BE", "U+20C0", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+22C5", "U+25B3", "U+25B6", "U+25B8", "U+25BD", "U+25C0", "U+25C2", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FFFD"]
+    },
+    {
+      "slot": "mono",
+      "file": "mono.ttf",
+      "size": 52564,
+      "sha256": "05a82e464b441edb45ffe59b833716b98e6e0fdaca4ca521a9e021dfc1942067",
+      "glyphs": 428,
+      "codepoints": 412,
+      "requested": 454,
+      "missing": 42,
+      "family": "B26 Mono",
+      "style": "Regular",
+      "source": {
+        "name": "liberation",
+        "url": "https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz",
+        "sha256": "7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0",
+        "member": "liberation-fonts-ttf-2.1.5/LiberationMono-Regular.ttf",
+        "fileSha256": "f2b83c763e8afd21709333370bed4774337fae82267937e2b5aea7e2fbd922c1",
+        "family": "Liberation Mono",
+        "version": "Version 2.1.5",
+        "license": "SIL Open Font License 1.1"
+      },
+      "options": {
+        "ranges": "text",
+        "rangeList": ["U+0020-007E", "U+00A0-00FF", "U+0100-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010-2027", "U+202F", "U+2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20C0", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211", "U+2212", "U+2215", "U+2219", "U+221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+22C5", "U+25A0-25A1", "U+25AA-25AB", "U+25B2-25B3", "U+25B6", "U+25B8", "U+25BA", "U+25BC-25BD", "U+25C0", "U+25C2", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FB01-FB02", "U+FFFD"],
+        "hinting": true,
+        "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"],
+        "nameIds": [0,1,2,3,4,5,6,13,14],
+        "rename": {
+          "family": "B26 Mono"
+        }
+      },
+      "mapped": ["U+0020-007E", "U+00A0-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2010", "U+2012-2015", "U+2017-2022", "U+2026", "U+2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20B5", "U+20BF", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211-2212", "U+2215", "U+2219-221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+25A0-25A1", "U+25AA-25AB", "U+25B2", "U+25BA", "U+25BC", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+FB01-FB02"],
+      "notInSource": ["U+2009-200A", "U+2011", "U+2016", "U+2023-2025", "U+2027", "U+202F", "U+20B6-20BE", "U+20C0", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+22C5", "U+25B3", "U+25B6", "U+25B8", "U+25BD", "U+25C0", "U+25C2", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FFFD"]
+    },
+    {
+      "slot": "mono-bold",
+      "file": "mono_b.ttf",
+      "size": 52756,
+      "sha256": "753df9d41f979a497176a552757fa73b87d3bacdf6e01de02bfcb83fdcbe3cac",
+      "glyphs": 428,
+      "codepoints": 412,
+      "requested": 454,
+      "missing": 42,
+      "family": "B26 Mono",
+      "style": "Bold",
+      "source": {
+        "name": "liberation",
+        "url": "https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz",
+        "sha256": "7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0",
+        "member": "liberation-fonts-ttf-2.1.5/LiberationMono-Bold.ttf",
+        "fileSha256": "bd62a0672d0b9b6710b01df434c80ad54fa5f0835207eb7b17b7a761463067bb",
+        "family": "Liberation Mono",
+        "version": "Version 2.1.5",
+        "license": "SIL Open Font License 1.1"
+      },
+      "options": {
+        "ranges": "text",
+        "rangeList": ["U+0020-007E", "U+00A0-00FF", "U+0100-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010-2027", "U+202F", "U+2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20C0", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211", "U+2212", "U+2215", "U+2219", "U+221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+22C5", "U+25A0-25A1", "U+25AA-25AB", "U+25B2-25B3", "U+25B6", "U+25B8", "U+25BA", "U+25BC-25BD", "U+25C0", "U+25C2", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FB01-FB02", "U+FFFD"],
+        "hinting": true,
+        "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"],
+        "nameIds": [0,1,2,3,4,5,6,13,14],
+        "rename": {
+          "family": "B26 Mono"
+        }
+      },
+      "mapped": ["U+0020-007E", "U+00A0-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2010", "U+2012-2015", "U+2017-2022", "U+2026", "U+2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20B5", "U+20BF", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211-2212", "U+2215", "U+2219-221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+25A0-25A1", "U+25AA-25AB", "U+25B2", "U+25BA", "U+25BC", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+FB01-FB02"],
+      "notInSource": ["U+2009-200A", "U+2011", "U+2016", "U+2023-2025", "U+2027", "U+202F", "U+20B6-20BE", "U+20C0", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+22C5", "U+25B3", "U+25B6", "U+25B8", "U+25BD", "U+25C0", "U+25C2", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FFFD"]
+    },
+    {
+      "slot": "mono-italic",
+      "file": "mono_i.ttf",
+      "size": 45308,
+      "sha256": "77a47757f5b00ffdcf59c46612f2520e082dac461c89e436e5c3baf59e7b8c27",
+      "glyphs": 428,
+      "codepoints": 412,
+      "requested": 454,
+      "missing": 42,
+      "family": "B26 Mono",
+      "style": "Italic",
+      "source": {
+        "name": "liberation",
+        "url": "https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz",
+        "sha256": "7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0",
+        "member": "liberation-fonts-ttf-2.1.5/LiberationMono-Italic.ttf",
+        "fileSha256": "605c01c711b44480a7508d349dfbf3264e81fa43d69e61cfa7d10b86e764c4d1",
+        "family": "Liberation Mono",
+        "version": "Version 2.1.5",
+        "license": "SIL Open Font License 1.1"
+      },
+      "options": {
+        "ranges": "text",
+        "rangeList": ["U+0020-007E", "U+00A0-00FF", "U+0100-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010-2027", "U+202F", "U+2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20C0", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211", "U+2212", "U+2215", "U+2219", "U+221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+22C5", "U+25A0-25A1", "U+25AA-25AB", "U+25B2-25B3", "U+25B6", "U+25B8", "U+25BA", "U+25BC-25BD", "U+25C0", "U+25C2", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FB01-FB02", "U+FFFD"],
+        "hinting": true,
+        "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"],
+        "nameIds": [0,1,2,3,4,5,6,13,14],
+        "rename": {
+          "family": "B26 Mono"
+        }
+      },
+      "mapped": ["U+0020-007E", "U+00A0-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2010", "U+2012-2015", "U+2017-2022", "U+2026", "U+2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20B5", "U+20BF", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211-2212", "U+2215", "U+2219-221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+25A0-25A1", "U+25AA-25AB", "U+25B2", "U+25BA", "U+25BC", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+FB01-FB02"],
+      "notInSource": ["U+2009-200A", "U+2011", "U+2016", "U+2023-2025", "U+2027", "U+202F", "U+20B6-20BE", "U+20C0", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+22C5", "U+25B3", "U+25B6", "U+25B8", "U+25BD", "U+25C0", "U+25C2", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FFFD"]
+    },
+    {
+      "slot": "mono-bold-italic",
+      "file": "mono_bi.ttf",
+      "size": 45804,
+      "sha256": "485f9bcba8dca700e194bc524fa9792fb313cdec3111d9af16174f52cbd78527",
+      "glyphs": 428,
+      "codepoints": 412,
+      "requested": 454,
+      "missing": 42,
+      "family": "B26 Mono",
+      "style": "Bold Italic",
+      "source": {
+        "name": "liberation",
+        "url": "https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz",
+        "sha256": "7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0",
+        "member": "liberation-fonts-ttf-2.1.5/LiberationMono-BoldItalic.ttf",
+        "fileSha256": "79451f3c09fe25116098853b7a2ca6e2436220ccc11af022979adbcf195be130",
+        "family": "Liberation Mono",
+        "version": "Version 2.1.5",
+        "license": "SIL Open Font License 1.1"
+      },
+      "options": {
+        "ranges": "text",
+        "rangeList": ["U+0020-007E", "U+00A0-00FF", "U+0100-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2009-200A", "U+2010-2027", "U+202F", "U+2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20C0", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211", "U+2212", "U+2215", "U+2219", "U+221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+22C5", "U+25A0-25A1", "U+25AA-25AB", "U+25B2-25B3", "U+25B6", "U+25B8", "U+25BA", "U+25BC-25BD", "U+25C0", "U+25C2", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FB01-FB02", "U+FFFD"],
+        "hinting": true,
+        "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"],
+        "nameIds": [0,1,2,3,4,5,6,13,14],
+        "rename": {
+          "family": "B26 Mono"
+        }
+      },
+      "mapped": ["U+0020-007E", "U+00A0-017F", "U+0192", "U+02C6", "U+02DC", "U+2007", "U+2010", "U+2012-2015", "U+2017-2022", "U+2026", "U+2030", "U+2032-2033", "U+2039-203A", "U+203C", "U+2044", "U+20A0-20B5", "U+20BF", "U+2113", "U+2116", "U+2122", "U+2126", "U+212E", "U+2190-2195", "U+21D4", "U+2202", "U+2206", "U+220F", "U+2211-2212", "U+2215", "U+2219-221A", "U+221E", "U+222B", "U+2248", "U+2260-2261", "U+2264-2265", "U+25A0-25A1", "U+25AA-25AB", "U+25B2", "U+25BA", "U+25BC", "U+25C4", "U+25CA-25CB", "U+25CF", "U+25E6", "U+FB01-FB02"],
+      "notInSource": ["U+2009-200A", "U+2011", "U+2016", "U+2023-2025", "U+2027", "U+202F", "U+20B6-20BE", "U+20C0", "U+21A9-21AA", "U+21B5", "U+21D0", "U+21D2", "U+22C5", "U+25B3", "U+25B6", "U+25B8", "U+25BD", "U+25C0", "U+25C2", "U+2605-2606", "U+2610-2612", "U+2713-2715", "U+2717-2718", "U+FFFD"]
+    },
+    {
+      "slot": "fallback",
+      "file": "fallback.otf",
+      "size": 260416,
+      "sha256": "df9914b57e4f2561a3ddd53996d6a08b7678d4fb37f6c52d741c3b3b460125c1",
+      "glyphs": 5144,
+      "codepoints": 5143,
+      "requested": 5142,
+      "missing": 0,
+      "family": "Unifont",
+      "style": "Regular",
+      "source": {
+        "name": "unifont",
+        "url": "https://unifoundry.com/pub/unifont/unifont-18.0.01/font-builds/unifont-18.0.01.otf",
+        "sha256": "88d0a14d4aa9a96419720b39ba5da921a59560d76d4ec7d523acc06ed85cd3c2",
+        "fileSha256": "88d0a14d4aa9a96419720b39ba5da921a59560d76d4ec7d523acc06ed85cd3c2",
+        "family": "Unifont",
+        "version": "Version 18.0.01",
+        "license": "SIL Open Font License 1.1, or GNU GPL 2 or later with the font embedding exception"
+      },
+      "options": {
+        "ranges": "fallback",
+        "rangeList": ["U+0180-06FF", "U+1E00-1EFF", "U+2000-2BFF", "U+3000-30FF", "U+FF00-FFEF", "U+FFFD"],
+        "excludeCoveredByAll": ["sans", "sans-bold", "sans-italic", "sans-bold-italic", "serif", "serif-bold", "serif-italic", "serif-bold-italic", "mono", "mono-bold", "mono-italic", "mono-bold-italic"],
+        "hinting": false,
+        "dropTables": ["GSUB", "GPOS", "GDEF", "kern", "BASE", "JSTF", "morx", "kerx", "hdmx", "VDMX", "LTSH"],
+        "nameIds": [0,1,2,3,4,5,6,13,14]
+      },
+      "mapped": ["U+0180-0191", "U+0193-02C5", "U+02C7-02DB", "U+02DD-06FF", "U+1E00-1EFF", "U+2000-2006", "U+2008-200F", "U+2011", "U+2016", "U+2023-2025", "U+2027-202F", "U+2031", "U+2034-2038", "U+203B", "U+203D-2043", "U+2045-209F", "U+20B6-20BE", "U+20C0-2112", "U+2114-2115", "U+2117-2121", "U+2123-2125", "U+2127-212D", "U+212F-218F", "U+2196-21D3", "U+21D5-2201", "U+2203-2205", "U+2207-220E", "U+2210", "U+2213-2218", "U+221B-221D", "U+221F-222A", "U+222C-2247", "U+2249-225F", "U+2262-2263", "U+2266-259F", "U+25A2-25A9", "U+25AC-25B1", "U+25B3-25B9", "U+25BB", "U+25BD-25C3", "U+25C5-25C9", "U+25CC-25CE", "U+25D0-25E5", "U+25E7-2BFF", "U+3000-30FF", "U+FF00-FFEF", "U+FFFD"],
+      "notInSource": []
+    }
+  ],
+  "licenses": [
+    {
+      "file": "LICENSE-Liberation.txt",
+      "size": 4638,
+      "sha256": "0e19361ae72df265d714916731713f5a297216781575d003a52ee1b89a078322",
+      "source": "liberation",
+      "member": "liberation-fonts-ttf-2.1.5/LICENSE"
+    },
+    {
+      "file": "LICENSE-Unifont.txt",
+      "size": 4807,
+      "sha256": "98f6365a1bdfffd6694ad8879920c345bb29ab35fd96a68f5eae0aa9f26a9509",
+      "source": "unifont-src",
+      "member": "unifont-18.0.01/OFL-1.1.txt"
+    }
+  ]
+}

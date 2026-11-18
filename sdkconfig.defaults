@@ -8,6 +8,10 @@ CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 
+# Deep sleep wake: the bootloader does not check the app image again. The project has no OTA and no
+# secure boot. A battery badge wakes once per page.
+CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP=y
+
 # Partition table in the project root: 3.5 MB app, 4.44 MB LittleFS data (fonts, URL list) to the end of flash.
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
@@ -28,6 +32,24 @@ CONFIG_SPIRAM_MEMTEST=n
 # TLS record buffers in PSRAM.
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 
+# Instruction cache: all 32 KB of SRAM0. The engine, FreeType and the decoders run from flash.
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
+
+# RMT drives only the WS2812s. leds.cpp sizes the channel to hold a whole frame, so the encoder never
+# runs in the ISR and the ISR only signals TX done.
+CONFIG_RMT_ENCODER_FUNC_IN_IRAM=n
+CONFIG_RMT_TX_ISR_HANDLER_IN_IRAM=n
+CONFIG_RMT_RX_ISR_HANDLER_IN_IRAM=n
+
+# The EPD uses only SPI master polling transactions, so the SPI ISR never runs with the cache off.
+# No SPI slave. These two options also force both GDMA options on.
+CONFIG_SPI_MASTER_ISR_IN_IRAM=n
+CONFIG_SPI_SLAVE_ISR_IN_IRAM=n
+CONFIG_GDMA_CTRL_FUNC_IN_IRAM=n
+CONFIG_GDMA_ISR_HANDLER_IN_IRAM=n
+# No ISR allocates or frees memory.
+CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
+
 # Console
 # The native USB port is the only port on the badge.
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
@@ -40,7 +62,7 @@ CONFIG_FREERTOS_HZ=1000
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
 # Panic and watchdogs
-CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT=y
+CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
 # The render task is pinned to core 1 and runs layout for up to 20 s without yielding,
 # so the task watchdog does not watch that core's idle task. WiFi runs on core 0.
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10

@@ -15,6 +15,7 @@
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 #include "esp_heap_caps.h"
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -23,6 +24,7 @@
 #include "browser.h"
 #include "config.h"
 #include "fetch.h"
+#include "power.h"
 #include "wifi.h"
 
 static const char* TAG = "console";
@@ -69,12 +71,14 @@ void cmd_help()
 {
     printf("OK commands:\n"
            "OK   status\n"
-           "OK   wifi [SSID [PASSWORD]]\n"
+           "OK   wifi [SSID [PASSWORD]] | wifi clear\n"
            "OK   scan\n"
            "OK   get URL\n"
            "OK   urls\n"
-           "OK   url add URL [OFFSET [SECONDS]] | url set N OFFSET [SECONDS] | url del N | url clear\n"
-           "OK   next | prev\n");
+           "OK   url add URL [OFFSET [SECONDS]] | url put N URL [OFFSET [SECONDS]] | url set N OFFSET [SECONDS]\n"
+           "OK   url move FROM TO | url del N | url clear\n"
+           "OK   next | prev | load N\n"
+           "OK   show lowbatt | show welcome\n");
 }
 
 void cmd_status()
@@ -84,10 +88,27 @@ void cmd_status()
     wifi_get_ip(ip, sizeof(ip));
     int rssi = 0, channel = 0;
     bool link = wifi_get_link(&rssi, &channel);
-    printf("OK wifi ssid=\"%s\" connected=%d ip=%s rssi=%d channel=%d\n", ssid, wifi_is_connected() ? 1 : 0, ip,
-           link ? rssi : 0, link ? channel : 0);
+    printf("OK wifi ssid=\"%s\" connected=%d ip=%s rssi=%d channel=%d radio=%s\n", ssid, wifi_is_connected() ? 1 : 0,
+           ip, link ? rssi : 0, link ? channel : 0, wifi_is_stopped() ? "off" : "on");
+    // ADC2 serves WiFi first, so a read while the radio is on can fail. A failed read counts as USB.
+    // Only rail_mv and usb are shown, so was_low does not matter here.
+    power_reading r   = power_read(false);
+    int           mv  = r.rail_mv;
+    bool          usb = r.usb;
+    if(mv < 0)
+        printf("OK power rail_mv=failed source=%s wake=\"%s\" (rail read failed%s)\n", usb ? "usb" : "battery",
+               power_wake_name(power_wake_cause()), wifi_is_stopped() ? "" : ", the radio is on");
+    else
+        printf("OK power rail_mv=%d source=%s wake=\"%s\"\n", mv, usb ? "usb" : "battery",
+               power_wake_name(power_wake_cause()));
     printf("OK urls count=%u source=%s\n", (unsigned)cfg_urls().size(), cfg_urls_from_file() ? "file" : "builtin");
     printf("OK page index=%d state=%s\n", browser_page_index(), browser_state());
+    // The first 8 bytes of the ELF hash, which the web installer compares with the same field of the
+    // image it holds (esp_app_desc_t in webinstall/firmware.bin).
+    const esp_app_desc_t* app = esp_app_get_description();
+    printf("OK app built=\"%s %s\" sha=", app->date, app->time);
+    for(int i = 0; i < 8; i++) printf("%02x", app->app_elf_sha256[i]);
+    printf("\n");
     printf("OK heap internal=%u psram=%u\n", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 }
@@ -101,9 +122,20 @@ void cmd_wifi(const std::vector<std::string>& a)
         printf("OK ssid=\"%s\" connected=%d\n", have ? ssid : "", wifi_is_connected() ? 1 : 0);
         return;
     }
+    if(a.size() == 2 && a[1] == "clear")
+    {
+        if(wifi_clear_credentials()) printf("OK cleared. The welcome notice draws at the next cycle\n");
+        else printf("ERR not cleared, the driver refused (see log)\n");
+        return;
+    }
     const char* pass = a.size() > 2 ? a[2].c_str() : "";
     if(wifi_set_credentials(a[1].c_str(), pass))
-        printf("OK stored, connecting to \"%s\". The log shows the result, status shows the state\n", a[1].c_str());
+    {
+        if(wifi_is_stopped())
+            printf("OK stored \"%s\". The radio is off, it connects at the next page\n", a[1].c_str());
+        else
+            printf("OK stored, connecting to \"%s\". The log shows the result, status shows the state\n", a[1].c_str());
+    }
     else printf("ERR not connecting: ssid up to 32 bytes, password up to 63, or the driver refused (see log)\n");
 }
 
@@ -130,6 +162,16 @@ void cmd_get(const std::vector<std::string>& a)
     if(a.size() < 2)
     {
         printf("ERR get URL\n");
+        return;
+    }
+    if(wifi_is_stopped())
+    {
+        printf("ERR the radio is off during a panel draw, try again in a few seconds\n");
+        return;
+    }
+    if(!wifi_is_connected())
+    {
+        printf("ERR not connected to WiFi, status shows the state\n");
         return;
     }
     std::string  body;
@@ -175,19 +217,22 @@ int page_index(const std::string& s, size_t count)
     return n;
 }
 
+// True for an http or https URL, else false with the error printed.
+bool url_ok(const std::string& u)
+{
+    if(u.compare(0, 7, "http://") == 0 || u.compare(0, 8, "https://") == 0) return true;
+    printf("ERR url must start with http:// or https://\n");
+    return false;
+}
+
 void cmd_url(const std::vector<std::string>& a)
 {
     if(a.size() >= 3 && a[1] == "add")
     {
-        const std::string& u = a[2];
-        if(u.compare(0, 7, "http://") != 0 && u.compare(0, 8, "https://") != 0)
-        {
-            printf("ERR url must start with http:// or https://\n");
-            return;
-        }
+        if(!url_ok(a[2])) return;
         auto       v = cfg_urls();
         page_entry e;
-        e.url = u;
+        e.url = a[2];
         if(a.size() > 3) e.offset = std::max(0, atoi(a[3].c_str()));
         if(a.size() > 4) e.seconds = std::max(0, atoi(a[4].c_str()));
         v.push_back(e);
@@ -199,6 +244,28 @@ void cmd_url(const std::vector<std::string>& a)
         if(!n) return;
         v[n - 1].offset = std::max(0, atoi(a[3].c_str()));
         if(a.size() > 4) v[n - 1].seconds = std::max(0, atoi(a[4].c_str()));
+        report_set(cfg_urls_set(v), v.size());
+    } else if(a.size() >= 4 && a[1] == "put")
+    {
+        auto v = cfg_urls();
+        int  n = page_index(a[2], v.size());
+        if(!n || !url_ok(a[3])) return;
+        page_entry e;
+        e.url = a[3];
+        if(a.size() > 4) e.offset = std::max(0, atoi(a[4].c_str()));
+        if(a.size() > 5) e.seconds = std::max(0, atoi(a[5].c_str()));
+        v[n - 1] = e;
+        report_set(cfg_urls_set(v), v.size());
+    } else if(a.size() >= 4 && a[1] == "move")
+    {
+        auto v    = cfg_urls();
+        int  from = page_index(a[2], v.size());
+        if(!from) return;
+        int to = page_index(a[3], v.size());
+        if(!to) return;
+        page_entry e = v[from - 1];
+        v.erase(v.begin() + (from - 1));
+        v.insert(v.begin() + (to - 1), e);
         report_set(cfg_urls_set(v), v.size());
     } else if(a.size() >= 3 && a[1] == "del")
     {
@@ -212,7 +279,37 @@ void cmd_url(const std::vector<std::string>& a)
         printf("%s builtin list, %u pages\n", cfg_urls_reset() ? "OK" : "ERR file not removed,",
                (unsigned)cfg_urls().size());
     } else
-        printf("ERR url add URL [OFFSET [SECONDS]] | url set N OFFSET [SECONDS] | url del N | url clear\n");
+        printf("ERR url add URL [OFFSET [SECONDS]] | url put N URL [OFFSET [SECONDS]] | url set N OFFSET [SECONDS] | "
+               "url move FROM TO | url del N | url clear\n");
+}
+
+// next, prev and load N: end the wait and render another page.
+void cmd_page(const std::vector<std::string>& a)
+{
+    const std::string& c = a[0];
+    int                n = 0; // load: the page, from 1
+    if(c == "load")
+    {
+        if(a.size() != 2)
+        {
+            printf("ERR load N\n");
+            return;
+        }
+        n = page_index(a[1], cfg_urls().size());
+        if(!n) return;
+    }
+    const char* state = browser_state();
+    if(!strcmp(state, "nowifi")) printf("ERR waiting for WiFi, set it: wifi SSID PASSWORD\n");
+    else if(!strcmp(state, "nourls")) printf("ERR no URLs: url add https://...\n");
+    else if(!strcmp(state, "wait"))
+    {
+        if(c == "prev") browser_prev();
+        else if(c == "load") browser_load(n - 1);
+        else browser_next();
+        if(n) printf("OK page %d\n", n);
+        else printf("OK %s page\n", c == "prev" ? "previous" : "next");
+    } else
+        printf("ERR busy: %s, the next page follows\n", state);
 }
 
 void run_line(const char* line)
@@ -227,18 +324,25 @@ void run_line(const char* line)
     else if(c == "get") cmd_get(a);
     else if(c == "urls") cmd_urls();
     else if(c == "url") cmd_url(a);
-    else if(c == "next" || c == "prev")
+    else if(c == "next" || c == "prev" || c == "load") cmd_page(a);
+    else if(c == "show")
     {
         const char* state = browser_state();
-        if(!strcmp(state, "nowifi")) printf("ERR waiting for WiFi, set it: wifi SSID PASSWORD\n");
-        else if(!strcmp(state, "nourls")) printf("ERR no URLs: url add https://...\n");
-        else if(!strcmp(state, "wait"))
+        int         s     = 0;
+        if(a.size() == 2 && a[1] == "lowbatt") s = BROWSER_SCREEN_LOWBATT;
+        else if(a.size() == 2 && a[1] == "welcome") s = BROWSER_SCREEN_WELCOME;
+        if(s == 0) printf("ERR show lowbatt | show welcome\n");
+        else if(browser_shows(static_cast<browser_screen>(s)))
+            printf("OK %s is on the panel already\n", a[1].c_str());
+        else if(strcmp(state, "wait") && strcmp(state, "nowifi") && strcmp(state, "nourls"))
+            printf("ERR busy: %s, try again when it ends\n", state);
+        else
         {
-            if(c == "prev") browser_prev();
-            else browser_next();
-            printf("OK %s page\n", c == "prev" ? "previous" : "next");
-        } else
-            printf("ERR busy: %s, the next page follows\n", state);
+            char ssid[33];
+            bool connecting = !strcmp(state, "nowifi") && wifi_get_ssid(ssid, sizeof(ssid));
+            browser_show(static_cast<browser_screen>(s));
+            printf("OK drawing %s%s\n", a[1].c_str(), connecting ? " when the WiFi wait ends, up to 20 s" : "");
+        }
     } else
         printf("ERR unknown command \"%s\", try help\n", c.c_str());
     fflush(stdout);

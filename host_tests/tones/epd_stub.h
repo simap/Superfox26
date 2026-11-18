@@ -10,7 +10,7 @@
 struct epd_stub_log
 {
     // in
-    bool            no_tables = false;   // epd_verb_open_table() returns ESP_ERR_NOT_SUPPORTED
+    bool            no_tables = false;   // epd_tone_open_table() returns ESP_ERR_NOT_SUPPORTED
     const uint8_t*  frame     = nullptr; // the frame tones_draw() plays, TONE_W x TONE_H
     tone_plan       plan      = {};      // its plan
     const uint32_t* count     = nullptr; // its entry counts

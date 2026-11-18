@@ -255,9 +255,9 @@ static inline void epd_build_lutb(uint8_t* out)
   }
 }
 
-// --- driver B verb table -----------------------------------------------------
+// --- driver B cal table ------------------------------------------------------
 // One short table set for a calibration session. It is latched once and pulled
-// many times, with new planes sent between pulls. Each table is one verb, and
+// many times, with new planes sent between pulls. Each table is one code, and
 // the plane bit pair of a pixel selects it. `vcom` is a level code (0 ground,
 // 1 VDH, 2 VDL, 3 VDHR) that table 4 holds in phase A. Phase A sources:
 //
@@ -267,14 +267,14 @@ static inline void epd_build_lutb(uint8_t* out)
 //   3  red step      VDHR with vcom at ground, else ground (net -vcom)
 //   4  VCOM          vcom
 //
-// Group 0 holds the verb. Phase A runs `unit` frames at those levels, phase C
-// 1 frame at ground. Groups 1 to 9 run phases A and C for 1 frame at ground.
+// Group 0 holds the code's drive. Phase A runs `unit` frames at those levels,
+// phase C 1 frame at ground. Groups 1 to 9 run phases A and C for 1 frame at ground.
 // Phases B and D have a count of 0 in every group, which the B1 plays as a
 // skip: phthallo/supercon runs its change-only table with TB and TD at 0 in
 // every group and measures about 2 frames per group. A 0 in TA, TC or a repeat byte is not a skip and is never written
 // here. Every table carries the same counts, because the shortest table ends
 // the pull for all of them. A pull is unit + 19 frames.
-static inline void epd_build_lutb_verb(uint8_t* out, uint8_t unit, uint8_t vcom)
+static inline void epd_build_lutb_cal(uint8_t* out, uint8_t unit, uint8_t vcom)
 {
   vcom &= 3u;
   const uint8_t level[5] = { vcom, 1u, 2u, (uint8_t)(vcom == 0u ? 3u : 0u), vcom };
@@ -358,7 +358,7 @@ static inline uint32_t epd_lutb_seq_frames(const uint8_t* lut)
 
 // --- driver B phase 1 table --------------------------------------------------
 // The table set for the first half of the draw,
-// EPD_VERB_TABLE_PHASE1, built by epd_build_lutb_phase1() from the shapes
+// EPD_TONE_TABLE_PHASE1, built by epd_build_lutb_phase1() from the shapes
 // below. It is the single table load of the draw and has no hold code. Code
 // 0 is S because the planner pads phase 1 with S fill. Codes 0 and 3 read
 // the same with the two planes swapped, so the play loop keeps the planes
@@ -461,11 +461,11 @@ static inline uint32_t epd_lutb_phase1_frames(const uint8_t* lut)
   return frames;
 }
 
-// Frames one pull of a verb or seq table plays. 0 when a count byte other than
+// Frames one pull of a cal or seq table plays. 0 when a count byte other than
 // TB or TD (offsets 2 and 5 in a group) is zero in any table, or when a table's
 // counts differ from table 4's. TB and TD at 0 are the skips
-// epd_build_lutb_verb() writes.
-static inline uint32_t epd_lutb_verb_frames(const uint8_t* lut)
+// epd_build_lutb_cal() writes.
+static inline uint32_t epd_lutb_cal_frames(const uint8_t* lut)
 {
   uint32_t frames = 0;
   for (unsigned g = 0; g < 10u; g++) {

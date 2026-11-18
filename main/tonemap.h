@@ -64,15 +64,27 @@
 // duller than an image's. The mapping brings an image colour into the
 // panel's range before it takes the nearest entry, see tonemap_squeeze.h.
 // Chroma is always scaled, image edge to panel edge. This sets how far the
-// lightness of a saturated colour moves toward the panel's strongest red.
+// lightness of a saturated red moves toward the panel's strongest red. Every
+// colour of that lightness moves as far, a gray too, so the colours of an
+// image keep their order in lightness. Black and white do not move.
 // 0: lightness kept, a bright red draws as a pink. 1: a bright red draws as
-// the strongest red, dark. Below 0: no squeeze, the nearest entry only, which
-// clips.
+// the strongest red, dark, and the mid grays draw darker with it. Below 0: no
+// squeeze, the nearest entry only, which clips.
 #define TONEMAP_COMPRESS 0.75f
 
 // The tone curve, on the colour's Oklab lightness: L to the power 1 / gamma,
 // and the chroma keeps its share of the image's range. 1.0 changes nothing,
 // above 1 draws lighter, under 1 darker.
+//
+// Only the float code (tonemap_squeeze.h) applies it. The fixed point dither has no curve, and the
+// table generator refuses a value other than 1.0 (host_tests/tone_tables). The place for a curve
+// is the generator, not the pixel: a pixel at L to the power 1 / gamma against an entry at L is
+// the same comparison as the pixel at L against the entry at L to the power gamma. The generator
+// would move each entry's L that way before it builds the search table, the neutral levels, the
+// entries' linear light, the squeeze parameters, the white slot and the solid grays, and the
+// device would do nothing more per pixel. A pixel on an entry draws the same as with the curve on
+// the pixel. Between two neutral entries the mix differs by at most 0.0022 in L at gamma 0.9. The
+// float code and the host harness would read the same moved entries.
 #define TONEMAP_GAMMA 1.0f
 
 // An entry is neutral when its Oklab a is at or below this. A gray pixel
