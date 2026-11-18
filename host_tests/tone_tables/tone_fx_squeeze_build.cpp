@@ -34,7 +34,7 @@ static_assert(PANEL_LINES == 4, "the kernels and the parameter order hold four p
 
 alignas(16) int16_t s_k[K_COUNT];
 
-// sRGB bytes to Oklab in float, the conversion of tones.cpp, for the edge tables.
+// sRGB bytes to Oklab in float, the conversion of main/tones_float_ref.inc, for the edge tables.
 float s_byte_lin[256];
 
 void srgb_oklab(uint8_t r8, uint8_t g8, uint8_t b8, float out[3])

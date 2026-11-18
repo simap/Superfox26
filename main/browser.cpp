@@ -1,17 +1,5 @@
-// Page cycle task. Waits are task-notification waits, so the console's "next" ends them early.
-// The panel is drawn only for a rendered page and the low battery notice: a draw costs about 12 s, so
-// status (no WiFi, no URLs, a failed page) goes to the log and the console's status command, and the
-// last page stays on the panel.
-//
-// Power. A reading (read_power) decides USB or battery and low battery. BAT_SENS is on ADC2, which WiFi
-// shares, so a battery result counts only when it was read with the radio off. Readings are taken in
-// browser_init() before wifi_init(), after a panel draw, and at the end of a cycle without a page. On
-// USB that last one waits until the reading before is BROWSER_USB_RECHECK_MS old. On USB the badge
-// stays awake with the radio on, and the LEDs count down to the next page. On battery the radio is off
-// during the panel draw, and the badge deep sleeps after the draw for the rest of the page time, and
-// for BROWSER_RETRY_S after a cycle without a page. A wake restarts the firmware, and the first cycle
-// takes its page from the wake cause. A low battery shows a notice and sleeps until a button wakes the
-// badge. The decisions are in browser_logic.h.
+// Only the browser task renders pages and draws to the panel: render_page, render_html, render_tabs
+// and tones_draw run on it alone.
 
 #include "browser.h"
 
@@ -27,10 +15,12 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
 #include "browser_logic.h"
+#include "buttons.h"
 #include "config.h"
 #include "epd97.h"
 #include "leds.h"
@@ -43,22 +33,11 @@
 
 static const char* TAG = "browser";
 
-// Layout plus the TLS handshakes inside createFromString. High-water mark measured at 15.2 KB for
-// layout alone on Wikipedia; TLS adds about 10 KB. The stack is internal RAM: with it in PSRAM,
-// HTTP fetches from this task stalled (connections opened, then no data for the whole timeout)
-// while the same fetch from an internal-stack task completed in 0.7 s.
 static const uint32_t RENDER_STACK = 40 * 1024;
-// On USB, the pause after a failed page before the next one.
 static const int64_t FAIL_WAIT_MS = 10 * 1000;
-// A button selection loads once no button has been pressed for this long.
-static const int64_t SELECT_HOLD_MS = 1500;
-// The amber flash on the first LED after a failed WiFi connect. The same length as the red fault flash
-// of main/main.cpp.
+static const int64_t SELECT_HOLD_US = 1500 * 1000;
 static const int WIFI_FAIL_FLASH_MS = 50;
 
-// The low battery notice, drawn by render_html() with no network. The renderer has no SVG, so the
-// battery icon is boxes: a 360 x 180 px body with a 12 px black border and a red charge bar, and a
-// black terminal centred on its right side.
 static const char* const LOW_BATTERY_HTML =
     "<html><body style=\"margin:0;padding:80px 80px;font-family:sans-serif;color:#000;background:#fff\">"
     "<div style=\"height:180px\">"
@@ -71,76 +50,153 @@ static const char* const LOW_BATTERY_HTML =
     "<div style=\"font-size:44px;margin-top:56px\">Connect USB, then press User B or Menu -</div>"
     "</body></html>";
 
-// The welcome notice, drawn when no WiFi network is stored. welcome_html() puts the logo between
-// the two parts.
 static const char* const WELCOME_HEAD =
-    "<html><body style=\"margin:0;padding:120px 80px;font-family:sans-serif;color:#000;background:#fff\">"
-    "<div style=\"font-size:96px;font-weight:bold\">"
-    "<img style=\"width:100px;height:100px;vertical-align:middle;margin-right:32px\" src=\"";
+    "<html><body style=\"margin:0;padding:48px 72px;font-family:sans-serif;color:#000;background:#fff\">"
+    "<table style=\"border-collapse:collapse\"><tr><td style=\"padding:0 40px 0 0\">"
+    "<img style=\"width:200px;height:200px\" src=\"";
 static const char* const WELCOME_TAIL =
-    "\">Welcome</div>"
-    "<div style=\"font-size:44px;margin-top:56px\">WiFi is not set up.</div>"
-    "<div style=\"font-size:44px;margin-top:28px\">Connect USB and press User B.</div>"
-    "<div style=\"font-size:44px;margin-top:28px\">Then on the serial console:</div>"
-    "<div style=\"font-size:44px;margin-top:28px;font-family:monospace\">wifi SSID PASSWORD</div>"
+    "\"></td><td style=\"vertical-align:middle\"><div style=\"font-size:88px;font-weight:bold\">Superfox26</div>"
+    "<div style=\"font-size:30px;margin-top:8px\">a browser for the Supercon X badge</div></td></tr></table>"
+    "<div style=\"font-size:40px;margin-top:44px\">WiFi is not set up.<br>Connect USB and press User B.</div>"
+    "<div style=\"font-size:40px;margin-top:24px\">Then on the serial console:</div>"
+    "<div style=\"font-size:40px;margin-top:24px;font-family:monospace\">wifi SSID PASSWORD</div>"
     "</body></html>";
 
-// logo/panel_100.png (EMBED_FILES in CMakeLists.txt).
-extern const uint8_t logo_100_start[] asm("_binary_panel_100_png_start");
-extern const uint8_t logo_100_end[] asm("_binary_panel_100_png_end");
+extern const uint8_t logo_200_start[] asm("_binary_panel_200_png_start");
+extern const uint8_t logo_200_end[] asm("_binary_panel_200_png_end");
 
 static std::string welcome_html()
 {
-    return std::string(WELCOME_HEAD) + tabs_png_url(logo_100_start, logo_100_end) + WELCOME_TAIL;
+    return std::string(WELCOME_HEAD) + tabs_png_url(logo_200_start, logo_200_end) + WELCOME_TAIL;
 }
 
 namespace
 {
-TaskHandle_t        s_task;
-volatile bool       s_back  = false; // browser_prev() was called: step back two from the advanced index
-volatile int        s_count = 1;     // pages in the list, for the button selection to wrap
-volatile int        s_select = -1;   // tab chosen with the buttons, -1 none
-volatile int64_t    s_select_until = 0; // when the selection loads, esp_timer time
-std::atomic<int>    s_pending{0};       // tab steps from presses outside a selection, not yet applied
-std::atomic<int>    s_show{0};          // browser_screen asked for by browser_show(), 0 none
-const char* volatile s_state = "wait";
+TaskHandle_t             s_task;
+std::atomic<int>         s_count{0};
+std::atomic<int>         s_show{0};
+std::atomic<const char*> s_state{"boot"};
 
-// RTC slow memory, not initialised at boot. Deep sleep, a software reset and a panic restart keep it.
-// The magic word of main/rtcstate.cpp tells whether it is valid. browser_init() clears it when it is not.
-// A change of these needs a new layout version in main/rtcstate.cpp. Each is one 32 bit word.
-RTC_NOINIT_ATTR volatile int s_index; // the next page, an index into the URL list
-RTC_NOINIT_ATTR volatile int s_panel; // what the panel shows: a page index, 0 and up, or a PANEL_ value
-RTC_NOINIT_ATTR volatile int s_low;   // 1: the last reading was low battery
+// The tab selection of the buttons and the console. The button task, the console task and the
+// browser task change it, so it and the fields after it change only under s_sel_lock.
+struct selection
+{
+    bool    open;
+    bool    force; // a wake or the console asked for the load, so it loads even when it changes nothing
+    int     base;  // the page the offset on the LEDs counts from
+    int     target;
+    int64_t until; // the hold ends, esp_timer time
+};
+SemaphoreHandle_t s_sel_lock;
+selection         s_sel;
+unsigned          s_presses;      // counts every press, so a sleep that has begun can tell one came in
+bool              s_sleeping;     // past the last point where a press can stop the sleep
+int               s_loading = -1; // the page being rendered
+int               s_drawing = -1; // the page being drawn
 
-// Sets the cycle state and prints an event line on a change. A Web Serial page follows these
-// lines, so it needs no status poll during a load or a draw. index is the status command's.
+struct sel_guard
+{
+    sel_guard() { xSemaphoreTake(s_sel_lock, portMAX_DELAY); }
+    ~sel_guard() { xSemaphoreGive(s_sel_lock); }
+};
+
+// A change of these needs a new magic in main/rtcstate.cpp.
+RTC_NOINIT_ATTR volatile int s_index;
+RTC_NOINIT_ATTR volatile int s_panel;
+RTC_NOINIT_ATTR volatile int s_low;
+RTC_NOINIT_ATTR volatile int s_hold;
+
 void set_state(const char* state)
 {
-    if(!strcmp(state, s_state)) return;
+    if(!strcmp(state, s_state.load())) return;
     s_state = state;
+    leds_busy(strcmp(state, "wait") && strcmp(state, "hold"));
     printf("EVT state=%s index=%d\n", state, static_cast<int>(s_index));
     fflush(stdout);
 }
 
-// s_panel values other than a page. All are negative, so browser_wake_index() reads them as no page.
-const int PANEL_NONE    = -1; // unknown: power on, or a draw that failed
-const int PANEL_LOWBATT = -2; // the low battery notice
-const int PANEL_WELCOME = -3; // the welcome notice
+const int PANEL_NONE    = -1;
+const int PANEL_LOWBATT = -2;
+const int PANEL_WELCOME = -3;
 
 int panel_of(browser_screen screen)
 {
     return screen == BROWSER_SCREEN_LOWBATT ? PANEL_LOWBATT : PANEL_WELCOME;
 }
 
-// The last reading, taken with the radio off, and its esp_timer time.
+// Under the lock. The page the user sees: the one being drawn, else the one on the panel.
+int base_page(int n)
+{
+    if(s_drawing >= 0 && s_drawing < n) return s_drawing;
+    if(s_panel >= 0 && s_panel < n) return s_panel;
+    return browser_wrap(s_index - 1, n);
+}
+
+// Under the lock.
+void sel_open(int n, int target, int64_t until, bool force)
+{
+    if(!s_sel.open)
+    {
+        s_sel.open  = true;
+        s_sel.force = false;
+        s_sel.base  = base_page(n);
+    }
+    s_sel.target = browser_wrap(target, n);
+    s_sel.until  = until;
+    s_sel.force  = s_sel.force || force;
+    leds_select(browser_offset(s_sel.target, s_sel.base, n));
+    if(s_task) xTaskNotifyGive(s_task);
+}
+
+// Under the lock.
+void sel_close()
+{
+    s_sel.open = false;
+    leds_select_end();
+}
+
+// Under the lock. A due selection that changes nothing closes here, and the answer is then NONE.
+browser_sel_action sel_check(int loading)
+{
+    browser_sel_action a = browser_sel_next(s_sel.open, esp_timer_get_time() >= s_sel.until, s_sel.force,
+                                            s_sel.target, s_sel.base, loading);
+    if(a != BROWSER_SEL_DROP) return a;
+    sel_close();
+    return BROWSER_SEL_NONE;
+}
+
+bool wait_ms(int64_t ms)
+{
+    if(ms <= 0) return false;
+    return ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(ms)) != 0;
+}
+
+// Waits out the hold of an open selection. loading as for browser_sel_next(). The answer is NONE or
+// LOAD, and a LOAD selection stays open for take_page().
+browser_sel_action sel_wait(int loading)
+{
+    for(;;)
+    {
+        int64_t left_us;
+        {
+            sel_guard          g;
+            browser_sel_action a = sel_check(loading);
+            if(a != BROWSER_SEL_WAIT) return a;
+            left_us = s_sel.until - esp_timer_get_time();
+        }
+        wait_ms(std::max<int64_t>(1, (left_us + 999) / 1000));
+    }
+}
+
+bool render_cancel()
+{
+    sel_guard g;
+    return sel_check(s_loading) == BROWSER_SEL_LOAD;
+}
+
 power_reading s_power = {-1, true, false, false};
 int64_t       s_power_us;
 
-// Takes a reading. ADC2 serves WiFi first, so a read with the radio on can fail, and a failed read counts
-// as USB. A battery result taken with the radio on is therefore read again with the radio off. So is a
-// failed read with no USB host connected, where nothing but the failure says USB: without this an
-// unplugged badge whose reads fail with the radio on would stay awake. On return the radio is off when
-// the result is battery and on when it is USB.
 void read_power()
 {
     power_reading r      = power_read(s_low != 0);
@@ -157,17 +213,43 @@ void read_power()
 
 [[noreturn]] void sleep_now(int seconds)
 {
-    set_state("sleep");
+    {
+        sel_guard g;
+        s_sleeping = true;
+        set_state("sleep");
+    }
     wifi_stop();
-    power_sleep(seconds);
+    power_sleep(seconds, buttons_released());
 }
 
-// True when the panel draw succeeded.
+// A deep sleep that a press stops: an open selection, or a press before the sleep is past its last
+// check, and then it returns and the cycle goes on awake. seconds 0 sleeps until a button.
+void rest(int seconds)
+{
+    unsigned seen;
+    {
+        sel_guard g;
+        if(s_sel.open) return;
+        seen = s_presses;
+        set_state("sleep");
+    }
+    wifi_stop();
+    {
+        sel_guard g;
+        if(s_sel.open || s_presses != seen)
+        {
+            set_state("wait");
+            return;
+        }
+        s_sleeping = true;
+    }
+    power_sleep(seconds, buttons_released());
+}
+
 bool refresh()
 {
     set_state("refresh");
     tone_draw_stats ds;
-    // A reset between these two marks halts the next boot (rtcstate.h).
     rtcstate_draw_begin();
     bool ok = tones_draw(tones_frame(), &ds);
     rtcstate_draw_end();
@@ -176,51 +258,51 @@ bool refresh()
     return ok;
 }
 
-// Sleeps up to ms, less when browser_next() is called. True when it was.
-bool wait_ms(int64_t ms)
-{
-    if(ms <= 0) return false;
-    return ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(ms)) != 0;
-}
-
-// The countdown: teal bar draining over total_ms, LEDs updated every 250 ms. Ends early on
-// browser_next(). A notification left over from before the wait is dropped first, so a button
-// pressed during the render does not skip the countdown.
+// The page time, total_ms from now, on the LEDs. Ends early when a selection loads or a notice is
+// asked for. Hold stops the clock until the hold ends.
 void countdown(int64_t total_ms)
 {
-    ulTaskNotifyTake(pdTRUE, 0);
-    // Presses made during the render and the draw open the selection now, from the page shown.
-    int pend = s_pending.exchange(0);
-    int n    = s_count > 0 ? s_count : 1;
-    if(pend)
-    {
-        s_select       = ((s_index - 1 + pend) % n + n) % n;
-        s_select_until = esp_timer_get_time() + SELECT_HOLD_MS * 1000;
-    } else s_select = -1;
-    int64_t t_end = esp_timer_get_time() + total_ms * 1000;
+    int64_t t_end   = esp_timer_get_time() + total_ms * 1000;
+    int64_t held_at = -1;
     for(;;)
     {
+        if(sel_wait(-1) == BROWSER_SEL_LOAD || s_show.load()) return;
         int64_t now = esp_timer_get_time();
-        if(s_select >= 0)
+        leds_timer(static_cast<int>(std::max<int64_t>(0, t_end - now) / 1000), static_cast<int>(total_ms));
+        if(s_hold)
         {
-            // a button selection is open: the timer pauses, the LEDs show the chosen tab, and the
-            // page loads once the buttons have been quiet for SELECT_HOLD_MS
-            if(now >= s_select_until) break;
-            leds_select(s_select, s_count);
-            wait_ms(std::max<int64_t>(1, (s_select_until - now) / 1000));
+            if(held_at < 0) held_at = now;
+            set_state("hold");
+            // On USB the badge stays awake while it holds, so it reads the rail as the cycle does: a badge
+            // unplugged while it holds goes to sleep until a button.
+            int64_t next_read_ms = BROWSER_USB_RECHECK_MS - (now - s_power_us) / 1000;
+            if(next_read_ms <= 0)
+            {
+                read_power();
+                if(!s_power.usb) rest(0);
+                continue;
+            }
+            wait_ms(next_read_ms);
             continue;
         }
+        if(held_at >= 0)
+        {
+            t_end += now - held_at;
+            held_at = -1;
+        }
+        set_state("wait");
         int64_t remaining_ms = (t_end - now) / 1000;
-        if(remaining_ms <= 0) break;
-        leds_timer(static_cast<int>(remaining_ms), static_cast<int>(total_ms));
-        if(wait_ms(std::min<int64_t>(remaining_ms, 250)) && s_select < 0) break;
+        if(remaining_ms <= 0) return;
+        wait_ms(std::min<int64_t>(remaining_ms, 250));
     }
 }
 
-// Draws a notice and records it in s_panel. s_panel is written before the draw starts, as for every
-// notice: a brownout or reset during the draw then finds the notice recorded, and the next boot does
-// not start another draw.
-// After a failed render or draw s_panel is PANEL_NONE, so the next check draws the notice again.
+void rest_or_select(int seconds)
+{
+    set_state("wait");
+    while(sel_wait(-1) != BROWSER_SEL_LOAD) rest(s_hold ? 0 : seconds);
+}
+
 bool draw_notice(int panel, const char* html)
 {
     s_panel = panel;
@@ -230,8 +312,6 @@ bool draw_notice(int panel, const char* html)
     return false;
 }
 
-// Low battery, from the last reading. Draws the notice when it is not on the panel, then sleeps until
-// a button wakes the badge. Returns when the battery is not low.
 void low_battery_step()
 {
     browser_low_step step = browser_low_next(s_power.low, s_panel == PANEL_LOWBATT);
@@ -247,9 +327,6 @@ void low_battery_step()
     sleep_now(0);
 }
 
-// No WiFi network is stored. Draws the welcome notice when it is not on the panel. On battery nothing
-// can change until the user connects USB and presses a button, so the badge then sleeps until a button
-// wakes it. On USB it returns and the cycle waits for the console.
 void welcome_step()
 {
     if(s_panel != PANEL_WELCOME)
@@ -260,11 +337,9 @@ void welcome_step()
         draw_notice(PANEL_WELCOME, welcome_html().c_str());
         read_power();
     }
-    if(!s_power.usb) sleep_now(0);
+    if(!s_power.usb) rest(0);
 }
 
-// A notice asked for by browser_show(). Draws it when it is not on the panel, then holds it for
-// CONFIG_B26_CYCLE_SECONDS.
 void show_step()
 {
     int screen = s_show.exchange(0);
@@ -284,25 +359,6 @@ void show_step()
     countdown(static_cast<int64_t>(CONFIG_B26_CYCLE_SECONDS) * 1000);
 }
 
-// After a wake by a button: the tab selection of the countdown, before the page loads. start is the
-// tab the wake button chose. Every button steps the selection while it is open, the LEDs show the tab,
-// and it closes once the buttons have been quiet for SELECT_HOLD_MS. WiFi connects in this time.
-void select_window(int start, int n)
-{
-    s_count        = n;
-    s_select       = start;
-    s_select_until = esp_timer_get_time() + SELECT_HOLD_MS * 1000;
-    set_state("wait"); // browser_step() acts in this state only
-    for(;;)
-    {
-        int64_t now = esp_timer_get_time();
-        if(now >= s_select_until) break;
-        leds_select(s_select, s_count);
-        wait_ms(std::max<int64_t>(1, (s_select_until - now) / 1000));
-    }
-}
-
-// Turns the radio on when it is off and waits up to BROWSER_WIFI_WAIT_MS for a connection.
 bool wifi_connect()
 {
     wifi_resume();
@@ -312,22 +368,52 @@ bool wifi_connect()
     return wifi_wait_connected(BROWSER_WIFI_WAIT_MS);
 }
 
-// A cycle without a page. A new reading decides, on battery always, on USB when the last reading is
-// older than BROWSER_USB_RECHECK_MS: battery sleeps BROWSER_RETRY_S, USB returns. Otherwise it returns
-// at once.
 void retry_on_battery()
 {
     if(s_power.usb && esp_timer_get_time() - s_power_us < BROWSER_USB_RECHECK_MS * 1000LL) return;
     read_power();
-    if(!s_power.usb) sleep_now(BROWSER_RETRY_S);
+    if(!s_power.usb) rest(s_hold ? 0 : BROWSER_RETRY_S);
 }
+
+// The page to load: the selection once its hold ends, else the next page of the cycle. It becomes
+// s_loading under the same lock, so a press after this counts from the page on the panel.
+int take_page(int n)
+{
+    for(;;)
+    {
+        int64_t left_us;
+        {
+            sel_guard g;
+            if(s_index < 0 || s_index >= n) s_index = 0;
+            browser_sel_action a = sel_check(-1);
+            if(a != BROWSER_SEL_WAIT)
+            {
+                if(a == BROWSER_SEL_LOAD)
+                {
+                    s_index = s_sel.target % n;
+                    sel_close();
+                }
+                s_loading = s_index;
+                return s_index;
+            }
+            left_us = s_sel.until - esp_timer_get_time();
+        }
+        set_state("wait");
+        wait_ms(std::max<int64_t>(1, (left_us + 999) / 1000));
+    }
+}
+
+enum blocker_kind
+{
+    BLOCK_NONE,
+    BLOCK_NO_URLS,
+    BLOCK_NO_WIFI,
+};
 
 void browser_task(void*)
 {
-    const char* logged = nullptr; // blocker already logged, so it is logged once per change
-    bool        woke   = true;    // the next cycle with a list is the first since the start
-    int         fails  = 0;       // pages that failed since the last draw
-    // The first cycle starts at boot, so a battery sleep after it counts the boot time.
+    blocker_kind logged = BLOCK_NONE;
+    int         fails  = 0;
     for(int64_t t_cycle = 0;; t_cycle = esp_timer_get_time())
     {
         low_battery_step();
@@ -335,76 +421,60 @@ void browser_task(void*)
 
         std::vector<page_entry> urls = cfg_urls();
         int                     n    = static_cast<int>(urls.size());
+        s_count = n;
         char ssid[33];
         bool have_ssid = wifi_get_ssid(ssid, sizeof(ssid));
         if(!have_ssid) welcome_step();
-        if(n > 0 && woke)
+        blocker_kind blocker = BLOCK_NONE;
+        if(n == 0) blocker = BLOCK_NO_URLS;
+        else if(!have_ssid || !wifi_connect()) blocker = BLOCK_NO_WIFI;
+        if(blocker != BLOCK_NONE)
         {
-            power_wake wake = power_wake_cause();
-            s_index         = browser_wake_index(wake, s_index, s_panel, n);
-            woke            = false;
-            if(have_ssid && (wake == POWER_WAKE_USER_B || wake == POWER_WAKE_MENU_MINUS)) select_window(s_index, n);
-        }
-        const char* blocker = nullptr;
-        if(n == 0) blocker = "nourls";
-        // With no SSID a connect wait could only time out.
-        else if(!have_ssid || !wifi_connect()) blocker = "nowifi";
-        if(blocker)
-        {
-            set_state(blocker);
-            // The fixed delay keeps the flash its full length when the console's "next" ends a wait.
-            if(blocker == std::string("nowifi") && have_ssid)
+            set_state(blocker == BLOCK_NO_WIFI ? "nowifi" : "nourls");
+            if(blocker == BLOCK_NO_WIFI && have_ssid)
             {
                 leds_amber();
                 vTaskDelay(pdMS_TO_TICKS(WIFI_FAIL_FLASH_MS));
             }
             leds_off();
+            {
+                // No page can load. A selection whose hold has ended is dropped, so it does not load
+                // long after the press.
+                sel_guard g;
+                if(s_sel.open && esp_timer_get_time() >= s_sel.until) sel_close();
+            }
             if(logged != blocker)
             {
-                if(blocker == std::string("nowifi"))
+                if(blocker == BLOCK_NO_WIFI)
                     ESP_LOGW(TAG, "waiting for WiFi: %s%s",
                              have_ssid ? "connecting to " : "none stored, console: wifi SSID PASSWORD", have_ssid ? ssid : "");
                 else
-                    ESP_LOGW(TAG, "waiting for URLs, console: url add https://...");
+                    ESP_LOGW(TAG, "waiting for URLs, console: url add URL");
                 logged = blocker;
             }
             retry_on_battery();
             wait_ms(1000);
             continue;
         }
-        logged = nullptr;
+        logged = BLOCK_NONE;
 
-        int64_t t_start = esp_timer_get_time();
-        s_count = n;
-        if(s_index < 0 || s_index >= n) s_index = 0;
-        if(s_select >= 0)
-        {
-            s_index  = s_select % n;
-            s_select = -1;
-        } else if(s_back)
-        {
-            // s_index already points past the page shown, so the page before it is two back
-            s_back  = false;
-            s_index = ((s_index - 2) % n + n) % n;
-        }
-        page_entry  page = urls[s_index];
-        std::string url  = page.url;
-        int         secs = page.seconds > 0 ? page.seconds : CONFIG_B26_CYCLE_SECONDS;
-        ESP_LOGI(TAG, "PAGE %d of %u: %s offset %d for %d s", s_index + 1, (unsigned)urls.size(), url.c_str(),
+        int         drawn   = take_page(n);
+        int64_t     t_start = esp_timer_get_time();
+        page_entry  page    = urls[drawn];
+        std::string url     = page.url;
+        int         secs    = page.seconds > 0 ? page.seconds : CONFIG_B26_CYCLE_SECONDS;
+        ESP_LOGI(TAG, "PAGE %d of %u: %s offset %d for %d s", drawn + 1, (unsigned)urls.size(), url.c_str(),
                  page.offset, secs);
         ESP_LOGI(TAG, "free internal %u, PSRAM %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
-        // The index moves on before the render. A page that crashes the firmware is then passed over
-        // after the reset, which continues from the kept index.
-        int drawn = s_index;
-        s_index   = (s_index + 1) % n;
+        s_index = (drawn + 1) % n;
 
         set_state("render");
-        leds_load(1, 8); // fetch starts; render_page advances the bar from here
+        leds_load(1, 8);
         render_stats st;
         std::string  err;
-        bool         ok = render_page(url, page.offset, tones_frame(), st, err);
+        bool         ok = render_page(url, page.offset, tones_frame(), st, err, render_cancel);
         if(ok && !render_tabs(urls, static_cast<size_t>(drawn), tones_frame()))
             ESP_LOGW(TAG, "tab bar did not render");
         if(ok)
@@ -416,35 +486,71 @@ void browser_task(void*)
                      (unsigned)st.psram_low);
         if(!ok)
         {
-            // the previous page stays on the panel
+            {
+                sel_guard g;
+                s_loading = -1;
+            }
+            if(st.cancelled)
+            {
+                ESP_LOGI(TAG, "PAGE CANCELLED %s: another tab was chosen", url.c_str());
+                continue;
+            }
             ESP_LOGW(TAG, "PAGE FAILED %s: %s", url.c_str(), err.c_str());
             if(!s_power.usb)
             {
-                // On battery the next page loads at once. When every page of the list has failed since
-                // the last draw, a new reading decides: battery sleeps BROWSER_RETRY_S.
-                if(++fails < n) continue;
+                if(!s_hold && ++fails < n) continue;
                 fails = 0;
                 read_power();
-                if(!s_power.usb) sleep_now(BROWSER_RETRY_S);
+                if(!s_power.usb)
+                {
+                    rest_or_select(BROWSER_RETRY_S);
+                    continue;
+                }
             }
             retry_on_battery();
             set_state("wait");
             countdown(FAIL_WAIT_MS);
             continue;
         }
-        // On battery the draw needs no radio. On USB the radio stays on.
+
+        // A selection still in its hold decides whether this page is drawn. Under the lock with the
+        // answer, the page becomes s_drawing, so a press from here counts from it.
+        browser_sel_action a;
+        for(;;)
+        {
+            int64_t left_us;
+            {
+                sel_guard g;
+                a = sel_check(drawn);
+                if(a != BROWSER_SEL_WAIT)
+                {
+                    s_loading = -1;
+                    if(a == BROWSER_SEL_NONE) s_drawing = drawn;
+                    break;
+                }
+                left_us = s_sel.until - esp_timer_get_time();
+            }
+            wait_ms(std::max<int64_t>(1, (left_us + 999) / 1000));
+        }
+        if(a == BROWSER_SEL_LOAD)
+        {
+            ESP_LOGI(TAG, "PAGE SKIPPED %s: another tab was chosen", url.c_str());
+            continue;
+        }
+
         if(!s_power.usb) wifi_stop();
-        s_panel = refresh() ? drawn : PANEL_NONE;
+        bool drew = refresh();
+        {
+            sel_guard g;
+            s_panel   = drew ? drawn : PANEL_NONE;
+            s_drawing = -1;
+        }
         fails = 0;
         read_power();
         ESP_LOGI(TAG, "PAGE DONE %s after %lld ms", url.c_str(), (esp_timer_get_time() - t_start) / 1000);
         if(!s_power.usb)
         {
-            // Presses made during the render and the draw open the selection, and the chosen page loads
-            // before any sleep. With no press the badge sleeps.
-            int pend = s_pending.exchange(0);
-            if(pend == 0) sleep_now(browser_sleep_s(secs, (esp_timer_get_time() - t_cycle) / 1000));
-            select_window(((drawn + pend) % n + n) % n, n);
+            rest_or_select(browser_sleep_s(secs, (esp_timer_get_time() - t_cycle) / 1000));
             continue;
         }
 
@@ -457,11 +563,13 @@ void browser_task(void*)
 
 power_reading browser_init(bool kept)
 {
+    s_sel_lock = xSemaphoreCreateMutex();
     if(!kept)
     {
         s_index = 0;
         s_panel = PANEL_NONE;
         s_low   = 0;
+        s_hold  = 0;
     }
     read_power();
     return s_power;
@@ -469,16 +577,42 @@ power_reading browser_init(bool kept)
 
 bool browser_start()
 {
-    // Core 1: the task watchdog does not watch that core's idle task (sdkconfig.defaults), so a
-    // 20 s layout does not trip it.
+    if(!s_sel_lock) return false;
+    int n   = static_cast<int>(cfg_urls().size());
+    s_count = n;
+    leds_hold(s_hold != 0);
+    power_wake wake = power_wake_cause();
+    if(n > 0)
+    {
+        s_index = browser_wake_index(wake, s_index, s_panel, n);
+        char ssid[33];
+        if(wifi_get_ssid(ssid, sizeof(ssid)) && (wake == POWER_WAKE_USER_B || wake == POWER_WAKE_MENU_MINUS))
+        {
+            sel_guard g;
+            sel_open(n, s_index, esp_timer_get_time() + SELECT_HOLD_US, true);
+        } else leds_select_end();
+    } else leds_select_end();
     BaseType_t rc = xTaskCreatePinnedToCore(browser_task, "browser", RENDER_STACK, nullptr, 5, &s_task, 1);
     if(rc != pdPASS) ESP_LOGE(TAG, "browser task not created");
     return rc == pdPASS;
 }
 
+namespace
+{
+// A selection from the console: it loads at once, also when it is the page shown.
+void console_select(int target, bool from_base)
+{
+    if(!s_task) return;
+    sel_guard g;
+    int       n = s_count;
+    if(n <= 0) return;
+    sel_open(n, from_base ? base_page(n) + target : target, esp_timer_get_time(), true);
+}
+} // namespace
+
 void browser_next()
 {
-    if(s_task) xTaskNotifyGive(s_task);
+    console_select(s_index, false);
 }
 
 void browser_show(browser_screen screen)
@@ -494,34 +628,39 @@ bool browser_shows(browser_screen screen)
 
 void browser_prev()
 {
-    s_back = true;
-    if(s_task) xTaskNotifyGive(s_task);
+    console_select(-1, true);
 }
 
-// A selection that is already due: the countdown ends at once and the cycle takes the page.
 void browser_load(int index)
 {
-    if(!s_task) return;
-    s_select       = index < 0 ? 0 : index;
-    s_select_until = esp_timer_get_time();
-    xTaskNotifyGive(s_task);
+    console_select(index < 0 ? 0 : index, false);
 }
 
-void browser_step(int delta)
+int browser_step(int delta)
 {
-    if(!s_task) return;
-    if(strcmp(s_state, "wait") != 0)
+    if(!s_task) return -1;
+    sel_guard g;
+    int       n = s_count;
+    if(n <= 0 || s_sleeping)
     {
-        // No selection is open during a render or a draw. The press is kept for when the draw ends.
-        s_pending += delta;
-        return;
+        leds_flash();
+        return -1;
     }
-    int n = s_count > 0 ? s_count : 1;
-    // the selection starts at the page shown, which is one before the advanced index
-    int cur = s_select >= 0 ? s_select : ((s_index - 1) % n + n) % n;
-    s_select       = ((cur + delta) % n + n) % n;
-    s_select_until = esp_timer_get_time() + SELECT_HOLD_MS * 1000;
+    s_presses++;
+    sel_open(n, (s_sel.open ? s_sel.target : base_page(n)) + delta, esp_timer_get_time() + SELECT_HOLD_US, false);
+    return s_sel.target;
+}
+
+int browser_hold_toggle()
+{
+    if(!s_task) return -1;
+    sel_guard g;
+    if(s_sleeping) return -1;
+    s_presses++;
+    s_hold = s_hold ? 0 : 1;
+    leds_hold(s_hold != 0);
     xTaskNotifyGive(s_task);
+    return s_hold;
 }
 
 int browser_page_index()
@@ -531,5 +670,5 @@ int browser_page_index()
 
 const char* browser_state()
 {
-    return s_state;
+    return s_state.load();
 }

@@ -1,8 +1,9 @@
 // Host test of tone_fx_squeeze() (main/tone_fx_squeeze.h, as its stand in in
 // ../model/tone_fx_squeeze_model.cpp) against the float squeeze of main/tonemap_squeeze.h followed by
-// the floor on L at the black entry, as make_target() in main/tones.cpp runs it.
+// the floor on L at the black entry, as make_target() in main/tones_float_ref.inc runs it.
 //
-// Sets, each sRGB through the float Oklab conversion below (a copy of the one in main/tones.cpp):
+// Sets, each sRGB through the float Oklab conversion below (a copy of the one in
+// main/tones_float_ref.inc):
 //   gray    all 256 grays. Co, Ao and Bo must be exactly 0. Lo of white and of black must be the
 //           input L in q15 held at the black entry's L: the two ends do not move.
 //   edge    the image edge, (v, 0, 0) then (255, v, v), 512 colours

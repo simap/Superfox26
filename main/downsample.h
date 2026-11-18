@@ -1,4 +1,10 @@
-// Box filter from a source image, pushed one row at a time top to bottom, to a smaller gimage.
+// Scales a source image down to a smaller destination image by averaging the source pixels that map
+// to each destination pixel, weighting each pixel's color by its alpha.
+// It takes the source one row at a time, so the whole source need never be held at once.
+// Call init once, then push each source row, then finish.
+// push expects the source rows in order of increasing y.
+// finish writes the last destination row and leaves out->alpha empty when every destination pixel
+// came out fully opaque.
 #pragma once
 
 #include <cstdint>
@@ -6,15 +12,12 @@
 
 #include "image.h"
 
-// Box filter from sw x sh source rows (pushed top to bottom) to dw x dh, dw <= sw and dh <= sh.
-// Source rows are RGB, 3 bytes per pixel, with an optional alpha row. Color is alpha-weighted; the
-// stored alpha is the mean alpha. finish() drops the alpha plane when every pixel was opaque.
 struct downsampler
 {
     int                   sw = 0, sh = 0, dw = 0, dh = 0, cur = -1;
     bool                  transparent = false;
     gimage*               out = nullptr;
-    std::vector<uint32_t> sca, sa, cnt; // sca: 3 per target pixel
+    std::vector<uint32_t> sca, sa, cnt;
     std::vector<int>      xmap;
 
     void init(int sw_, int sh_, int dw_, int dh_, gimage* o)
@@ -34,7 +37,6 @@ struct downsampler
         xmap.resize(sw);
         for(int x = 0; x < sw; x++) xmap[x] = static_cast<int>(static_cast<long>(x) * dw / sw);
     }
-    // c: sw RGB pixels, a: sw alpha bytes or nullptr for opaque
     void push(int y, const uint8_t* c, const uint8_t* a)
     {
         int ty = static_cast<int>(static_cast<long>(y) * dh / sh);

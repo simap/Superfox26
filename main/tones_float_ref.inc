@@ -1,67 +1,29 @@
-// The float dither, the reference for the fixed point dither of tones.cpp. tones.cpp includes this
-// file when TONES_HAVE_FLOAT_REF is 1 (tones.h): the host harness and the benchmark. It holds the
-// same rules in 32 bit float with libm. A pixel's target comes from a cache keyed by its RGB, and a
-// coloured pixel searches the NB nearest neighbours of its target's nearest entry. It reads s_lab,
-// s_black and s_noise of tones.cpp. tones_init() calls float_ref_init().
+// Floating-point reference for the fixed-point tone_dither in tones.cpp.
+// Built only in the float-reference and benchmark builds.
+// This fragment is included into tones.cpp and reads that file's tone tables.
+// float_ref_init must run before any tone_dither_float::row or tones_float_ref_solid_gray call;
+// tones_init runs it.
 
 namespace
 {
-// Carried error limit per channel in linear light, as a share of the paper's light.
 const float ERR_MAX = 0.25f;
-// A carried error below this in every channel counts as none.
 const float ERR_ZERO = 1e-4f;
-// A target whose a, b chroma after the squeeze is below this is neutral. Float rounding leaves a
-// gray's chroma near 1e-7, and the squeeze sets a blue or a green to exactly 0.
 const float NEUTRAL_C = 1e-3f;
-// A neutral target within this Oklab L of a neutral entry is on that entry. The table gives L to 4
-// decimals, and in the midtones one gray byte is 0.003 to 0.006 in L from the next. At 0.002 a gray
-// byte lands on 20 of the 22 neutral entries. It misses L 0.676, which lies 0.002 below the entry at
-// L 0.678, and L 0.058, between bytes 0 and 1.
 const float ON_ENTRY_L = 0.002f;
-// Candidates searched per coloured pixel: the nearest entry to its target without error, and that
-// entry's nearest neighbours in the weighted Oklab distance, itself first. On the host harness,
-// against a search of all entries, 24 candidates change 6 to 13% of the pixels of the red ramp and
-// the colour wedges and leave seams in the wedges, 48 change 0.3% at most.
 const int NB = 48;
-// Targets kept by RGB, 2^CACHE_BITS slots in PSRAM.
 const int CACHE_BITS = 10;
-// Luminance of linear sRGB.
 const float LUMA[3] = {0.2126f, 0.7152f, 0.0722f};
 
 struct dither_tap
 {
-    int8_t dx, dy; // dx along the scan direction, dy rows down
-    float  w;
+    int8_t dx, dy;
 };
+const dither_tap k_atkinson[6] = {{1, 0}, {2, 0}, {-1, 1}, {0, 1}, {1, 1}, {0, 2}};
+const float      ATKINSON_W    = 1 / 8.0f;
 
-struct dither_taps
-{
-    int        n;
-    dither_tap t[12];
-};
+const float    NOISE_REL_STEP = NOISE_REL / 64.0f;
+const unsigned CACHE_SLOTS    = 1u << CACHE_BITS;
 
-// Indexed by dither_kernel.
-const dither_taps k_kernels[] = {
-    {6, {{1, 0, 1 / 8.0f}, {2, 0, 1 / 8.0f}, {-1, 1, 1 / 8.0f}, {0, 1, 1 / 8.0f}, {1, 1, 1 / 8.0f}, {0, 2, 1 / 8.0f}}},
-    {4, {{1, 0, 7 / 16.0f}, {-1, 1, 3 / 16.0f}, {0, 1, 5 / 16.0f}, {1, 1, 1 / 16.0f}}},
-    {12, {{1, 0, 7 / 48.0f}, {2, 0, 5 / 48.0f}, {-2, 1, 3 / 48.0f}, {-1, 1, 5 / 48.0f}, {0, 1, 7 / 48.0f},
-          {1, 1, 5 / 48.0f}, {2, 1, 3 / 48.0f}, {-2, 2, 1 / 48.0f}, {-1, 2, 3 / 48.0f}, {0, 2, 5 / 48.0f},
-          {1, 2, 3 / 48.0f}, {2, 2, 1 / 48.0f}}},
-    {12, {{1, 0, 8 / 42.0f}, {2, 0, 4 / 42.0f}, {-2, 1, 2 / 42.0f}, {-1, 1, 4 / 42.0f}, {0, 1, 8 / 42.0f},
-          {1, 1, 4 / 42.0f}, {2, 1, 2 / 42.0f}, {-2, 2, 1 / 42.0f}, {-1, 2, 2 / 42.0f}, {0, 2, 4 / 42.0f},
-          {1, 2, 2 / 42.0f}, {2, 2, 1 / 42.0f}}},
-};
-
-const dither_taps& KERNEL       = k_kernels[TONES_DITHER_KERNEL];
-const float        NOISE_STEP   = TONES_DITHER_NOISE_L / 128.0f; // per unit of s_noise
-const float        NOISE_REL    = TONES_DITHER_NOISE_REL / 64.0f; // per unit of s_noise, doubled
-const float        HYBRID_NEAR2 = TONES_DITHER_HYBRID_NEAR * TONES_DITHER_HYBRID_NEAR;
-const unsigned     CACHE_SLOTS  = 1u << CACHE_BITS;
-
-// The target of one pixel colour, as the dither uses it. lin is the squeezed colour in linear light.
-// A neutral target has lin equal on all three channels and holds in lo and hi the two neutral
-// entries around it, lo the darker, the same entry when it is on one. A coloured target holds its
-// nearest entry in lo. key is the RGB with bit 24 set, 0 for an empty slot.
 struct target
 {
     uint32_t key;
@@ -70,20 +32,19 @@ struct target
     bool     neutral;
 };
 
-float   s_lin[TONEMAP_COUNT][3]; // entry linear light
+float   s_lin[TONEMAP_COUNT][3];
 uint8_t s_nb[TONEMAP_COUNT][NB];
-uint8_t s_by_l[TONEMAP_COUNT];      // all entries, darkest first, for the nearest entry search
-uint8_t s_neutrals[TONEMAP_COUNT];  // the neutral entries, lightest first
-float   s_neutral_l[TONEMAP_COUNT]; // and their L
+uint8_t s_by_l[TONEMAP_COUNT];
+uint8_t s_neutrals[TONEMAP_COUNT];
+float   s_neutral_l[TONEMAP_COUNT];
 int     s_n_neutral = 0;
-float   s_byte_lin[256]; // sRGB byte to linear
-target* s_cache = nullptr; // CACHE_SLOTS targets in PSRAM
+float   s_byte_lin[256];
+target* s_cache = nullptr;
 #ifdef TONES_BENCH
-int      s_bench_bits = CACHE_BITS; // cache index bits for tones_bench(), 0 for no cache
+int      s_bench_bits = CACHE_BITS;
 uint32_t s_bench_miss = 0, s_bench_look = 0;
 #endif
 
-// Linear sRGB to Oklab.
 inline void lin_to_oklab(const float c[3], float out[3])
 {
     const float l = cbrtf(0.4122214708f * c[0] + 0.5363325363f * c[1] + 0.0514459929f * c[2]);
@@ -94,7 +55,6 @@ inline void lin_to_oklab(const float c[3], float out[3])
     out[2]        = 0.0259040371f * l + 0.7827717662f * m - 0.8086757660f * s;
 }
 
-// Oklab to linear sRGB.
 void oklab_to_lin(const float lab[3], float out[3])
 {
     float l = lab[0] + 0.3963377774f * lab[1] + 0.2158037573f * lab[2];
@@ -108,7 +68,6 @@ void oklab_to_lin(const float lab[3], float out[3])
     out[2]  = -0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s;
 }
 
-// sRGB bytes to Oklab, the form tonemap_squeeze_begin() takes.
 void oklab(uint8_t r8, uint8_t g8, uint8_t b8, float out[3])
 {
     const float c[3] = {s_byte_lin[r8], s_byte_lin[g8], s_byte_lin[b8]};
@@ -118,8 +77,8 @@ void oklab(uint8_t r8, uint8_t g8, uint8_t b8, float out[3])
 inline float dist(const float* a, const float* b)
 {
     float dl = a[0] - b[0];
-    float da = (a[1] - b[1]) * TONEMAP_CIE_CHROMA_WEIGHT;
-    float db = (a[2] - b[2]) * TONEMAP_CIE_CHROMA_WEIGHT;
+    float da = (a[1] - b[1]) * TONEMAP_CHROMA_WEIGHT;
+    float db = (a[2] - b[2]) * TONEMAP_CHROMA_WEIGHT;
     return dl * dl + da * da + db * db;
 }
 
@@ -128,8 +87,6 @@ inline float clampf(float v, float lo, float hi)
     return std::max(lo, std::min(hi, v));
 }
 
-// The nearest entry to t over all entries. The scan starts at t's L in s_by_l and widens to the
-// side nearer in L until the L gap alone is past the best distance.
 unsigned nearest(const float t[3])
 {
     const int n  = static_cast<int>(N);
@@ -151,8 +108,6 @@ unsigned nearest(const float t[3])
     return best;
 }
 
-// The two neutral entries around L, lo the darker. Both are the same entry when L is within
-// ON_ENTRY_L of it, above the lightest or below the darkest.
 void bracket(float L, uint8_t* lo, uint8_t* hi)
 {
     int k = 0;
@@ -161,8 +116,6 @@ void bracket(float L, uint8_t* lo, uint8_t* hi)
     *hi = k == 0 || L - s_neutral_l[k] <= ON_ENTRY_L ? *lo : s_neutrals[k - 1];
 }
 
-// The target of an sRGB colour: its Oklab through tonemap_squeeze(), L held at or above the black
-// entry's.
 void make_target(uint8_t r, uint8_t g, uint8_t b, target* t)
 {
     float lab[3];
@@ -207,7 +160,6 @@ inline const target& target_at(uint8_t r, uint8_t g, uint8_t b)
     return t;
 }
 
-// The tables of the float dither. s_lab and s_black are set.
 bool float_ref_init()
 {
     for(int v = 0; v < 256; v++)
@@ -229,7 +181,6 @@ bool float_ref_init()
     std::sort(s_by_l, s_by_l + N, [](uint8_t a, uint8_t b) { return s_lab[a][0] < s_lab[b][0]; });
     for(unsigned e = 0; e < N; e++)
     {
-        // the NB nearest entries to e, e itself first
         std::vector<std::pair<float, unsigned>> d;
         d.reserve(N);
         for(unsigned f = 0; f < N; f++) d.push_back({dist(s_lab[e], s_lab[f]), f});
@@ -246,7 +197,7 @@ bool float_ref_init()
     memset(s_cache, 0, CACHE_SLOTS * sizeof(target));
     return true;
 }
-} // namespace
+}
 
 int tones_float_ref_solid_gray(int g)
 {
@@ -254,8 +205,6 @@ int tones_float_ref_solid_gray(int g)
     target tg;
     make_target(static_cast<uint8_t>(g), static_cast<uint8_t>(g), static_cast<uint8_t>(g), &tg);
     const float l = cbrtf(tg.lin[0]);
-    // Of the grays whose target is on a neutral entry, the one whose entry is nearest to g's target
-    // in L, then nearest to g.
     int   out = g;
     float bd  = 1e9f;
     for(int v = 0; v < 256; v++)
@@ -282,8 +231,6 @@ void tone_dither_float::release()
 
 void tone_dither_float::row(const uint8_t* c, int y, uint8_t* out)
 {
-    // rp[k] receives the error for k rows down. Taps past either end of the row land in the 2 padding
-    // cells, which are never read.
     float*        rp[3] = {rows[0].data(), rows[1].data(), rows[2].data()};
     float*        cur   = rp[0];
     const int8_t* noise = s_noise[y & (NOISE_N - 1)].data();
@@ -300,7 +247,6 @@ void tone_dither_float::row(const uint8_t* c, int y, uint8_t* out)
             ec[k] = clampf(e[k], -ERR_MAX, ERR_MAX);
             none  = none && fabsf(ec[k]) < ERR_ZERO;
         }
-        // paper with no carried error: the common case on a text page
         if(none && (r & g & b) == 255)
         {
             out[x] = TONE_PAPER;
@@ -310,11 +256,8 @@ void tone_dither_float::row(const uint8_t* c, int y, uint8_t* out)
         const int     nz = noise[x & (NOISE_N - 1)];
         unsigned      best;
         float         res[3];
-        float         q[3] = {0.0f, 0.0f, 0.0f}; // the search point in Oklab
         if(t.neutral)
         {
-            // A neutral pixel mixes only the two neutral entries around its target, and the carried
-            // error is held inside that pair. A pixel on an entry takes it and leaves no error.
             if(t.lo == t.hi)
             {
                 out[x] = t.lo;
@@ -322,23 +265,19 @@ void tone_dither_float::row(const uint8_t* c, int y, uint8_t* out)
             }
             const float lo = s_lin[t.lo][0], hi = s_lin[t.hi][0];
             const float v  = clampf(t.lin[0] + LUMA[0] * ec[0] + LUMA[1] * ec[1] + LUMA[2] * ec[2], lo, hi);
-            // The decision point: the pair's midpoint in Oklab L, moved by the noise, compared in
-            // linear light as its cube.
             const float llo = s_lab[t.lo][0], lhi = s_lab[t.hi][0];
-            const float m   = 0.5f * (llo + lhi - NOISE_REL * nz * (lhi - llo));
+            const float m   = 0.5f * (llo + lhi - NOISE_REL_STEP * nz * (lhi - llo));
             best            = v > m * m * m ? t.hi : t.lo;
             res[0] = res[1] = res[2] = v - s_lin[best][0];
-            if(HYBRID_NEAR2 > 0) q[0] = cbrtf(v), q[1] = q[2] = 0.0f;
         }
         else
         {
-            float v[3];
+            float v[3], p[3];
             for(int k = 0; k < 3; k++) v[k] = clampf(t.lin[k] + ec[k], 0.0f, 1.0f);
-            lin_to_oklab(v, q);
+            lin_to_oklab(v, p);
             const uint8_t* cand = s_nb[t.lo];
             unsigned       next = cand[0];
             float          bd = 1e9f, nd = 1e9f;
-            const float    p[3] = {q[0] + NOISE_STEP * nz, q[1], q[2]};
             best                = cand[0];
             for(int k = 0; k < NB; k++)
             {
@@ -347,31 +286,21 @@ void tone_dither_float::row(const uint8_t* c, int y, uint8_t* out)
                 if(dd < bd) nd = bd, next = best, bd = dd, best = f;
                 else if(dd < nd) nd = dd, next = f;
             }
-            if(NOISE_REL > 0 && nz && next != best)
+            if(nz && next != best)
             {
-                // squared distances to the darker (lo) and lighter (hi) of the two nearest: the search
-                // point lies past their midpoint by (d_lo - d_hi) / (2 |hi - lo|^2) of the gap
                 unsigned lo = best, hi = next;
                 float    dlo = bd, dhi = nd;
                 if(s_lab[lo][0] > s_lab[hi][0]) std::swap(lo, hi), std::swap(dlo, dhi);
-                best = dlo - dhi + NOISE_REL * nz * dist(s_lab[lo], s_lab[hi]) > 0 ? hi : lo;
+                best = dlo - dhi + NOISE_REL_STEP * nz * dist(s_lab[lo], s_lab[hi]) > 0 ? hi : lo;
             }
             for(int k = 0; k < 3; k++) res[k] = v[k] - s_lin[best][k];
-            if(TONES_ERR_KEEP_C != 1.0f)
-            {
-                const float yl = LUMA[0] * res[0] + LUMA[1] * res[1] + LUMA[2] * res[2];
-                for(float& rk : res) rk = yl + TONES_ERR_KEEP_C * (rk - yl);
-            }
         }
         out[x] = static_cast<uint8_t>(best);
 
-        const dither_taps& kt =
-            HYBRID_NEAR2 > 0 && dist(q, s_lab[best]) < HYBRID_NEAR2 ? k_kernels[KERNEL_ATKINSON] : KERNEL;
-        for(int j = 0; j < kt.n; j++)
+        for(const dither_tap& tp : k_atkinson)
         {
-            const dither_tap& tp = kt.t[j];
-            float*            p  = rp[tp.dy] + (x + tp.dx * d + 2) * 3;
-            p[0] += res[0] * tp.w, p[1] += res[1] * tp.w, p[2] += res[2] * tp.w;
+            float* p = rp[tp.dy] + (x + tp.dx * d + 2) * 3;
+            p[0] += res[0] * ATKINSON_W, p[1] += res[1] * ATKINSON_W, p[2] += res[2] * ATKINSON_W;
         }
     }
     std::swap(rows[0], rows[1]);

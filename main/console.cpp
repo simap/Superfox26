@@ -1,6 +1,6 @@
-// Line console. stdin goes through the USB Serial/JTAG driver so read() blocks instead of polling.
-// Each byte is echoed and backspace erases, so a terminal shows the line as typed. A Web Serial
-// page sends whole lines and filters replies on the OK and ERR prefixes.
+// Each command prints its reply to stdout as one or more lines.
+// A reply line leads with OK when the command ran or ERR when it was rejected or could not run,
+// except the get command prints up to 200 bytes of the fetched body as a line with no prefix.
 
 #include "console.h"
 
@@ -30,12 +30,10 @@
 static const char* TAG = "console";
 
 static const int LINE_MAX_BYTES = 1024;
-// get runs a fetch, TLS included, on this task.
 static const int CONSOLE_STACK  = 16384;
 
 namespace
 {
-// Splits a line on spaces. Double quotes group words; a backslash escapes the next byte.
 std::vector<std::string> split(const char* line)
 {
     std::vector<std::string> out;
@@ -90,8 +88,6 @@ void cmd_status()
     bool link = wifi_get_link(&rssi, &channel);
     printf("OK wifi ssid=\"%s\" connected=%d ip=%s rssi=%d channel=%d radio=%s\n", ssid, wifi_is_connected() ? 1 : 0,
            ip, link ? rssi : 0, link ? channel : 0, wifi_is_stopped() ? "off" : "on");
-    // ADC2 serves WiFi first, so a read while the radio is on can fail. A failed read counts as USB.
-    // Only rail_mv and usb are shown, so was_low does not matter here.
     power_reading r   = power_read(false);
     int           mv  = r.rail_mv;
     bool          usb = r.usb;
@@ -103,8 +99,6 @@ void cmd_status()
                power_wake_name(power_wake_cause()));
     printf("OK urls count=%u source=%s\n", (unsigned)cfg_urls().size(), cfg_urls_from_file() ? "file" : "builtin");
     printf("OK page index=%d state=%s\n", browser_page_index(), browser_state());
-    // The first 8 bytes of the ELF hash, which the web installer compares with the same field of the
-    // image it holds (esp_app_desc_t in webinstall/firmware.bin).
     const esp_app_desc_t* app = esp_app_get_description();
     printf("OK app built=\"%s %s\" sha=", app->date, app->time);
     for(int i = 0; i < 8; i++) printf("%02x", app->app_elf_sha256[i]);
@@ -156,7 +150,6 @@ void cmd_scan()
                found[i].ssid[0] ? found[i].ssid : "(hidden)");
 }
 
-// GET a URL, print status, size, timing and the first bytes of the body. Up to 64 KB is read.
 void cmd_get(const std::vector<std::string>& a)
 {
     if(a.size() < 2)
@@ -205,7 +198,6 @@ void report_set(bool ok, size_t n)
     printf("%s %u pages\n", ok ? "OK" : "ERR not written, list is in RAM only:", (unsigned)n);
 }
 
-// 1-based index argument, 0 when out of range (with the error printed)
 int page_index(const std::string& s, size_t count)
 {
     int n = atoi(s.c_str());
@@ -217,7 +209,6 @@ int page_index(const std::string& s, size_t count)
     return n;
 }
 
-// True for an http or https URL, else false with the error printed.
 bool url_ok(const std::string& u)
 {
     if(u.compare(0, 7, "http://") == 0 || u.compare(0, 8, "https://") == 0) return true;
@@ -283,11 +274,10 @@ void cmd_url(const std::vector<std::string>& a)
                "url move FROM TO | url del N | url clear\n");
 }
 
-// next, prev and load N: end the wait and render another page.
 void cmd_page(const std::vector<std::string>& a)
 {
     const std::string& c = a[0];
-    int                n = 0; // load: the page, from 1
+    int                n = 0;
     if(c == "load")
     {
         if(a.size() != 2)
@@ -301,7 +291,7 @@ void cmd_page(const std::vector<std::string>& a)
     const char* state = browser_state();
     if(!strcmp(state, "nowifi")) printf("ERR waiting for WiFi, set it: wifi SSID PASSWORD\n");
     else if(!strcmp(state, "nourls")) printf("ERR no URLs: url add https://...\n");
-    else if(!strcmp(state, "wait"))
+    else if(!strcmp(state, "wait") || !strcmp(state, "hold"))
     {
         if(c == "prev") browser_prev();
         else if(c == "load") browser_load(n - 1);
@@ -334,7 +324,7 @@ void run_line(const char* line)
         if(s == 0) printf("ERR show lowbatt | show welcome\n");
         else if(browser_shows(static_cast<browser_screen>(s)))
             printf("OK %s is on the panel already\n", a[1].c_str());
-        else if(strcmp(state, "wait") && strcmp(state, "nowifi") && strcmp(state, "nourls"))
+        else if(strcmp(state, "wait") && strcmp(state, "hold") && strcmp(state, "nowifi") && strcmp(state, "nourls"))
             printf("ERR busy: %s, try again when it ends\n", state);
         else
         {
@@ -348,9 +338,6 @@ void run_line(const char* line)
     fflush(stdout);
 }
 
-// Bytes come from read() on the stdin descriptor: a stdio stream on stdin would go
-// sticky at end-of-file after one zero-length read (no host connected, or a lone CR), and fgets would
-// then return NULL forever.
 void console_task(void*)
 {
     static char line[LINE_MAX_BYTES];
@@ -386,12 +373,10 @@ void console_task(void*)
         fflush(stdout);
     }
 }
-} // namespace
+}
 
 void console_start()
 {
-    // Terminals and esp_idf_monitor send CR for Enter: CR becomes LF. A Web Serial page's LF passes
-    // through, and its CRLF gives one empty line, which run_line ignores.
     usb_serial_jtag_vfs_set_rx_line_endings(ESP_LINE_ENDINGS_CR);
     usb_serial_jtag_vfs_set_tx_line_endings(ESP_LINE_ENDINGS_CRLF);
     fcntl(fileno(stdout), F_SETFL, 0);

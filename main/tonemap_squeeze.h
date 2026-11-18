@@ -1,19 +1,7 @@
-// The image's colour range onto the panel's, before the nearest entry search
-// of the Oklab mapping. The tone table says what the panel shows, so an
-// image colour beyond it would take the entry on the table's edge and every
-// stronger colour the same one. Here a colour is brought inside first:
-//   0 its chroma is cut to the part along the hue of sRGB red, the one hue
-//     the panel has
-//   1 TONEMAP_GAMMA on its lightness
-//   2 its chroma keeps its share of the most chroma there is at its
-//     lightness: the image's edge, sRGB black to red to white, maps to the
-//     panel's edge, the upper hull of the entries over lightness
-//   3 its lightness moves toward the lightness of the panel's strongest
-//     red, by TONEMAP_COMPRESS of what the flat stretch of the image
-//     triangle onto the panel's would move the image's edge at that
-//     lightness. The move does not scale with the colour's chroma, so a
-//     gray, a blue and a red of one lightness draw at one lightness. Black
-//     and white do not move, since the edge has no chroma there.
+// The panel renders only black, white and one red chromatic axis, so a full colour source must be
+// reduced to that axis before it can show.
+// Call tonemap_squeeze_begin once before tonemap_squeeze: it finds the red hue and cusp and fills
+// the chroma tables that tonemap_squeeze reads.
 #pragma once
 
 #include <math.h>
@@ -22,11 +10,11 @@
 
 #define SQUEEZE_STEPS 64
 
-static float s_squeeze_img[SQUEEZE_STEPS + 1];   // most chroma at L = i / SQUEEZE_STEPS, image
-static float s_squeeze_pan[SQUEEZE_STEPS + 1];   // and panel
-static float s_squeeze_red_l, s_squeeze_red_c;   // sRGB red
-static float s_squeeze_hue[2];                   // its hue, a unit vector in a and b
-static float s_squeeze_cusp_l;                   // lightness of the panel's strongest red
+static float s_squeeze_img[SQUEEZE_STEPS + 1];
+static float s_squeeze_pan[SQUEEZE_STEPS + 1];
+static float s_squeeze_red_l, s_squeeze_red_c;
+static float s_squeeze_hue[2];
+static float s_squeeze_cusp_l;
 
 static float squeeze_at(const float *edge, float L)
 {
@@ -37,11 +25,8 @@ static float squeeze_at(const float *edge, float L)
   return edge[i] + (x - (float)i) * (edge[i + 1] - edge[i]);
 }
 
-// oklab is the caller's sRGB to Oklab.
 static void tonemap_squeeze_begin(void (*oklab)(uint8_t, uint8_t, uint8_t, float[3]))
 {
-  // The image's edge: (v, 0, 0) then (255, v, v), lightness rising all the
-  // way, read at each step between the two points around it.
   float l0 = 0.0f, c0 = 0.0f;
   int next = 0;
   s_squeeze_red_c = 0.0f;
@@ -68,8 +53,6 @@ static void tonemap_squeeze_begin(void (*oklab)(uint8_t, uint8_t, uint8_t, float
   }
   while (next <= SQUEEZE_STEPS) s_squeeze_img[next++] = 0.0f;
 
-  // The panel's edge: at each step the highest line between two entries
-  // that span it. Ink and paper are entries, at no chroma.
   static float ec[TONEMAP_COUNT];
   float best_c = -1.0f;
   for (unsigned e = 0; e < TONEMAP_COUNT; e++) {
@@ -96,14 +79,10 @@ static void tonemap_squeeze_begin(void (*oklab)(uint8_t, uint8_t, uint8_t, float
   }
 }
 
-// t is the image colour in Oklab, changed in place.
 static void tonemap_squeeze(float t[3])
 {
   const float L = t[0] < 0.0f ? 0.0f : t[0];
   const float L1 = TONEMAP_GAMMA == 1.0f ? L : powf(L, 1.0f / TONEMAP_GAMMA);
-  // The panel has one hue. A colour keeps the part of its chroma that lies
-  // along sRGB red's hue, and none when it lies the other way: an orange
-  // draws as a duller red, a blue or a green as the grey of its lightness.
   float c = t[1] * s_squeeze_hue[0] + t[2] * s_squeeze_hue[1];
   if (c < 0.0f) c = 0.0f;
   t[0] = L1;

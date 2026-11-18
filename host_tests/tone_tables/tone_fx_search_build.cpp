@@ -35,8 +35,8 @@ bool tone_fx_search_build(tone_fx_search_internal::table* tab, int max[3])
                 continue;
             }
             const tone_entry& t  = k_tonemap[e];
-            const float       wa = TONEMAP_CIE_CHROMA_WEIGHT * t.a;
-            const float       wb = TONEMAP_CIE_CHROMA_WEIGHT * t.b;
+            const float       wa = TONEMAP_CHROMA_WEIGHT * t.a;
+            const float       wb = TONEMAP_CHROMA_WEIGHT * t.b;
             if(!fits(t.L) || !fits(wa) || !fits(wb)) return false;
             b.l[i]   = q15_from(t.L);
             b.a[i]   = q15_from(wa);

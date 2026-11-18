@@ -1,4 +1,6 @@
-// Wake cause, rail voltage, USB presence and deep sleep. The decisions are in power_logic.h.
+// The ADC unit s_adc is a shared resource.
+// After power_init, any read of it runs under s_adc_lock, so concurrent callers never read the rail
+// at the same time.
 
 #include "power.h"
 
@@ -12,6 +14,7 @@
 #include "esp_sleep.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "epd97.h"
@@ -20,22 +23,16 @@
 static const char* TAG = "power";
 
 static const adc_unit_t    BAT_UNIT    = ADC_UNIT_2;
-static const adc_channel_t BAT_CHANNEL = ADC_CHANNEL_3; // BAT_SENS, GPIO14
+static const adc_channel_t BAT_CHANNEL = ADC_CHANNEL_3;
 static const adc_atten_t   BAT_ATTEN   = ADC_ATTEN_DB_12;
 static const int           SAMPLES     = 8;
-// ADC2 is shared with WiFi. A read that loses to WiFi returns ESP_ERR_TIMEOUT and the next try waits a
-// tick.
 static const int TRIES = 32;
 
 static const gpio_num_t WAKE_PINS[] = {static_cast<gpio_num_t>(POWER_PIN_MENU_MINUS),
                                        static_cast<gpio_num_t>(POWER_PIN_USER_B)};
 static const gpio_num_t LED_PIN     = static_cast<gpio_num_t>(LEDS_DATA_GPIO);
-// A button only sleep waits up to this long for held wake buttons to be released.
 static const int RELEASE_WAIT_MS = 10000;
 
-// usb_serial_jtag_is_connected() is true from boot until about 4 ticks of the running scheduler have
-// seen no SOF packet from a host. power_init() runs with the scheduler running, so 10 ms after it the
-// value is settled.
 static const int64_t USJ_SETTLE_US = 10000;
 
 static const char* const WAKE_NAMES[] = {"power on or reset", "timer", "Menu -", "User B"};
@@ -44,6 +41,7 @@ static power_wake                s_wake = POWER_WAKE_RESET;
 static adc_oneshot_unit_handle_t s_adc;
 static adc_cali_handle_t         s_cali;
 static int64_t                   s_init_us;
+static SemaphoreHandle_t         s_adc_lock;
 
 static void usj_settle()
 {
@@ -54,15 +52,13 @@ static void usj_settle()
 void power_init()
 {
     s_init_us       = esp_timer_get_time();
+    s_adc_lock      = xSemaphoreCreateMutex();
     uint32_t causes = esp_sleep_get_wakeup_causes();
     uint64_t pins   = esp_sleep_get_ext1_wakeup_status();
     s_wake          = power_decode_wake(causes, pins);
     ESP_LOGI(TAG, "wake: %s (causes 0x%lx, ext1 pins 0x%llx)", WAKE_NAMES[s_wake], static_cast<unsigned long>(causes),
              static_cast<unsigned long long>(pins));
 
-    // After a deep sleep wake the wake pads are still in RTC function. power_sleep() holds the LED data
-    // pad low. The pad is set to drive low before its hold is released, so the line stays low until
-    // leds_init() takes it. After a power on there is no hold and the line goes low here.
     for(gpio_num_t pin : WAKE_PINS) rtc_gpio_deinit(pin);
     gpio_set_level(LED_PIN, 0);
     gpio_set_direction(LED_PIN, GPIO_MODE_OUTPUT);
@@ -109,7 +105,6 @@ const char* power_wake_name(power_wake w)
     return WAKE_NAMES[w];
 }
 
-// The wake pins that read low now, as an ext1 mask.
 static uint64_t wake_pins_low()
 {
     uint64_t low = 0;
@@ -118,7 +113,6 @@ static uint64_t wake_pins_low()
     return low;
 }
 
-// The system rail in mV, the average of up to SAMPLES samples. Negative when every sample failed.
 static int rail_mv()
 {
     if(!s_adc || !s_cali) return -1;
@@ -142,61 +136,49 @@ static int rail_mv()
         ESP_LOGW(TAG, "rail read failed, %d tries", TRIES);
         return -1;
     }
-    // The divider halves the rail.
     return 2 * ((sum + good / 2) / good);
 }
 
 power_reading power_read(bool was_low)
 {
     usj_settle();
-    bool          host = usb_serial_jtag_is_connected();
-    power_reading r    = power_judge(host, rail_mv(), was_low);
+    bool host = usb_serial_jtag_is_connected();
+    if(s_adc_lock) xSemaphoreTake(s_adc_lock, portMAX_DELAY);
+    const int mv = rail_mv();
+    if(s_adc_lock) xSemaphoreGive(s_adc_lock);
+    power_reading r = power_judge(host, mv, was_low);
     ESP_LOGI(TAG, "rail %d mV, %s, battery %s", r.rail_mv, host ? "USB host" : r.usb ? "USB" : "battery",
              r.low ? "low" : "ok");
     return r;
 }
 
-void power_sleep(int seconds)
+void power_sleep(int seconds, uint64_t released)
 {
-    // The WS2812s keep their colour while powered. led_strip_clear() returns after the RMT has sent the
-    // dark frame and its reset gap.
-    leds_off();
-    // A floating data line in deep sleep can clock noise into the chain. Drive it low and hold it.
+    leds_stop();
     gpio_set_level(LED_PIN, 0);
     gpio_set_direction(LED_PIN, GPIO_MODE_OUTPUT);
     gpio_hold_en(LED_PIN);
-    // epd_deep_sleep_prepare() latches the panel supply off. gpio_deep_sleep_hold_en() makes the pad holds
-    // of GPIO48 and LED_PIN last through deep sleep.
     epd_deep_sleep_prepare();
     gpio_deep_sleep_hold_en();
 
-    // A wake button that is down now would wake the chip at once, since ext1 wakes on a low level.
-    // power_sleep_arm() leaves such a pin out. A button only sleep first waits up to RELEASE_WAIT_MS for
-    // every held wake button to be released, so the button that woke the badge can wake it again. A pin
-    // still low after that stays out for this sleep. With both pins out the timer wakes the badge after
-    // POWER_STUCK_WAKE_S.
     for(gpio_num_t pin : WAKE_PINS)
     {
         gpio_set_direction(pin, GPIO_MODE_INPUT);
         gpio_pullup_en(pin);
     }
     vTaskDelay(1);
-    uint64_t low = wake_pins_low();
-    if(seconds <= 0 && low)
+    uint64_t held = power_held_pins(wake_pins_low(), released);
+    if(held)
     {
         ESP_LOGI(TAG, "wake button held, waiting up to %d ms for its release", RELEASE_WAIT_MS);
-        for(int ms = 0; ms < RELEASE_WAIT_MS && low; ms += 10)
+        for(int ms = 0; ms < RELEASE_WAIT_MS && held; ms += 10)
         {
             vTaskDelay(pdMS_TO_TICKS(10));
-            low = wake_pins_low();
+            held &= wake_pins_low();
         }
     }
-    power_arm arm = power_sleep_arm(seconds, low);
+    power_arm arm = power_sleep_arm(seconds, held);
 
-    // The buttons pull to ground and the board has no pull-up resistors. The RTC pull-ups keep the pads
-    // high. The RTC peripherals domain powers down in this sleep. IDF holds the pads in the ext1 mask with
-    // their pulls. A pin left out of the mask gets no hold, so its pull is lost in sleep and the pad
-    // floats. It is not a wake source, so its level cannot wake the chip.
     for(gpio_num_t pin : WAKE_PINS)
     {
         rtc_gpio_init(pin);

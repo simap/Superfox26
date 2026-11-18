@@ -1,6 +1,7 @@
-// Host test of main/browser_logic.h: the page after a wake, the sleep time after a page and the low
-// battery step. Usage: browser_power_test. Exit status 0 when every check passes.
+// Host test of main/browser_logic.h: the page after a wake, the sleep time after a page, the low
+// battery step, the offset of a tab selection and what a selection does after its hold. Usage: browser_power_test. Exit status 0 when every check passes.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 
@@ -148,6 +149,66 @@ int main()
                  c.shown ? "shown" : "not shown", action_name(c.want), c.want_low, c.want_shown, action_name(got.action),
                  got.low, got.shown);
         check(got.action == c.want && got.low == c.want_low && got.shown == c.want_shown, what);
+    }
+
+    struct offset_case
+    {
+        int target, base, n, want;
+    };
+    const offset_case OFFSET_CASES[] = {
+        {3, 2, 5, 1},   {1, 2, 5, -1},  {2, 2, 5, 0},   {4, 2, 5, 2},   {0, 2, 5, -2},
+        // The short way round the end of the list.
+        {0, 4, 5, 1},   {4, 0, 5, -1},
+        // An even list: half way round counts forward.
+        {3, 0, 6, 3},   {4, 0, 6, -2},  {1, 0, 2, 1},   {0, 0, 1, 0},
+        // 47 pages: at most 23 either way.
+        {23, 0, 47, 23}, {24, 0, 47, -23}, {46, 0, 47, -1}, {0, 46, 47, 1},
+    };
+    for(const offset_case& c : OFFSET_CASES)
+    {
+        int got = browser_offset(c.target, c.base, c.n);
+        snprintf(what, sizeof what, "offset of page %d from %d of %d: %d (got %d)", c.target, c.base, c.n, c.want, got);
+        check(got == c.want, what);
+    }
+    {
+        int worst = 0;
+        for(int t = 0; t < 47; t++)
+            for(int b = 0; b < 47; b++)
+            {
+                int o = browser_offset(t, b, 47);
+                worst = std::max(worst, o < 0 ? -o : o);
+                if(browser_wrap(b + o, 47) != t) worst = 99;
+            }
+        check(worst == 23, "47 pages: every offset leads back to its page and is at most 23");
+    }
+    check(browser_wrap(-1, 5) == 4 && browser_wrap(-11, 5) == 4 && browser_wrap(12, 5) == 2 && browser_wrap(3, 0) == 0,
+          "wrap: -1, -11 and 12 in 5 pages, any index in none");
+
+    struct sel_case
+    {
+        const char*        name;
+        bool               open, due, force;
+        int                target, base, loading;
+        browser_sel_action want;
+    };
+    const sel_case SEL_CASES[] = {
+        {"closed", false, true, false, 3, 2, -1, BROWSER_SEL_NONE},
+        {"hold runs", true, false, false, 3, 2, -1, BROWSER_SEL_WAIT},
+        {"one forward in the wait", true, true, false, 3, 2, -1, BROWSER_SEL_LOAD},
+        {"back to the page shown", true, true, false, 2, 2, -1, BROWSER_SEL_DROP},
+        {"the page that loads", true, true, false, 3, 2, 3, BROWSER_SEL_DROP},
+        {"past the page that loads", true, true, false, 4, 2, 3, BROWSER_SEL_LOAD},
+        {"back from the page that loads", true, true, false, 1, 2, 3, BROWSER_SEL_LOAD},
+        {"back to the page shown during a render", true, true, false, 2, 2, 3, BROWSER_SEL_DROP},
+        {"Menu - wake, the page shown", true, true, true, 2, 2, -1, BROWSER_SEL_LOAD},
+        {"console, the page that loads", true, true, true, 3, 2, 3, BROWSER_SEL_LOAD},
+        {"forced, hold runs", true, false, true, 2, 2, -1, BROWSER_SEL_WAIT},
+    };
+    for(const sel_case& c : SEL_CASES)
+    {
+        browser_sel_action got = browser_sel_next(c.open, c.due, c.force, c.target, c.base, c.loading);
+        snprintf(what, sizeof what, "selection, %s: %d (got %d)", c.name, c.want, got);
+        check(got == c.want, what);
     }
 
     // The badge stays in the low state across wakes until the reading is ok: draw once, then sleep.

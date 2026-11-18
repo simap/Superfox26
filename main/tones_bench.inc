@@ -1,41 +1,11 @@
-// Timing of the float code of tones_float_ref.inc against the fixed point kernels of tone_fx.h and
-// the dither built on them. tones.cpp includes this file at its end in a TONES_BENCH build
-// (tools/idf.sh -DTONES_BENCH=1 build), so the float rows run the float functions at the -O2 of
-// tones.cpp, the level main/CMakeLists.txt also gives the kernels. main.cpp runs tones_bench() after
-// tones_init() and stops before the browser starts, so the panel is not drawn. The kernels' self
-// tests against their stand ins run in the probes of probes/.
-//
-// Output. Every line starts with BENCH and the last one is BENCH DONE. First come the heap and
-// tones_init(), then the rows. A row has five fields split by spaces:
-//   stage  the job
-//   form   float (the code of tones_float_ref.inc), pie (the kernel of tone_fx.h on the vector unit),
-//          or empty_*: the same harness with a function of the same signature that does nothing. The
-//          empty rows are printed for the reader to subtract. No row has them subtracted.
-//   n      elements per call, or per timed loop for the stages of one element per call
-//   data   where the input bytes are: internal or psram
-//   cycles best cycles per element, the element being a pixel, a value or a search
-// The frame rows dither a whole synthetic page as render.cpp does, the float dither of
-// tones_float_ref.inc and the fixed point dither of tones.cpp. The float rows add the target cache
-// lookups and misses. The pie row adds the kernel lanes of pass A after the decode and the coloured
-// pixels of pass B, and three lines follow it:
-//   split  cycles per pixel of each phase of the row (enum bench_phase in tones.cpp), from the
-//          cycle counter read at chunk boundaries in the timed runs, and the rest of the row calls
-//   chunks the chunks, the all white ones, the ones that ran the kernels and which of the last two
-//          kernels they ran, and the kernel lanes
-//   px     the pixels on each path of pass B (struct bench_counts in tones.cpp)
-// The counts come from one more run of the frame through dither_row<true>, which counts per pixel
-// and is not timed. The path rows (path_*) run PATH_ROWS rows of one kind of pixel each from
-// internal RAM and print the same lines, so the pass_b column gives each path's cost per pixel.
-//
-// Timing. Every time comes from the CPU cycle counter. esp_timer_get_time() costs hundreds of cycles
-// a call. The counter is 32 bits and per core, so one measured span stays under 2^32 cycles, 17.9 s
-// at 240 MHz, and unsigned subtraction handles one wrap. A row is the best of REPS runs. The code
-// under test is called through a volatile function pointer, so it is not folded into the loop.
-//
-// Same job. The float row and the fixed point rows of a stage read the same pixels (the q15 inputs
-// are the q15 conversion of the float inputs), the same number per call, from planar 16 byte aligned
-// arrays in internal RAM, and write the same outputs to planar arrays there. A float is 4 bytes and
-// a q15 2. The float rows run the float functions of tones.cpp once per element in a loop.
+// Benchmark harness for the tone pipeline.
+// Compiled only under TONES_BENCH and included into tones.cpp, from which it takes the pipeline
+// functions, tables and shared state.
+// It is not a standalone translation unit.
+// Call tones_bench() from a task: it yields with vTaskDelay between and within stages.
+// With TONES_BENCH_ALL set to 1 the per-stage kernel rows and the no-cache frame row also run.
+// Otherwise tones_bench() still times the init calls, prints the heap lines, and runs the path and
+// frame benchmarks.
 
 #include <cstdio>
 
@@ -50,29 +20,24 @@
 
 namespace
 {
-const int    REPS       = 10;     // runs per row, the best counts
-const int    FRAME_REPS = 3;      // runs of a fixed point frame, the best counts. A float frame runs once.
-const int    YIELD_ROWS = 16;     // rows of a frame between two yields to the idle task
-const int    NP         = TONE_W; // pixels of one row
-const int    NC         = 64;     // pixels of a short call
+const int    REPS       = 10;
+const int    FRAME_REPS = 3;
+const int    YIELD_ROWS = 16;
+const int    NP         = TONE_W;
+const int    NC         = 64;
 const int    NS[]       = {NC, NP};
-const int    NS_DECODE[] = {NC, CHUNK, NP}; // the sRGB decode also at the chunk of the dither (tones.cpp)
-const int    BAND       = 64; // rows of a band, as render.cpp feeds the dither
+const int    NS_DECODE[] = {NC, CHUNK, NP};
+const int    BAND       = 64;
 const size_t BAND_BYTES = static_cast<size_t>(TONE_W) * 3 * BAND;
 
 static_assert(NC % 8 == 0 && CHUNK % 8 == 0 && NP % 8 == 0, "the kernels take multiples of 8 elements");
 static_assert(BAND_BYTES % (3 * NC) == 0 && BAND_BYTES % (3 * CHUNK) == 0 && BAND_BYTES % (3 * NP) == 0,
               "a walk of the band ends on a call");
 
-// A default bench build times what changes with the dither: tones_init(), the pass B paths and the
-// whole frames, float with its cache against fixed point. -DTONES_BENCH_ALL=1 adds the kernel rows
-// and the float frames without the cache. The rows stay compiled either way, so they cannot rot.
 #ifndef TONES_BENCH_ALL
 #define TONES_BENCH_ALL 0
 #endif
 const bool BENCH_ALL = TONES_BENCH_ALL;
-
-// ---------------------------------------------------------------- harness
 
 template <typename F> uint32_t best_of(F body)
 {
@@ -87,7 +52,6 @@ template <typename F> uint32_t best_of(F body)
     return best;
 }
 
-// One call of fn on a.
 template <typename Fn, typename... A> uint32_t time_call(Fn fn, A... a)
 {
     Fn volatile f = fn;
@@ -110,25 +74,31 @@ void heap_line(const char* when)
            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
 }
 
-// ---------------------------------------------------------------- data
+constexpr uint32_t hash32(uint32_t x)
+{
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
 
-// Every array in internal RAM except the band. Planes hold NP elements.
 struct bench_mem
 {
-    uint8_t* rgb;     // NP pixels, interleaved R, G, B, then 16 bytes the vector form may read
-    uint8_t* band;    // PSRAM, BAND_BYTES of pseudo random bytes, then the frame bands, then 16 bytes
-                      // the sRGB decode may read
-    float*   fin[3];  // the inputs of the stage
-    q15*     qin[3];  // their q15
-    uint8_t* near;    // the nearest entry of the squeezed colours
-    float*   fout[7]; // outputs
+    uint8_t* rgb;
+    uint8_t* band;
+    float*   fin[3];
+    q15*     qin[3];
+    uint8_t* near;
+    float*   fout[7];
     q15*     qout[7];
-    uint8_t* lo; // also best
-    uint8_t* hi; // also next
-    float*   f1in;  // NC pixels of 4 floats, r g b then 1 unused
-    float*   f1out; // NC pixels of 4 floats, L a b then 1 unused
-    q15*     q1in;  // NC pixels of 8 q15, r g b then 5 unused
-    q15*     q1out; // NC pixels of 8 q15, L a b then 5 written with no meaning
+    uint8_t* lo;
+    uint8_t* hi;
+    float*   f1in;
+    float*   f1out;
+    q15*     q1in;
+    q15*     q1out;
 };
 
 bench_mem s_m;
@@ -169,8 +139,6 @@ void free_all()
     s_m       = bench_mem();
 }
 
-// Pixel i of the set: a pseudo random colour from a fixed seed, every odd one a red or pink so the
-// squeeze leaves it chroma.
 void gen_pixels()
 {
     for(int i = 0; i < NP; i++)
@@ -185,12 +153,11 @@ void gen_pixels()
 
 enum in_kind
 {
-    IN_LIN,      // linear light of the pixels
-    IN_LAB,      // their Oklab
-    IN_SQUEEZED, // that through tonemap_squeeze() and the black floor, and its nearest entry
+    IN_LIN,
+    IN_LAB,
+    IN_SQUEEZED,
 };
 
-// fin and qin for a stage, from the pixels by the float code.
 void gen_inputs(in_kind k)
 {
     const float black_l = s_lab[s_black][0];
@@ -213,8 +180,6 @@ void gen_inputs(in_kind k)
         for(int c = 0; c < 3; c++) s_m.fin[c][i] = v[c], s_m.qin[c][i] = q15_from(v[c]);
     }
 }
-
-// ---------------------------------------------------------------- float references
 
 void f_decode(const uint8_t* rgb, int n, float* r, float* g, float* b)
 {
@@ -253,8 +218,6 @@ void f_lin_to_oklab_1(const float* rgb, float* lab)
     lin_to_oklab(rgb, lab);
 }
 
-// tonemap_squeeze(), the black floor, and the chroma along the hue of sRGB red. The squeeze leaves
-// a and b on that hue, so the chroma is their dot product with the unit hue.
 void f_squeeze(const float* L, const float* A, const float* B, int n, float* Lo, float* Ao, float* Bo, float* Co)
 {
     const float black_l = s_lab[s_black][0];
@@ -272,7 +235,6 @@ void f_bracket(const float* L, int n, uint8_t* lo, uint8_t* hi)
     for(int i = 0; i < n; i++) bracket(L[i], lo + i, hi + i);
 }
 
-// The two nearest of all entries by dist().
 void f_search_all(float L, float A, float B, uint8_t* best, uint8_t* next)
 {
     const float p[3] = {L, A, B};
@@ -287,7 +249,6 @@ void f_search_all(float L, float A, float B, uint8_t* best, uint8_t* next)
     *best = static_cast<uint8_t>(b), *next = static_cast<uint8_t>(x);
 }
 
-// The two nearest of the NB neighbours of entry near, the candidate loop of tone_dither::row().
 void f_search_nb(float L, float A, float B, uint8_t near, uint8_t* best, uint8_t* next)
 {
     const float    p[3] = {L, A, B};
@@ -304,10 +265,6 @@ void f_search_nb(float L, float A, float B, uint8_t near, uint8_t* best, uint8_t
     *best = static_cast<uint8_t>(b), *next = static_cast<uint8_t>(x);
 }
 
-// ---------------------------------------------------------------- Pass A
-
-// Outputs of Pass A per pixel: p[0..2] the squeezed Oklab, p[3] its chroma along the red hue,
-// p[4..6] its linear light held to 0 to 1, lo and hi the neutral pair around its L.
 struct chain_f
 {
     float*   p[7];
@@ -321,8 +278,6 @@ struct chain_q
     uint8_t* hi;
 };
 
-// The steps of make_target() without the cache, per pixel, with the steps of both its branches run
-// for every pixel and the nearest entry search left out.
 void pass_a_float(const uint8_t* rgb, int n, const chain_f* o)
 {
     const float black_l = s_lab[s_black][0];
@@ -340,7 +295,6 @@ void pass_a_float(const uint8_t* rgb, int n, const chain_f* o)
     }
 }
 
-// The kernels stage by stage over the chunk. The squeeze runs in place.
 void pass_a_pie(const uint8_t* rgb, int n, const chain_q* o)
 {
     q15* const* p = o->p;
@@ -350,8 +304,6 @@ void pass_a_pie(const uint8_t* rgb, int n, const chain_q* o)
     tone_fx_oklab_to_lin(p[0], p[1], p[2], n, p[4], p[5], p[6]);
     tone_fx_bracket(p[0], n, o->lo, o->hi);
 }
-
-// ---------------------------------------------------------------- stages
 
 void stage_decode()
 {
@@ -369,8 +321,6 @@ void stage_decode()
     }
 }
 
-// Calls of n pixels that walk the PSRAM band from its start to its end, so no call reads bytes a
-// call before it left in the cache. Cycles of the whole walk.
 template <typename Fn, typename T> uint32_t time_walk(Fn fn, int n, T* r, T* g, T* b)
 {
     Fn volatile    f     = fn;
@@ -411,7 +361,6 @@ void stage_cbrt()
     }
 }
 
-// A stage of three planes in and three out. kind picks the inputs.
 template <typename FF, typename FP> void stage_3to3(const char* stage, in_kind kind, FF ff, FP fp)
 {
     gen_inputs(kind);
@@ -434,8 +383,6 @@ template <typename FF, typename FP> void stage_3to3(const char* stage, in_kind k
     }
 }
 
-// n calls of one pixel each, pixel k at in + stride k, its result at out + stride k. Both forms
-// take 16 bytes per pixel.
 template <typename Fn, typename T> uint32_t time_one(Fn fn, const T* in, T* out, int stride, int n)
 {
     Fn volatile f = fn;
@@ -496,7 +443,6 @@ void stage_bracket()
     }
 }
 
-// n calls of one search point each, best and next of point k to lo[k] and hi[k].
 template <typename Fn, typename P> uint32_t time_search(Fn fn, const P* const* pt, int n)
 {
     Fn volatile f = fn;
@@ -507,7 +453,6 @@ template <typename Fn, typename P> uint32_t time_search(Fn fn, const P* const* p
     });
 }
 
-// The same with the nearest entry of point k as the extra argument.
 template <typename Fn> uint32_t time_search_nb(Fn fn, int n)
 {
     Fn volatile    f = fn;
@@ -557,7 +502,6 @@ uint8_t empty_code(const tone_plan&, unsigned, tone_phase, unsigned)
     return 0;
 }
 
-// tone_plan_code() of NP pixels in turn.
 void stage_plan_code()
 {
     uint32_t count[TONEMAP_COUNT];
@@ -582,8 +526,6 @@ void stage_plan_code()
     row("tone_plan_code", "empty", NP, "internal", time_code(empty_code), NP);
 }
 
-// ---------------------------------------------------------------- whole frames
-
 enum
 {
     IMG_TEXT,
@@ -594,9 +536,6 @@ enum
 };
 const char* const k_img[IMG_N] = {"frame_text", "frame_gradient", "frame_photo", "frame_noise"};
 
-// One row of a synthetic page. text: paper, a gray header, lines of black glyph pixels with gray
-// edge pixels, every 7th line in link blue. gradient: smooth colour. photo: the gradient with 3
-// counts of noise per channel. noise: every pixel a random colour.
 void gen_row(int img, int y, uint8_t* rgb)
 {
     for(int x = 0; x < TONE_W; x++)
@@ -638,9 +577,6 @@ void gen_row(int img, int y, uint8_t* rgb)
     }
 }
 
-// One whole frame of the page img into dst, bands of BAND rows from PSRAM as render.cpp feeds them.
-// dither(y, rgb, out) runs one row. Returns the cycles of the row calls alone. A yield to the idle
-// task follows every YIELD_ROWS rows, outside the timed spans.
 template <typename F> uint64_t time_frame(int img, uint8_t* band, uint8_t* dst, F dither)
 {
     uint64_t cycles = 0;
@@ -661,7 +597,6 @@ template <typename F> uint64_t time_frame(int img, uint8_t* band, uint8_t* dst, 
     return cycles;
 }
 
-// The float dither of one whole frame into s_frame, the target cache in PSRAM.
 void run_frame(int img, const char* form, uint8_t* band)
 {
     tone_dither_float q;
@@ -675,7 +610,6 @@ void run_frame(int img, const char* form, uint8_t* band)
            static_cast<double>(cycles) / px, static_cast<unsigned>(s_bench_look), static_cast<unsigned>(s_bench_miss));
 }
 
-// The phase cycles of the run with the best total, and the pixel counts of a counting run.
 struct split
 {
     uint64_t     total = UINT64_MAX;
@@ -683,7 +617,6 @@ struct split
     bench_counts n;
 };
 
-// Keeps the phase cycles of a run when its total is the best so far.
 void keep_best(split& sp, uint64_t total)
 {
     if(total >= sp.total) return;
@@ -691,9 +624,6 @@ void keep_best(split& sp, uint64_t total)
     memcpy(sp.cyc, s_bench_cyc, sizeof(sp.cyc));
 }
 
-// The two lines under a row of the fixed point dither. split: cycles per pixel of each phase of
-// dither_row() and the rest of the row calls, over px pixels. px: the chunks and kernel lanes of pass
-// A, then the pixels on each path of pass B.
 void print_split(const char* stage, const split& sp, int px)
 {
     double sum = 0;
@@ -715,8 +645,6 @@ void print_split(const char* stage, const split& sp, int px)
            static_cast<unsigned>(n.colour_two_px), static_cast<unsigned>(n.colour_runs));
 }
 
-// The fixed point dither of one whole frame into s_frame through tone_dither, as render.cpp runs
-// it. FRAME_REPS timed runs, the best printed with its split, then one counting run.
 void run_frame_fixed(int img, uint8_t* band)
 {
     split sp;
@@ -742,19 +670,16 @@ void run_frame_fixed(int img, uint8_t* band)
     print_split(k_img[img], sp, px);
 }
 
-// ---------------------------------------------------------------- pass B paths
-
-// Rows of one kind of pixel, so the split of each shows the cost of one path of pass B per pixel.
 enum
 {
-    PATH_WHITE_CHUNK, // all white: every chunk takes the fill of an all white chunk
-    PATH_WHITE_RUN,   // white, the first pixel of every chunk black: K_ENTRY pixels with no carry
-    PATH_BLACK,       // all black, on the black entry
-    PATH_GRAY,        // all sRGB gray 128, which dithers between two neutral entries
-    PATH_GRAY_WW,     // gray 128 then two white, repeated: each white is K_ENTRY with a carry
-    PATH_COLOUR,      // all one red
-    PATH_COLOUR_RND,  // pseudo random reds and pinks, every pixel its own slot
-    PATH_COLOUR_GRAY, // the red of PATH_COLOUR and gray 128 in turn: a run of one coloured pixel each
+    PATH_WHITE_CHUNK,
+    PATH_WHITE_RUN,
+    PATH_BLACK,
+    PATH_GRAY,
+    PATH_GRAY_WW,
+    PATH_COLOUR,
+    PATH_COLOUR_RND,
+    PATH_COLOUR_GRAY,
     PATH_N
 };
 const char* const k_path[PATH_N] = {"path_white_chk", "path_white_run", "path_black",      "path_gray",
@@ -783,7 +708,6 @@ void gen_path_row(int kind, uint8_t* rgb)
     }
 }
 
-// PATH_ROWS rows of one kind from internal RAM into s_frame, best of FRAME_REPS, then a counting run.
 void run_path(int kind)
 {
     gen_path_row(kind, s_m.rgb);
@@ -819,8 +743,6 @@ void stage_paths()
     }
 }
 
-// The frame rows of every page: the float dither with and without its cache, then the fixed point
-// dither.
 void stage_frames()
 {
     char cached[16];
@@ -840,8 +762,6 @@ void stage_frames()
     memset(s_cache, 0, CACHE_SLOTS * sizeof(target));
 }
 
-// ---------------------------------------------------------------- inits
-
 uint32_t s_c0;
 
 void init_start()
@@ -854,15 +774,12 @@ void init_row(const char* name, bool ok)
     const uint32_t dt = esp_cpu_get_cycle_count() - s_c0;
     printf("BENCH init %-30s %-6s %10u cycles\n", name, ok ? "ok" : "FAILED", static_cast<unsigned>(dt));
 }
-} // namespace
+}
 
 void tones_bench()
 {
     heap_line("start");
 
-    // tones_init() once more, with the frame allocated, then two of its parts: the boot check of the
-    // patterns, and float_ref_init(), which tones_init() runs only in a build with the float dither,
-    // as this one. The rest is the copy of the slot WHITE and the fill of the frame.
     {
         static char why[160];
         init_start();
@@ -887,7 +804,6 @@ void tones_bench()
     gen_pixels();
     printf("BENCH %-15s %-13s %6s %-8s %10s\n", "stage", "form", "n", "data", "cycles");
 
-    // The kernel rows are stable from run to run, so only a TONES_BENCH_ALL build times them.
     if(BENCH_ALL)
     {
         stage_decode();

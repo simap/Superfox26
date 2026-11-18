@@ -1,9 +1,11 @@
 # browser26 defaults. Target esp32s3, ESP32-S3-WROOM-1 with 8 MB flash and octal PSRAM.
-# After editing this file, delete the generated sdkconfig in the build profile.
+# This file is the project configuration. The build generates sdkconfig from it when sdkconfig does
+# not exist, and git ignores sdkconfig. An existing sdkconfig keeps its values, so after editing this
+# file delete sdkconfig to apply the change.
 
 CONFIG_IDF_TARGET="esp32s3"
 
-# Flash: the stock bootloader is a QIO build at 80 MHz, 8 MB.
+# Flash: the badge's stock bootloader is a QIO build at 80 MHz, 8 MB.
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
@@ -42,8 +44,8 @@ CONFIG_RMT_TX_ISR_HANDLER_IN_IRAM=n
 CONFIG_RMT_RX_ISR_HANDLER_IN_IRAM=n
 
 # The EPD uses only SPI master polling transactions, so the SPI ISR never runs with the cache off.
-# No SPI slave. These two options also force both GDMA options on.
-CONFIG_SPI_MASTER_ISR_IN_IRAM=n
+# No SPI slave. Either SPI ISR in IRAM would force both GDMA options on.
+# CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH below turns CONFIG_SPI_MASTER_ISR_IN_IRAM off and hides it.
 CONFIG_SPI_SLAVE_ISR_IN_IRAM=n
 CONFIG_GDMA_CTRL_FUNC_IN_IRAM=n
 CONFIG_GDMA_ISR_HANDLER_IN_IRAM=n

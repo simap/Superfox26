@@ -1,4 +1,5 @@
-// LittleFS mount of the data partition and the page list.
+// s_lock guards s_pages and s_from_file.
+// cfg_urls, cfg_urls_from_file, cfg_urls_set and cfg_urls_reset take it.
 
 #include "config.h"
 
@@ -15,9 +16,9 @@
 
 static const char* TAG = "config";
 
-static const char* BASE  = CFG_BASE;
+static const char* BASE  = DATA_BASE;
 static const char* LABEL = "data";
-static const char* URLS  = CFG_BASE "/urls.txt";
+static const char* URLS  = DATA_BASE "/urls.txt";
 
 namespace
 {
@@ -37,7 +38,6 @@ std::vector<page_entry> defaults()
     return std::vector<page_entry>(std::begin(PAGE_URLS), std::end(PAGE_URLS));
 }
 
-// "URL [OFFSET [SECONDS]]", blank lines and # comments skipped. False for a line without a URL.
 bool parse_line(char* line, page_entry& e)
 {
     char* save = nullptr;
@@ -52,7 +52,6 @@ bool parse_line(char* line, page_entry& e)
     return true;
 }
 
-// Reads URLS into out. False when the file is missing or unreadable.
 bool read_file(std::vector<page_entry>& out)
 {
     FILE* f = fopen(URLS, "r");
@@ -81,15 +80,13 @@ bool write_file(const std::vector<page_entry>& pages)
     if(fclose(f) != 0) ok = false;
     return ok;
 }
-} // namespace
+}
 
 bool cfg_init()
 {
     s_lock  = xSemaphoreCreateMutex();
     s_pages = defaults();
 
-    // Formatting a blank partition gives a volume for urls.txt but no fonts: render_init then fails
-    // and the log says so.
     esp_vfs_littlefs_conf_t conf = {};
     conf.base_path              = BASE;
     conf.partition_label        = LABEL;

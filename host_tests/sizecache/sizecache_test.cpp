@@ -61,7 +61,7 @@ std::string url_of(int i)
 
 int set_index(const std::string& url)
 {
-    return static_cast<int>(fnv1a(url) & (SETS - 1));
+    return static_cast<int>(fnv1a64(url) & (SETS - 1));
 }
 
 // The boot sequence of main/main.cpp.
@@ -269,7 +269,7 @@ void test_interrupted_put()
             for(auto& x : s_table[set_index(a)])
                 if(in_use(x)) e = &x;
             std::string url  = same ? a : b;
-            uint64_t    hash = fnv1a(url);
+            uint64_t    hash = fnv1a64(url);
             entry       n;
             n.key_lo = (static_cast<uint32_t>(hash) & ~KIND_MASK) | 4;
             n.key_hi = static_cast<uint32_t>(hash >> 32);

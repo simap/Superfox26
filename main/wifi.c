@@ -1,21 +1,7 @@
-// WiFi station. The credentials live in the driver's NVS record: esp_wifi_init reads them back.
-// wifi_init then switches the driver to WIFI_STORAGE_RAM, so the station config changes for the fast
-// reconnect stay out of NVS. wifi_set_credentials switches to WIFI_STORAGE_FLASH for its one write.
-// The event handler reconnects after a disconnect from a 5 s timer while the radio is on.
-//
-// Fast reconnect: each connection keeps the channel and BSSID of the AP in RTC memory with the SSID
-// they belong to. A start with a hint for the configured SSID sets sta.channel, sta.bssid and
-// bssid_set. The driver scans the hint channel first and its fast scan ends at the first match
-// (IDF docs/en/api-guides/wifi-driver/overview.rst, Station Basic Configuration). A hinted connect
-// that ends in a disconnect, or has no IP after HINT_TIMEOUT_MS, clears the hint and connects again
-// with a scan of all channels.
-//
-// Every esp_wifi_get_config, esp_wifi_set_config and esp_wifi_set_storage sequence runs under s_cfg_lock.
-// The event task, the timer task, the browser task and the console task all touch the station config.
-// wifi_set_credentials switches the storage to flash for its one write, and without the lock a hinted
-// config from another task could reach NVS in that window, or an old SSID could be written back. No
-// function that holds the lock calls another that takes it. The longest hold is the NVS write of
-// wifi_set_credentials, which an event handler can wait for.
+// s_cfg_lock serializes every esp_wifi_get_config and esp_wifi_set_config on the station interface
+// and guards s_hinted.
+// Credentials are set through WIFI_STORAGE_FLASH so they persist, while the channel and BSSID hint
+// is applied only in RAM.
 
 #include "wifi.h"
 
@@ -39,42 +25,33 @@ static const char *TAG = "wifi";
 
 static const int HINT_TIMEOUT_MS = 10 * 1000;
 
-// Event group bits. BIT_STOPPED is set by the STA_STOP event and cleared by wifi_resume.
 #define BIT_CONNECTED BIT0
 #define BIT_STOPPED   BIT1
 
 static volatile bool       s_connected;
 static volatile bool       s_started;
-static volatile bool       s_off;      // wifi_stop() is in effect
-static volatile bool       s_scanning; // wifi_scan() is running
-static volatile bool       s_hinted;   // the driver's station config carries the hint
-// Modem sleep between beacons adds up to a DTIM interval to every TCP round trip, so power save is
-// off.
-static const wifi_ps_type_t s_ps = WIFI_PS_NONE;
+static volatile bool       s_off;
+static volatile bool       s_scanning;
+static volatile bool       s_hinted;
+static const wifi_ps_type_t WIFI_PS_MODE = WIFI_PS_NONE;
 static esp_timer_handle_t  s_retry;
 static esp_timer_handle_t  s_hint_timer;
 static EventGroupHandle_t  s_events;
-static SemaphoreHandle_t   s_cfg_lock; // see the top of this file
+static SemaphoreHandle_t   s_cfg_lock;
 static esp_netif_t        *s_netif;
 static char                s_ip[16];
 
 typedef struct {
-    uint8_t ssid[32]; // as in wifi_sta_config_t, no terminator at 32 bytes
+    uint8_t ssid[32];
     uint8_t bssid[6];
-    uint8_t channel;  // 1 to 13, 0 when there is no hint
+    uint8_t channel;
     uint8_t pad;
 } wifi_hint_t;
 
-// A hint channel is valid from 1 to 13.
 #define HINT_CHANNEL_MAX 13
 
-// RTC slow memory, not initialised at boot. Deep sleep, a software reset and a panic restart keep it.
-// The magic word of main/rtcstate.cpp tells whether it is valid. channel is cleared first and written
-// last, so a reset during a write leaves no hint. A change of this layout needs a new layout version
-// in main/rtcstate.cpp.
 static RTC_NOINIT_ATTR wifi_hint_t s_hint;
 
-// Reason codes from esp_wifi_types, the ones a wrong setting produces.
 static const char *reason_name(int reason)
 {
     switch (reason) {
@@ -100,7 +77,6 @@ static const char *reason_name(int reason)
     }
 }
 
-// No effect before wifi_init creates the lock: the driver calls then fail on their own.
 static void cfg_lock(void)
 {
     if (s_cfg_lock) {
@@ -135,7 +111,6 @@ static void hint_clear(void)
     ((volatile wifi_hint_t *)&s_hint)->channel = 0;
 }
 
-// Keeps the channel and BSSID of the connected AP for the configured SSID.
 static void hint_take(void)
 {
     wifi_config_t    cfg;
@@ -158,11 +133,6 @@ static void hint_take(void)
     h->channel = ap.primary;
 }
 
-// Sets the station config to the stored credentials, with the hint when use is true and the hint
-// is valid for the configured SSID. The driver refuses a config change during a connect
-// (ESP_ERR_WIFI_STATE), so this runs only while the station is stopped or disconnected.
-// A failed write leaves s_hinted as it was. After a failed clear it stays true, so the next call
-// tries the clear again.
 static void apply_hint_locked(bool use)
 {
     wifi_config_t cfg;
@@ -218,8 +188,6 @@ static void retry_cb(void *arg)
     }
 }
 
-// A hinted connect without an IP after HINT_TIMEOUT_MS. The disconnect ends it and the event handler
-// connects again without the hint. The retry timer covers a disconnect that raises no event.
 static void hint_timeout_cb(void *arg)
 {
     if (!s_hinted || s_connected || s_off) {
@@ -237,7 +205,6 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         s_started = true;
         if (s_off) {
-            // a start event handled after wifi_stop: no connect
             return;
         }
         if (has_ssid()) {
@@ -259,12 +226,10 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         esp_timer_stop(s_retry);
         esp_timer_stop(s_hint_timer);
         if (was) {
-            // The console's event line for a link change, as for the cycle state in browser.cpp.
             printf("EVT wifi connected=0\n");
             fflush(stdout);
         }
         if (s_off) {
-            // wifi_stop: no reconnect, and the hint stays for the next start
             return;
         }
         if (s_hinted && !was && !s_scanning) {
@@ -337,7 +302,6 @@ void wifi_init(bool kept, bool radio_on)
         ESP_LOGI(TAG, "stored SSID %s", ssid);
     }
     if (!radio_on) {
-        // The state wifi_stop leaves. wifi_resume applies the hint and starts the radio.
         s_off = true;
         xEventGroupSetBits(s_events, BIT_STOPPED);
         ESP_LOGI(TAG, "radio off");
@@ -345,7 +309,7 @@ void wifi_init(bool kept, bool radio_on)
     }
     apply_hint(true);
     ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_ERROR_CHECK(esp_wifi_set_ps(s_ps));
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_MODE));
     if (s_hinted) {
         ESP_LOGI(TAG, "fast reconnect on channel %d to %02x:%02x:%02x:%02x:%02x:%02x", s_hint.channel,
                  s_hint.bssid[0], s_hint.bssid[1], s_hint.bssid[2], s_hint.bssid[3], s_hint.bssid[4],
@@ -370,8 +334,6 @@ void wifi_stop(void)
         ESP_LOGE(TAG, "stop: %s", esp_err_to_name(err));
         return;
     }
-    // The events of this stop are handled once BIT_STOPPED is set, so none of them reaches the
-    // handler after a later wifi_resume.
     if (!(xEventGroupWaitBits(s_events, BIT_STOPPED, pdFALSE, pdTRUE, pdMS_TO_TICKS(1000)) & BIT_STOPPED)) {
         ESP_LOGW(TAG, "no stop event after 1 s");
     }
@@ -392,7 +354,7 @@ void wifi_resume(void)
         s_off = true;
         return;
     }
-    esp_wifi_set_ps(s_ps);
+    esp_wifi_set_ps(WIFI_PS_MODE);
     ESP_LOGI(TAG, "radio on%s", s_hinted ? ", fast reconnect" : "");
 }
 
@@ -426,7 +388,6 @@ bool wifi_set_credentials(const char *ssid, const char *password)
     }
     cfg.sta.threshold.authmode = cfg.sta.password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
     hint_clear();
-    // The one config write that goes to NVS.
     cfg_lock();
     esp_wifi_set_storage(WIFI_STORAGE_FLASH);
     esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &cfg);
@@ -460,8 +421,6 @@ bool wifi_set_credentials(const char *ssid, const char *password)
 
 bool wifi_clear_credentials(void)
 {
-    // s_hinted false first: the disconnect event handler then does not connect again with the hint.
-    // The retry timer and the handler check has_ssid() before a connect.
     hint_clear();
     cfg_lock();
     s_hinted = false;
@@ -471,8 +430,6 @@ bool wifi_clear_credentials(void)
     if (!s_off) {
         esp_wifi_disconnect();
     }
-    // The driver refuses set_config while the station connects (ESP_ERR_WIFI_STATE), so the write
-    // tries again until the disconnect has taken effect, for up to 1 s.
     wifi_config_t cfg = { 0 };
     esp_err_t     err;
     for (int i = 0;; i++) {
@@ -574,7 +531,6 @@ int wifi_scan(wifi_scan_entry_t *out, int cap)
         ESP_LOGW(TAG, "scan: the radio is off");
         return -1;
     }
-    // The driver refuses a scan while a connect is in progress.
     s_scanning = true;
     esp_timer_stop(s_retry);
     esp_timer_stop(s_hint_timer);

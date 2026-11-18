@@ -238,8 +238,8 @@ int main(int argc, char** argv)
             lin[0] = lin[1] = lin[2] = t.L * t.L * t.L;
         }
         qL[e]  = q15_from(t.L);
-        q2a[e] = q15_from(TONEMAP_CIE_CHROMA_WEIGHT * t.a);
-        q2b[e] = q15_from(TONEMAP_CIE_CHROMA_WEIGHT * t.b);
+        q2a[e] = q15_from(TONEMAP_CHROMA_WEIGHT * t.a);
+        q2b[e] = q15_from(TONEMAP_CHROMA_WEIGHT * t.b);
         for(int k = 0; k < 3; k++)
         {
             qlin[e][k] = q15_from(lin[k]);

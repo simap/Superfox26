@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="-58.5 -23.75 473.5 473.5" role="img" aria-label="Superfox26">
   <!-- superfox26.svg in the colours the badge's panel draws without dither, for the firmware's PNGs
-       (panel_32.png, panel_100.png). Each fill lands on one tone entry of main/tonemap_entries.inc:
+       (panel_32.png, panel_200.png). Each fill lands on one tone entry of main/tonemap_entries.inc:
        #ea0000 the red of the low battery notice, #fcd0d0 a light pink, #000 black, #fff paper.
        probes/solid_red reports the entries a fill takes. -->
-  <!-- The X and the ring are the Supercon logo, https://hackaday.io/superconference/img/logo.svg -->
+  <!-- The X and the ring derive from the Hackaday Supercon graphic, https://hackaday.io/superconference/img/logo.svg -->
   <!-- The paper disc keeps the X and the digits readable on a dark background. -->
   <circle cx="196.4" cy="196.4" r="176" fill="#fff"/>
   <g fill="#000">

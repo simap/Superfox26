@@ -5,7 +5,6 @@
 // main/tones_float_ref.inc on the same image and compares the two. See README.md.
 //
 // usage: tones_host OUTDIR [TONE_IMAGE.png ...]
-//        tones_host --compare SWEEPDIR CONFIG ...
 // TONES_FONT in the environment overrides the text test's face.
 
 #include <algorithm>
@@ -50,12 +49,12 @@ const double   BLOCK_SD_MIN = 0.005;
 const float FAR_L = 0.15f; // above the widest neutral gap, 0.1275 in L
 const float FAR_C = 0.06f; // a, b distance
 const float FLAT  = 0.02f; // weighted distance within the 7x7 window for a flat pixel
-// tones.cpp NEUTRAL_C: a target with less a, b chroma after the squeeze is neutral.
+// NEUTRAL_C of main/tones_float_ref.inc: a target with less a, b chroma after the squeeze is neutral.
 const float NEUTRAL_C = 1e-3f;
 const float LUMA[3]   = {0.2126f, 0.7152f, 0.0722f};
 
 #if HAVE_FREETYPE
-const char* DEFAULT_FONT = "/System/Library/Fonts/Supplemental/Arial.ttf"; // tools/stage_fonts.py sans
+const char* DEFAULT_FONT = "../../data/fonts/sans.ttf"; // the font pack's sans, from host_tests/tones
 #endif
 
 // ---------------------------------------------------------------- images
@@ -216,8 +215,8 @@ void target_lin(const float t[3], float out[3])
 float wdist2(const float* a, const float* b)
 {
     float dl = a[0] - b[0];
-    float da = (a[1] - b[1]) * TONEMAP_CIE_CHROMA_WEIGHT;
-    float db = (a[2] - b[2]) * TONEMAP_CIE_CHROMA_WEIGHT;
+    float da = (a[1] - b[1]) * TONEMAP_CHROMA_WEIGHT;
+    float db = (a[2] - b[2]) * TONEMAP_CHROMA_WEIGHT;
     return dl * dl + da * da + db * db;
 }
 
@@ -965,7 +964,7 @@ test_case text_block()
     return tc;
 }
 
-// (e) a PNG, 8-bit gray plus alpha, as RGB: R is 255 minus the gray, G and B
+// (e) an IMAGE file: a 960 px wide PNG, 8-bit gray plus alpha, as RGB: R is 255 minus the gray, G and B
 // are R minus the alpha, at least 0.
 bool tone_image(const char* path, test_case& tc)
 {
@@ -1013,7 +1012,7 @@ bool tone_image(const char* path, test_case& tc)
     free(ga);
     tc.crop_x = W / 2 - CROP_W / 2;
     tc.crop_y = tc.im.h / 2 - CROP_H / 2;
-    tc.dark_x = 620; // the dark lower right of image 01
+    tc.dark_x = 620; // lower right
     tc.dark_y = 460;
     return true;
 }
@@ -1083,102 +1082,13 @@ void write_summary(const std::string& path, const std::vector<summary_row>& sum)
     fclose(f);
 }
 
-std::vector<std::vector<std::string>> read_tsv(const std::string& path)
-{
-    std::vector<std::vector<std::string>> rows;
-    FILE*                                 f = fopen(path.c_str(), "r");
-    if(!f) return rows;
-    char line[1024];
-    while(fgets(line, sizeof(line), f))
-    {
-        std::vector<std::string> row;
-        std::string              cell;
-        for(const char* p = line; *p && *p != '\n'; p++)
-        {
-            if(*p == '\t') row.push_back(cell), cell.clear();
-            else cell += *p;
-        }
-        row.push_back(cell);
-        rows.push_back(row);
-    }
-    fclose(f);
-    return rows;
-}
-
-// --compare: per test, the summary rows of every config side by side, and SWEEPDIR/<test>_compare.png
-// with every config's dark crop under its name, three across.
-int compare(const std::string& dir, const std::vector<std::string>& cfgs)
-{
-    std::vector<std::vector<std::vector<std::string>>> tabs;
-    for(auto& c : cfgs)
-    {
-        tabs.push_back(read_tsv(dir + "/" + c + "/summary.tsv"));
-        if(tabs.back().size() < 2)
-        {
-            fprintf(stderr, "%s/%s/summary.tsv: missing or empty\n", dir.c_str(), c.c_str());
-            return 1;
-        }
-    }
-#if HAVE_FREETYPE
-    const char* path = getenv("TONES_FONT") ? getenv("TONES_FONT") : DEFAULT_FONT;
-    ft_text     ft;
-    const bool  font = ft.open(path);
-#endif
-    const int TW = DARK_W * CROP_S, TH = DARK_H * CROP_S, LABEL = 30, GAP = 8;
-    const int cols = std::min<int>(3, static_cast<int>(cfgs.size()));
-    const int rows = (static_cast<int>(cfgs.size()) + cols - 1) / cols;
-    const int mw = cols * TW + (cols + 1) * GAP, mh = rows * (TH + LABEL) + (rows + 1) * GAP;
-    const auto& head = tabs[0][0];
-    for(size_t t = 1; t < tabs[0].size(); t++)
-    {
-        const std::string& test = tabs[0][t][0];
-        printf("\n== %s\n  %-24s", test.c_str(), "config");
-        for(size_t k = 1; k < head.size(); k++) printf(" %*s", static_cast<int>(std::max<size_t>(head[k].size(), 6)), head[k].c_str());
-        printf("\n");
-        std::vector<uint8_t> m(static_cast<size_t>(mw) * mh * 3, 160);
-        for(size_t c = 0; c < cfgs.size(); c++)
-        {
-            for(auto& r : tabs[c])
-            {
-                if(r[0] != test) continue;
-                printf("  %-24s", cfgs[c].c_str());
-                for(size_t k = 1; k < r.size() && k < head.size(); k++)
-                    printf(" %*s", static_cast<int>(std::max<size_t>(head[k].size(), 6)), r[k].c_str());
-                printf("\n");
-            }
-            const int ox = GAP + static_cast<int>(c) % cols * (TW + GAP);
-            const int oy = GAP + static_cast<int>(c) / cols * (TH + LABEL + GAP);
-            image     lab = blank(LABEL);
-#if HAVE_FREETYPE
-            const uint8_t label_c[3] = {0, 0, 0};
-            if(font) ft.draw(lab, 20, 6, 22, cfgs[c].c_str(), label_c);
-#endif
-            for(int y = 0; y < LABEL; y++) memcpy(&m[(static_cast<size_t>(oy + y) * mw + ox) * 3], px(lab, 0, y), TW * 3);
-            unsigned char* png = nullptr;
-            unsigned       w = 0, h = 0;
-            const std::string crop = dir + "/" + cfgs[c] + "/" + test + "_dark4x.png";
-            if(lodepng_decode24_file(&png, &w, &h, crop.c_str()) || w != static_cast<unsigned>(TW) ||
-               h != static_cast<unsigned>(TH))
-                fprintf(stderr, "%s: missing or not %dx%d\n", crop.c_str(), TW, TH);
-            else
-                for(int y = 0; y < TH; y++)
-                    memcpy(&m[(static_cast<size_t>(oy + LABEL + y) * mw + ox) * 3], &png[static_cast<size_t>(y) * TW * 3], TW * 3);
-            free(png);
-        }
-        save_png(dir + "/" + test + "_compare.png", m.data(), mw, mh);
-    }
-    return 0;
-}
 } // namespace
 
 int main(int argc, char** argv)
 {
-    if(argc >= 4 && strcmp(argv[1], "--compare") == 0)
-        return compare(argv[2], std::vector<std::string>(argv + 3, argv + argc));
     if(argc < 2)
     {
-        fprintf(stderr, "usage: %s OUTDIR [TONE_IMAGE.png ...]\n       %s --compare SWEEPDIR CONFIG ...\n", argv[0],
-                argv[0]);
+        fprintf(stderr, "usage: %s OUTDIR [TONE_IMAGE.png ...]\n", argv[0]);
         return 2;
     }
     const std::string outdir = argv[1];

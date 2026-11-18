@@ -1,13 +1,15 @@
-// The step table of tone_fx_bracket(), for the stand in (host_tests/tone_fx/model) and the tests
-// only. The generator of main/tone_tables.inc builds it (host_tests/tone_tables). The kernel is
-// described in tone_fx_bracket.cpp.
+// Exposes the bracket tone effect's threshold table and step count.
+// The reference model, the host tests and the probe read them to reproduce and check what the
+// kernel computes.
+// tone_fx_bracket_table() returns the table as int16 values.
+// The first value is the starting accumulator.
+// The step pairs begin at the third value, one pair per step, each a threshold followed by the
+// amount added to the accumulator when the input L is below that threshold.
+// tone_fx_bracket_steps() returns the number of step pairs, always a multiple of 8.
 #pragma once
 
 #include <cstdint>
 
-// The step table: [0] the state S = lo + 256 hi at L 32767, [1] 0, then a threshold T and a delta P
-// per step, thresholds falling. A value L takes P of every step with L < T.
 const int16_t* tone_fx_bracket_table();
 
-// The number of steps in the table, padded to a multiple of 8 with steps that never fire.
 int tone_fx_bracket_steps();

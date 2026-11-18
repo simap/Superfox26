@@ -1,12 +1,11 @@
-## IDF Component Manager Manifest File
 dependencies:
-  # Fonts: three TTF faces from the fonts partition, opened with FT_New_Memory_Face.
+  # Fonts: the 13 faces of the font pack on the data partition, opened with FT_New_Face.
   espressif/freetype: "^2.14.3"
   # PNG, row by row through libpng's low-level read API.
   espressif/libpng: "^1.6.58"
   # JPEG, baseline and progressive, with scale_denom and jpeg_mem_src.
   espressif/libjpeg-turbo: "^3.1.1"
-  # The cfg partition.
+  # LittleFS for the data partition.
   joltwallet/littlefs: "==1.21.1"
   # The eight WS2812 LEDs on GPIO 38, driven over RMT.
   espressif/led_strip: "^3.1.1"

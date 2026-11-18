@@ -1,5 +1,5 @@
 // Host test of the Oklab kernels (main/tone_fx_oklab.h, as their stand ins in
-// ../model/tone_fx_oklab_model.cpp) against the float code of main/tones.cpp
+// ../model/tone_fx_oklab_model.cpp) against the float code of main/tones_float_ref.inc
 // (lin_to_oklab, oklab_to_lin, copied below) and against cbrt in double. Prints the error of each
 // kernel as a maximum, a mean and a distribution, with the worst input, and exits 1 when a target is
 // missed:
@@ -18,7 +18,7 @@
 
 namespace
 {
-// tones.cpp, verbatim.
+// main/tones_float_ref.inc, verbatim.
 inline void lin_to_oklab(const float c[3], float out[3])
 {
     const float l = cbrtf(0.4122214708f * c[0] + 0.5363325363f * c[1] + 0.0514459929f * c[2]);
@@ -135,7 +135,7 @@ bool test_lin_to_oklab()
         const char* what;
         int         kind;
     };
-    const set sets[] = {{"every sRGB byte colour through the byte to linear table of tones.cpp", 0},
+    const set sets[] = {{"every sRGB byte colour through the byte to linear table of tones_float_ref.inc", 0},
                         {"4M random q15 colours", 1},
                         {"every colour with r, g, b in 0 to 63 counts (near black)", 2}};
     for(const set& s : sets)
@@ -214,7 +214,7 @@ bool test_oklab_to_lin()
                 push((rnd() & 32767) / 32768.0f, (rnd() & 32767) / 32768.0f, (rnd() & 32767) / 32768.0f);
         run_oklab_to_lin(L, A, B, st);
         printf("Oklab to lin, the q15 Oklab of %s\n",
-               kind ? "4M random linear colours" : "every sRGB byte colour (the byte to linear table of tones.cpp)");
+               kind ? "4M random linear colours" : "every sRGB byte colour (the byte to linear table of tones_float_ref.inc)");
         for(const stat& c : st)
         {
             c.print();

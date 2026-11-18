@@ -1,6 +1,6 @@
 // Host test of tone_fx_search (main/tone_fx_search.h, as its stand in in
 // ../model/tone_fx_search_model.cpp) against a float scan of all entries with
-// the distance of tones.cpp. Prints one line per point set and exits 1 when a check fails.
+// the distance of main/tones_float_ref.inc. Prints one line per point set and exits 1 when a check fails.
 //
 // Checks per point. The point p is float. The kernel gets p rounded to q15.
 //   best: when the kernel's best entry r differs from the float best t, d(p, r) - d(p, t) must not
@@ -31,20 +31,20 @@ float lab[N][3];
 int   qe[N][3];  // entry L, 2a, 2b in q15, as the kernel's table holds them
 int   qmax[3];   // the kernel's maxima of the point's L, 2A and 2B
 
-// tones.cpp dist()
+// dist() of main/tones_float_ref.inc
 float dist(const float* a, const float* b)
 {
     float dl = a[0] - b[0];
-    float da = (a[1] - b[1]) * TONEMAP_CIE_CHROMA_WEIGHT;
-    float db = (a[2] - b[2]) * TONEMAP_CIE_CHROMA_WEIGHT;
+    float da = (a[1] - b[1]) * TONEMAP_CHROMA_WEIGHT;
+    float db = (a[2] - b[2]) * TONEMAP_CHROMA_WEIGHT;
     return dl * dl + da * da + db * db;
 }
 
 double ddist(const float* p, int e)
 {
     const double dl = static_cast<double>(p[0]) - lab[e][0];
-    const double da = (static_cast<double>(p[1]) - lab[e][1]) * TONEMAP_CIE_CHROMA_WEIGHT;
-    const double db = (static_cast<double>(p[2]) - lab[e][2]) * TONEMAP_CIE_CHROMA_WEIGHT;
+    const double da = (static_cast<double>(p[1]) - lab[e][1]) * TONEMAP_CHROMA_WEIGHT;
+    const double db = (static_cast<double>(p[2]) - lab[e][2]) * TONEMAP_CHROMA_WEIGHT;
     return dl * dl + da * da + db * db;
 }
 
@@ -91,7 +91,7 @@ void run(stats& st, const float p[3])
     tone_fx_search(L, A, B, &kb, &kn);
     st.n++;
 
-    // float scan, ties to the lower index, as the candidate loop of tones.cpp
+    // float scan, ties to the lower index, as the candidate loop of main/tones_float_ref.inc
     int   tb = 0, tn = 0;
     float bd = 1e30f, nd = 1e30f;
     for(int e = 0; e < N; e++)
@@ -177,8 +177,8 @@ int main()
     {
         lab[e][0] = k_tonemap[e].L, lab[e][1] = k_tonemap[e].a, lab[e][2] = k_tonemap[e].b;
         qe[e][0]  = q15_from(k_tonemap[e].L);
-        qe[e][1]  = q15_from(TONEMAP_CIE_CHROMA_WEIGHT * k_tonemap[e].a);
-        qe[e][2]  = q15_from(TONEMAP_CIE_CHROMA_WEIGHT * k_tonemap[e].b);
+        qe[e][1]  = q15_from(TONEMAP_CHROMA_WEIGHT * k_tonemap[e].a);
+        qe[e][2]  = q15_from(TONEMAP_CHROMA_WEIGHT * k_tonemap[e].b);
         amin = std::fmin(amin, lab[e][1]), amax = std::fmax(amax, lab[e][1]);
         bmin = std::fmin(bmin, lab[e][2]), bmax = std::fmax(bmax, lab[e][2]);
     }

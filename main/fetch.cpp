@@ -1,8 +1,5 @@
-// HTTP GET into memory. The request runs as esp_http_client_open, esp_http_client_fetch_headers and
-// a read loop, not esp_http_client_perform: perform's data callback cannot stop a transfer (its
-// return value is ignored in IDF 6.0.2), and a byte cap has to stop the read. The read loop stops at
-// the cap and only then drops the connection; a complete body leaves the connection open for the
-// next request to the same host.
+// One client per scheme stays open between calls and is reused, so the lock guards these shared
+// clients together with the single read buffer.
 
 #include "fetch.h"
 
@@ -22,25 +19,18 @@ namespace
 {
 struct ctx
 {
-    std::string location;      // Location header of the current response
-    int64_t     range_total = -1; // the total after the slash in Content-Range
-    int64_t     t_connected = 0;  // esp_timer time, first hop
+    std::string location;
+    int64_t     range_total = -1;
+    int64_t     t_connected = 0;
 };
 
-// Redirects are followed here, not by esp_http_client: its automatic redirect reuses the handle's
-// transport, so a hop from https to http (c.xkcd.com/random/comic/ to http://xkcd.com/NNN/) would
-// speak TLS to port 80.
 const int    MAX_REDIRECTS = 8;
 const size_t READ_CHUNK    = 4096;
 
-// esp_http_client picks its transport (plain or TLS) on the first connect of a handle and keeps it
-// through later esp_http_client_set_url calls, so a handle must only ever see one scheme.
-// Index 0 is http, 1 is https. Each handle reuses its connection while the host stays the same.
 esp_http_client_handle_t s_client[2];
-bool                     s_live[2]; // the handle may hold an open connection from the last request
+bool                     s_live[2];
 esp_http_client_config_t s_cfg;
 char*                    s_buf;
-// The handles are shared by the browser task and the console's get command. One fetch at a time.
 SemaphoreHandle_t s_lock;
 
 int scheme_index(const std::string& url) { return url.compare(0, 8, "https://") == 0 ? 1 : 0; }
@@ -83,8 +73,6 @@ void drop(int i)
     s_live[i] = false;
 }
 
-// One request on one URL. Returns ESP_OK with the status in res and the body (up to max_bytes) in out,
-// or an error after closing the connection. range_n > 0 asks for the first range_n bytes.
 esp_err_t one_request(const std::string& cur, std::string& out, size_t max_bytes, size_t range_n, ctx& c,
                       fetch_result* res, int64_t* t_first)
 {
@@ -109,7 +97,6 @@ esp_err_t one_request(const std::string& cur, std::string& out, size_t max_bytes
     }
     if(err != ESP_OK) return err;
 
-    // A kept connection may have been closed by the server since: one retry on a fresh one.
     bool    retried = false;
     int64_t clen    = -1;
     for(;;)
@@ -144,13 +131,12 @@ esp_err_t one_request(const std::string& cur, std::string& out, size_t max_bytes
             drop(i);
             return ESP_FAIL;
         }
-        if(n == 0) break; // body complete, or the server closed
+        if(n == 0) break;
         if(!*t_first) *t_first = esp_timer_get_time();
         out.append(s_buf, static_cast<size_t>(n));
     }
     if(res->truncated || !esp_http_client_is_complete_data_received(client))
     {
-        // the rest of the body would arrive on the next request
         drop(i);
     }
     return ESP_OK;
@@ -162,6 +148,7 @@ bool do_fetch(const std::string& url, std::string& out, size_t max_bytes, size_t
     fetch_result local;
     if(!res) res = &local;
     *res = fetch_result();
+    if(!s_buf) return false;
     if(url.compare(0, 7, "http://") != 0 && url.compare(0, 8, "https://") != 0) return false;
     struct guard
     {
@@ -179,7 +166,6 @@ bool do_fetch(const std::string& url, std::string& out, size_t max_bytes, size_t
         if(err != ESP_OK) break;
         if(res->status == 416 && range_n > 0)
         {
-            // the server refuses ranges: once more without
             range_n = 0;
             drop(scheme_index(cur));
             err = one_request(cur, out, max_bytes, 0, c, res, &t_first);
@@ -214,20 +200,26 @@ bool do_fetch(const std::string& url, std::string& out, size_t max_bytes, size_t
              conn_ms, ttfb_ms);
     return res->status >= 200 && res->status < 300;
 }
-} // namespace
+}
 
-void fetch_init()
+bool fetch_init()
 {
-    s_lock                      = xSemaphoreCreateMutex();
-    s_buf                       = static_cast<char*>(malloc(READ_CHUNK));
+    s_lock = xSemaphoreCreateMutex();
+    s_buf  = static_cast<char*>(malloc(READ_CHUNK));
+    if(!s_lock || !s_buf)
+    {
+        ESP_LOGE(TAG, "no memory for the HTTP client");
+        return false;
+    }
     s_cfg                       = {};
-    s_cfg.user_agent            = "Mozilla/5.0 (compatible; browser26/0.1; ESP32-S3; litehtml)";
+    s_cfg.user_agent            = "Mozilla/5.0 (compatible; Superfox26; ESP32-S3; litehtml)";
     s_cfg.timeout_ms            = 5000;
     s_cfg.buffer_size           = 4096;
     s_cfg.buffer_size_tx        = 1024;
     s_cfg.disable_auto_redirect = true;
     s_cfg.event_handler         = on_event;
     s_cfg.keep_alive_enable     = true;
+    return true;
 }
 
 bool fetch_url(const std::string& url, std::string& out, size_t max_bytes, fetch_result* res)

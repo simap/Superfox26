@@ -1,6 +1,6 @@
-#!/bin/zsh
-# Build the project and merge its flash images into webinstall/firmware.bin, the one image that
-# webinstall/index.html writes to a badge.
+#!/usr/bin/env zsh
+# Builds the project and merges its flash images into webinstall/firmware.bin, the one
+# image that webinstall/index.html writes to a badge. firmware.bin is a build output and git ignores it.
 # Usage: tools/build_webinstall.sh
 set -e
 

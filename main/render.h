@@ -1,4 +1,12 @@
-// Fetch a page, lay it out with litehtml and draw the panel window into the tone frame.
+// Renders a web page into a tone frame for the display.
+// render_page fetches a URL, lays it out with litehtml, and dithers the pixels to the display tone
+// values.
+// It draws the page in horizontal bands to stay within the limited PSRAM.
+// Call render_init and check that it returns true before any other function here; it starts HTTP
+// fetch and loads the fonts the other calls use.
+// frame points to a TONE_W by TONE_H buffer of tone values.
+// render_page and render_html clear the whole buffer first, while render_page leaves the top TAB_H
+// rows empty and render_tabs fills only those rows, so a page and its tab bar share one frame.
 #pragma once
 
 #include <cstdint>
@@ -8,39 +16,33 @@
 
 #include "config.h"
 
-// HTML above this size is refused before parse. Parse grows the heap to about 10 times the HTML
-// bytes before the first budget check runs.
 static const size_t PAGE_HTML_MAX = 700 * 1024;
 
-// Height of the tab bar at the top of the panel. The page window is the rest.
 static const int TAB_H = 38;
 
 struct render_stats
 {
     size_t html_bytes = 0;
     int    doc_h      = 0;
-    int    offset     = 0; // first document row shown, after clamping
+    int    offset     = 0;
     int    fetch_ms = 0, parse_ms = 0, layout_ms = 0, images_ms = 0, draw_ms = 0;
-    int    dither_ms = 0; // the part of draw_ms in tone_dither::row()
-    size_t images = 0, img_fail = 0;      // image references, and references whose size or file failed
-    size_t img_probes = 0, img_cache_hits = 0; // how each reference got its size
-    size_t img_in_view = 0, img_fetched_bytes = 0, img_skipped = 0; // the window's images
-    bool   relayout = false; // a fetched image disagreed with its probed or cached size
-    size_t psram_low = 0; // least free PSRAM seen during the page
+    int    dither_ms = 0;
+    size_t images = 0, img_fail = 0;
+    size_t img_probes = 0, img_cache_hits = 0;
+    size_t img_in_view = 0, img_fetched_bytes = 0, img_skipped = 0;
+    bool   relayout = false;
+    size_t psram_low = 0;
+    bool   cancelled = false;
 };
 
-// Initialise fonts and the HTTP client. Call once. False when the fonts partition is unusable.
 bool render_init();
 
-// Render url into rows TAB_H to 671 of the tone frame (TONE_W x TONE_H entry indices, tones.h),
-// starting at document row offset, clamped so the window stays inside the document. The frame is
-// cleared to paper first. Stores the page's title and favicon for the tab bar. On failure err holds a
-// one-line reason and the frame is left cleared.
-bool render_page(const std::string& url, int offset, uint8_t* frame, render_stats& st, std::string& err);
+// cancel, when given, is asked before the parse, before each image fetch and before each band. Once it
+// returns true the render stops at those points and returns false with st.cancelled set. Layout runs
+// inside litehtml and is not cut, but its image probes are skipped.
+bool render_page(const std::string& url, int offset, uint8_t* frame, render_stats& st, std::string& err,
+                 bool (*cancel)() = nullptr);
 
-// Render the tab bar into frame rows 0 to TAB_H - 1: one tab per page, the current one filled.
 bool render_tabs(const std::vector<page_entry>& pages, size_t current, uint8_t* frame);
 
-// Render html into the whole frame, all TONE_H rows, with no network. The frame is cleared to paper
-// first. html must reference nothing by URL, since the container would fetch it.
 bool render_html(const std::string& html, uint8_t* frame);

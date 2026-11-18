@@ -1,4 +1,4 @@
-menu "browser26"
+menu "Superfox26"
 
     config B26_CYCLE_SECONDS
         int "Seconds between the start of one page and the start of the next"

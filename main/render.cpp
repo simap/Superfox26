@@ -1,8 +1,6 @@
-// litehtml container for the 9.7 inch three pigment e-paper panel, 960 x 672. Compositing happens in a
-// 24-bit RGB band buffer. Each band row is dithered to tone map entries (tone_dither, tones.h) into the
-// tone frame that tones_draw() plays onto the panel. FreeType for text, libpng, libjpeg-turbo, libwebp
-// and own GIF and BMP decoders for images, fetched over HTTP as the engine asks for them.
-// Text: antialiased glyphs (text_raster.h) blended into the band by coverage in the text colour.
+// Each draw method of page_container runs in one of two modes set by the collect flag.
+// In collect mode a draw records which images and rows it needs and writes no pixels, so
+// render_page can fetch only the images in view before the pass that draws them.
 
 #include "render.h"
 
@@ -34,45 +32,27 @@
 #include "text_raster.h"
 #include "tones.h"
 #include "url.h"
+#include "util.h"
 
 using namespace litehtml;
 
 static const char* TAG = "render";
 
-static const int VIEW_W    = EPD_W; // 960
-// The panel splits into the tab bar (rows 0 to TAB_H - 1) and the page window below it. PAGE_H is the
-// page document's viewport height for vh units and media queries.
+static const int VIEW_W    = EPD_W;
 static const int PAGE_H    = EPD_H - TAB_H;
-static const int BAND_ROWS = 64;    // RGB band 184,320 bytes
+static const int BAND_ROWS = 64;
 
-// A decoded copy holds 3 bytes per drawn pixel, 4 with alpha, 5 for WebP with alpha (the RGBA decode
-// buffer keeps its capacity). Copies a later band still needs are kept past IMG_KEEP: one 960 x 628
-// copy with alpha is 2.4 MB.
-static const size_t IMG_KEEP     = 192 * 1024; // decoded image bytes kept across bands
-static const size_t IMG_FILE_MAX = 300 * 1024; // compressed bytes fetched per image
-static const size_t IMG_SRC_MAX  = 1024 * 1024; // compressed bytes held per page, all in-view images
-// Header probe for the natural size. All PNG, GIF, BMP and WebP headers and 32 of 33 measured JPEGs
-// fit in 3.3 KB; one JPEG with EXIF and Photoshop blocks needed 15 KB. A JPEG whose frame header is
-// still missing after the first probe gets one more at PROBE_BYTES_2.
+static const size_t IMG_KEEP     = 192 * 1024;
+static const size_t IMG_FILE_MAX = 300 * 1024;
+static const size_t IMG_SRC_MAX  = 1024 * 1024;
 static const size_t PROBE_BYTES   = 16 * 1024;
 static const size_t PROBE_BYTES_2 = 64 * 1024;
-static const int    RETRY_DELAY_MS = 250; // before the second attempt at an image fetch
-static const size_t CSS_MAX      = 400 * 1024; // one stylesheet
+static const int    RETRY_DELAY_MS = 250;
+static const size_t CSS_MAX      = 400 * 1024;
 static const size_t GLYPH_CACHE  = 256 * 1024;
-// Free PSRAM that must remain after a phase's declared bytes. The engine reports the stylesheet
-// size at the cascade check, but cascade, render tree and layout grew the heap by 1.3 MB beyond
-// that on Wikipedia (3.4 MB after parse, 4.7 MB peak), and the layout and draw phases that follow
-// have no check of their own. With exceptions off an allocation failure aborts the firmware.
 static const size_t BUDGET_MARGIN = 2560 * 1024;
 
-// User stylesheet, applied after the page's own styles.
-// Wikipedia's Vector 2022 skin gives these two elements height:100% inside auto-height flex
-// containers. litehtml resolves the percentage against the 672 px viewport (document.cpp passes
-// the viewport height down as the containing block height), so each one opens a blank band of
-// about 700 px above the article. With height:auto the heading lands at y 135.
 static const char* USER_CSS = ".mw-logo, #p-lang-btn-checkbox { height: auto !important; }";
-
-// ---------------------------------------------------------------- utilities
 
 struct rgb
 {
@@ -83,7 +63,7 @@ static rgb to_rgb(const web_color& c) { return {c.red, c.green, c.blue}; }
 
 struct rect_i
 {
-    int x0, y0, x1, y1; // half open
+    int x0, y0, x1, y1;
     bool empty() const { return x1 <= x0 || y1 <= y0; }
 };
 
@@ -112,101 +92,66 @@ static uint32_t utf8_next(const char*& s)
     return c;
 }
 
-// default-ignorable format characters: zero width, never drawn
 static bool ignorable(uint32_t c)
 {
     return c == 0xAD || (c >= 0x200B && c <= 0x200F) || (c >= 0x202A && c <= 0x202E) ||
            (c >= 0x2060 && c <= 0x206F) || c == 0xFEFF;
 }
 
-static const char b64tab[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-static std::string b64_decode(const std::string& in)
-{
-    std::string out;
-    int         val = 0, bits = -8;
-    for(unsigned char c : in)
-    {
-        const char* p = strchr(b64tab, c);
-        if(!p || !c) continue;
-        val = (val << 6) + static_cast<int>(p - b64tab);
-        bits += 6;
-        if(bits >= 0)
-        {
-            out += static_cast<char>((val >> bits) & 0xFF);
-            bits -= 8;
-        }
-    }
-    return out;
-}
-
-// ---------------------------------------------------------------- fonts
-
 struct font
 {
-    int          slot = FACE_SANS; // the slot face_set::resolve picked
+    int          slot = FACE_SANS;
     int          px = 16;
     int          decoration = 0;
     font_metrics fm;
 };
 
-// The coverage curves of TEXT_RASTER and FALLBACK_RASTER (text_raster.h), filled by render_init.
 static uint8_t g_text_curve[256], g_fallback_curve[256];
 
-// ---------------------------------------------------------------- container
-
-class bwr_container : public document_container
+class page_container : public document_container
 {
   public:
     int                  W = VIEW_W, H = 0;
-    int                  view_h; // viewport height reported to the engine
-    std::string          caption; // <title> text, from set_caption
-    std::string          image_icon; // an image page's own 16x16 thumbnail as a BMP, the tab icon
+    int                  view_h;
+    std::string          caption;
+    std::string          image_icon;
     struct icon_cand
     {
         std::string href;
-        int         score; // lower is better
+        int         score;
     };
-    std::vector<icon_cand> icons; // <link rel=icon> candidates, from link()
-    std::vector<uint8_t> fb; // RGB band, 3 bytes per pixel
+    std::vector<icon_cand> icons;
+    std::vector<uint8_t> fb;
     std::vector<rect_i>  clips;
-    std::string          page_url; // the document URL, for relative references
-    std::string          base_url; // <base href>, else page_url
+    std::string          page_url;
+    std::string          base_url;
     face_set&            fonts;
     glyph_cache          gcache{GLYPH_CACHE};
     render_stats*        st = nullptr;
+    bool (*cancel)()        = nullptr;
+    bool                 cancelled = false;
     long                 n_measure = 0, n_draw_text = 0, n_fonts = 0;
 
-    // An image source. The natural size comes from the size cache or from a header probe at load_image
-    // time, only when layout needs it (an <img> without CSS or attribute dimensions); the rest wait.
-    // The file is fetched only for images the window draws: a collect pass over the window marks them
-    // WANTED, render_page fetches those, and the data is freed after the last band that uses it.
-    // Pixels are decoded on first draw at the drawn size.
-    enum img_state { IMG_DEFERRED, IMG_SIZED, IMG_WANTED, IMG_LOADED, IMG_FAILED };
+    enum img_state { IMG_SIZED, IMG_WANTED, IMG_LOADED, IMG_FAILED };
     struct img_src
     {
         int         kind = IMG_NONE;
         int         nat_w = 0, nat_h = 0;
-        img_state   state    = IMG_DEFERRED; // DEFERRED only until load_image has probed or looked it up
-        bool        need_nat = false;        // layout used the natural size: a mismatch at fetch means relayout
-        int64_t     total    = -1;    // file size from the probe response, -1 unknown
-        int         last_row = 0;     // last window row (exclusive) any draw needs, from the collect pass
-        std::string data;             // the whole file while LOADED (or a data: URL's bytes)
-        std::vector<std::unique_ptr<gimage>> vars; // decoded copies, one per display size in use
+        img_state   state    = IMG_FAILED;
+        int64_t     total    = -1;
+        int         last_row = 0;
+        std::string data;
+        std::vector<std::unique_ptr<gimage>> vars;
     };
     std::map<std::string, std::unique_ptr<img_src>> images;
     size_t img_bytes = 0, img_count = 0, img_fail = 0, img_src_bytes = 0;
     long   img_tick = 0;
-    // 0 parse, 1 layout, 2 collect pass, 3 draw. get_image_size fetches a deferred file only from 2 on.
-    int  phase   = 0;
-    bool collect = false; // the draw calls record wanted images and paint nothing
-    bool size_mismatch = false; // a fetched file's size differed from the probed or cached one
+    bool   collect = false;
+    bool   size_mismatch = false;
 
-    bwr_container(face_set& f, const std::string& url, int vh) : view_h(vh), page_url(url), base_url(url), fonts(f) {}
-    ~bwr_container() override { gcache.clear(); }
+    page_container(face_set& f, const std::string& url, int vh) : view_h(vh), page_url(url), base_url(url), fonts(f) {}
+    ~page_container() override { gcache.clear(); }
 
-    // fb is an RGB band buffer of W x band rows; window rows band_y0..band_y1 (half open) map onto it.
-    // 16 bytes follow the last row: the dither's sRGB decode may read them (tones.cpp).
     int       band_y0 = 0, band_y1 = 0;
     tone_dither q;
 
@@ -266,15 +211,12 @@ class bwr_container : public document_container
         return r.top_left_x > 0_px || r.top_right_x > 0_px || r.bottom_left_x > 0_px || r.bottom_right_x > 0_px;
     }
 
-    // Horizontal extent [x0, x1) of the rounded rectangle box on row y: each corner is a quarter
-    // ellipse with the box's radii. False when the row is outside the box.
     static bool rounded_span(const rect_i& box, const border_radiuses& r, int y, int& x0, int& x1)
     {
         if(y < box.y0 || y >= box.y1) return false;
         x0 = box.x0;
         x1 = box.x1;
         auto inset = [](float rx, float ry, float d) {
-            // d: distance of the row centre from the corner's straight edge, 0 .. ry
             if(rx <= 0 || ry <= 0) return 0.0f;
             float t = (ry - d) / ry;
             return rx * (1.0f - std::sqrt(std::max(0.0f, 1.0f - t * t)));
@@ -306,7 +248,6 @@ class bwr_container : public document_container
         if(st && (st->psram_low == 0 || f < st->psram_low)) st->psram_low = f;
     }
 
-    // ---- URL resolution: against the stylesheet URL the engine passes, else the document base
     std::string resolve(const char* src, const char* baseurl)
     {
         if(!src || !*src) return "";
@@ -319,7 +260,6 @@ class bwr_container : public document_container
         return it == images.end() || !it->second || !it->second->kind ? nullptr : it->second.get();
     }
 
-    // ---- memory budget, called by createFromString before parse, cascade and tree
     bool check_memory_budget(const char* stage, size_t bytes) override
     {
         size_t free_ps = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -332,13 +272,11 @@ class bwr_container : public document_container
         return ok;
     }
 
-    // ---- fonts
     uint_ptr create_font(const font_description& d, const document*, font_metrics* fm) override
     {
         n_fonts++;
         std::string fam = d.family;
         std::transform(fam.begin(), fam.end(), fam.begin(), ::tolower);
-        // pick the first generic class that matches anywhere in the family list
         std::string cls = "sans";
         size_t      best = std::string::npos;
         auto        probe = [&](const char* key, const char* c) {
@@ -364,7 +302,6 @@ class bwr_container : public document_container
         probe("helvetica", "sans");
         probe("verdana", "sans");
         {
-            // "serif" alone (not part of "sans-serif")
             size_t p = 0;
             while((p = fam.find("serif", p)) != std::string::npos)
             {
@@ -419,11 +356,6 @@ class bwr_container : public document_container
         return (c >= 0xE000 && c <= 0xF8FF) || (c >= 0xF0000 && c <= 0xFFFFD) || (c >= 0x100000 && c <= 0x10FFFD);
     }
 
-    // Cached glyph for code point c in font f. With need_bitmap the entry carries the coverage bitmap.
-    // A code point the face lacks comes from the fallback face at the same pixel size. When that
-    // lacks it too, a private use code point (an icon font's) draws nothing and takes no width, and
-    // any other gets the face's .notdef glyph. text_width and draw_text both call this, so layout
-    // and drawing use the same glyph.
     glyph_cache::entry* glyph(font* f, uint32_t c, bool need_bitmap)
     {
         const uint64_t      key = glyph_cache::key(f->slot, f->px, c);
@@ -463,8 +395,6 @@ class bwr_container : public document_container
         return load_glyph(FACE_FALLBACK, px, c, FT_Get_Char_Index(fb, c), e, need_bitmap);
     }
 
-    // Loads glyph gi of slot at px into entry e, a new entry when e is null: the advance, and with
-    // need_bitmap the coverage through the curve of text_raster.h.
     glyph_cache::entry* load_glyph(int slot, int px, uint32_t c, FT_UInt gi, glyph_cache::entry* e, bool need_bitmap)
     {
         FT_Face face = fonts.sized(slot, px);
@@ -491,7 +421,6 @@ class bwr_container : public document_container
             size_t n            = static_cast<size_t>(e->w) * e->h;
             if(n)
             {
-                // stored as one coverage byte per pixel, through the coverage curve
                 e->bm.reset(new uint8_t[n]);
                 for(unsigned y = 0; y < bm.rows; y++)
                 {
@@ -527,7 +456,6 @@ class bwr_container : public document_container
     {
         if(collect) return;
         n_draw_text++;
-        // the text colour is blended into the band by glyph coverage, so edges carry real tones
         auto   f    = reinterpret_cast<font*>(h);
         rgb    v    = to_rgb(color);
         int    a    = color.alpha;
@@ -574,8 +502,6 @@ class bwr_container : public document_container
 
     pixel_t     pt_to_px(float pt) const override { return pt * 96.0f / 72.0f; }
     pixel_t     get_default_font_size() const override { return 16; }
-    // The family of an element no font-family rule reaches. create_font maps it to the serif faces,
-    // as a desktop browser's default. "Arial" here would give the sans faces.
     const char* get_default_font_name() const override { return "Times New Roman"; }
 
     void draw_list_marker(uint_ptr, const list_marker& m) override
@@ -584,8 +510,6 @@ class bwr_container : public document_container
         {
             if(img_src* s = find_image(m.image.c_str(), m.baseurl))
             {
-                // the engine calls this for every item whose parent meets the clip, so the marker itself
-                // is tested here before anything is fetched or decoded
                 rect_i r = to_rect(m.pos);
                 if(intersect(r, cur_clip()).empty()) return;
                 if(collect)
@@ -625,23 +549,15 @@ class bwr_container : public document_container
         }
     }
 
-    // ---- images
-    // Called during parse for every image the document references. Every image gets its natural size
-    // here, from the cache or from a header probe: layout uses it even when CSS or attributes give both
-    // dimensions (render_item_image::calc_intrinsic_size feeds table and flex sizing from it, and a 0x0
-    // answer collapsed the weather.gov forecast icons). No image file is fetched here.
     void load_image(const char* src, const char* baseurl, bool) override
     {
         std::string url = resolve(src, baseurl);
         if(url.empty() || images.count(url)) return;
-        auto s      = std::make_unique<img_src>();
-        s->need_nat = true;
+        auto s = std::make_unique<img_src>();
         img_count++;
         if(url.compare(0, 5, "data:") == 0)
         {
-            auto comma = url.find(',');
-            if(comma != std::string::npos && url.rfind(";base64", comma) != std::string::npos)
-                s->data = b64_decode(url.substr(comma + 1));
+            data_url_bytes(url, s->data);
             s->kind = s->data.size() > 8 ? sniff_size(s->data, s->nat_w, s->nat_h) : IMG_NONE;
             if(s->kind && s->nat_w > 0 && s->nat_h > 0)
             {
@@ -652,7 +568,6 @@ class bwr_container : public document_container
                 fail(*s);
         } else
         {
-            // .svg never decodes; skip the fetch
             auto q    = url.find('?');
             auto path = q == std::string::npos ? url : url.substr(0, q);
             bool svg  = path.size() > 4 && path.compare(path.size() - 4, 4, ".svg") == 0;
@@ -676,8 +591,6 @@ class bwr_container : public document_container
         img_fail++;
     }
 
-    // An image fetch that fails is tried once more after a pause, unless the server said the resource
-    // does not exist. Covers a dropped keep-alive connection, a timeout and a 5xx.
     static bool definite(const fetch_result& r) { return r.status == 404 || r.status == 410 || r.status == 403; }
 
     static bool fetch_prefix_retry(const std::string& url, std::string& out, size_t n, fetch_result& r)
@@ -694,11 +607,19 @@ class bwr_container : public document_container
         return fetch_url(url, out, max, &r);
     }
 
-    // Header probe: the first PROBE_BYTES, once more at PROBE_BYTES_2 for a JPEG whose frame header
-    // came later. Sets kind and size, records the size in the cache, keeps no bytes. A failed probe is
-    // not cached, so the next page load tries again.
+    bool stop()
+    {
+        if(!cancelled && cancel && cancel()) cancelled = true;
+        return cancelled;
+    }
+
     void probe(const std::string& url, img_src& s)
     {
+        if(stop())
+        {
+            fail(s);
+            return;
+        }
         if(st) st->img_probes++;
         std::string  head;
         fetch_result r;
@@ -722,7 +643,6 @@ class bwr_container : public document_container
         }
     }
 
-    // Collect pass: the window needs this image down to window row bottom.
     void want(img_src& s, int bottom)
     {
         if(s.state == IMG_FAILED) return;
@@ -730,12 +650,15 @@ class bwr_container : public document_container
         s.last_row = std::max(s.last_row, bottom);
     }
 
-    // Fetch the whole file of a wanted or deferred image, sniff it, and keep it for drawing. A size that
-    // differs from the probe or cache is recorded and, when layout used it, flagged for a relayout.
     bool load_full(const std::string& url, img_src& s)
     {
         if(s.state == IMG_LOADED) return true;
         if(s.state == IMG_FAILED) return false;
+        if(stop())
+        {
+            fail(s);
+            return false;
+        }
         if(s.total > static_cast<int64_t>(IMG_FILE_MAX) || img_src_bytes >= IMG_SRC_MAX)
         {
             ESP_LOGW(TAG, "skip %s: %lld bytes, %u held", url.c_str(), (long long)s.total, (unsigned)img_src_bytes);
@@ -747,7 +670,6 @@ class bwr_container : public document_container
         bool         ok = fetch_url_retry(url, s.data, std::min(IMG_FILE_MAX, IMG_SRC_MAX - img_src_bytes), r);
         int          w = 0, h = 0;
         int          kind = s.data.size() > 8 ? sniff_size(s.data, w, h) : IMG_NONE;
-        // a truncated GIF still shows its decoded rows; other formats need the whole file
         if(!ok && !(r.truncated && kind == IMG_GIF)) kind = IMG_NONE;
         if(!kind || w <= 0 || h <= 0)
         {
@@ -762,7 +684,7 @@ class bwr_container : public document_container
             if(s.nat_w && (w != s.nat_w || h != s.nat_h))
             {
                 ESP_LOGW(TAG, "image %s is %dx%d, size was %dx%d", url.c_str(), w, h, s.nat_w, s.nat_h);
-                if(s.need_nat) size_mismatch = true;
+                size_mismatch = true;
             }
         }
         s.kind  = kind;
@@ -784,15 +706,12 @@ class bwr_container : public document_container
         std::string url = resolve(src, baseurl);
         auto        it  = images.find(url);
         if(it == images.end()) return;
-        img_src& s = *it->second;
-        // Backgrounds and list images ask at draw time, from boxes that meet the clip: fetch then.
-        if(s.state == IMG_DEFERRED && phase >= 2) load_full(url, s);
+        const img_src& s = *it->second;
         if(s.state == IMG_FAILED) return;
         sz.width  = s.nat_w;
         sz.height = s.nat_h;
     }
 
-    // decoded copy of s for display size tw x th; decodes on first use. bottom: last page row this draw needs.
     gimage* variant(img_src& s, int tw, int th, int bottom)
     {
         if(tw <= 0 || th <= 0 || s.state != IMG_LOADED) return nullptr;
@@ -818,9 +737,6 @@ class bwr_container : public document_container
         return s.vars.back()->px.empty() ? nullptr : s.vars.back().get();
     }
 
-    // After a band: the files of images whose last window row is in this band or above are freed, and
-    // decoded copies no later band has asked for yet (last_y <= y1) are freed, least recently used first,
-    // until the bytes held fit in IMG_KEEP.
     void end_band(int y1)
     {
         for(auto& kv : images)
@@ -855,7 +771,6 @@ class bwr_container : public document_container
         }
     }
 
-    // nearest-neighbour scaled blit of img into dst rect, clipped
     void blit(const gimage& img, const rect_i& dst, const rect_i& clip0)
     {
         rect_i clip = intersect(intersect(clip0, cur_clip()), dst);
@@ -884,7 +799,6 @@ class bwr_container : public document_container
         if(tw <= 0 || th <= 0) return;
         bool rx = layer.repeat == background_repeat_repeat || layer.repeat == background_repeat_repeat_x;
         bool ry = layer.repeat == background_repeat_repeat || layer.repeat == background_repeat_repeat_y;
-        // nothing of this layer is inside the current band: do not fetch or decode
         rect_i need = intersect(clip, cur_clip());
         if(!rx) need.x0 = std::max(need.x0, o.x0), need.x1 = std::min(need.x1, o.x1);
         if(!ry) need.y0 = std::max(need.y0, o.y0), need.y1 = std::min(need.y1, o.y1);
@@ -911,7 +825,6 @@ class bwr_container : public document_container
         rect_i r = intersect(to_rect(layer.clip_box), to_rect(layer.border_box));
         if(rounded(layer.border_radius))
         {
-            // the radii belong to the border box; the clip box only limits the rows and columns
             rect_i saved_clip = cur_clip();
             clips.push_back(intersect(saved_clip, r));
             fill_rounded(to_rect(layer.border_box), layer.border_radius, to_rgb(color), color.alpha);
@@ -921,7 +834,6 @@ class bwr_container : public document_container
         fill(r, to_rgb(color), color.alpha);
     }
 
-    // gradients approximated by the mean of the colour stops
     void grad_fill(const background_layer& layer, const background_layer::gradient_base& g)
     {
         if(g.color_points.empty()) return;
@@ -963,9 +875,6 @@ class bwr_container : public document_container
         int    bt = visible(b.bottom) ? static_cast<int>(std::lround(b.bottom.width.value())) : 0;
         if(rounded(b.radius))
         {
-            // Ring between the outer rounded box and the inner one inset by the border widths, in the
-            // colour of the first visible side. Rows without a visible top or bottom border keep the
-            // inner box open on that side.
             const border& side = visible(b.top) ? b.top : visible(b.left) ? b.left : visible(b.right) ? b.right : b.bottom;
             if(!visible(side)) return;
             rgb    v     = to_rgb(side.color);
@@ -987,7 +896,6 @@ class bwr_container : public document_container
             }
             return;
         }
-        // solid only; dashed and dotted drawn as solid
         if(visible(b.top)) fill({r.x0, r.y0, r.x1, r.y0 + std::max(1, t)}, to_rgb(b.top.color), b.top.color.alpha);
         if(visible(b.bottom))
             fill({r.x0, r.y1 - std::max(1, bt), r.x1, r.y1}, to_rgb(b.bottom.color), b.bottom.color.alpha);
@@ -999,7 +907,6 @@ class bwr_container : public document_container
 
     void set_caption(const char* text) override
     {
-        // collapse whitespace, the tab shows one line
         caption.clear();
         bool space = true;
         for(const char* p = text ? text : ""; *p; p++)
@@ -1016,10 +923,6 @@ class bwr_container : public document_container
         std::string b = resolve_url(page_url, url ? url : "");
         if(!b.empty()) base_url = b;
     }
-    // Every <link> that is not a stylesheet. Icon candidates, by rel: icon, shortcut icon,
-    // apple-touch-icon, apple-touch-icon-precomposed. Within a rel the size nearest 16 px and at least
-    // 16 comes first, then sizes below 16, an unsized link counting as 32. SVG is skipped (no decoder).
-    // href resolves against the page after redirects.
     void link(const std::shared_ptr<document>&, const element::ptr& el) override
     {
         std::string rel  = " " + std::string(el->get_attr("rel", "")) + " ";
@@ -1042,9 +945,9 @@ class bwr_container : public document_container
         if(type.find("svg") != std::string::npos || (path.size() > 4 && path.compare(path.size() - 4, 4, ".svg") == 0) ||
            path.compare(0, 18, "data:image/svg+xml") == 0)
             return;
-        // the cost of the best listed size, 16 px costing 0
+        const long  T     = TAB_ICON_PX;
         const char* sizes = el->get_attr("sizes", "");
-        int         cost  = 16;
+        int         cost  = 0;
         bool        sized = false;
         for(const char* p = sizes ? sizes : ""; *p;)
         {
@@ -1057,11 +960,11 @@ class bwr_container : public document_container
             }
             p = end;
             if(*p != 'x' && *p != 'X') continue;
-            int c = s >= 16 ? static_cast<int>(std::min(s, 4096L)) - 16 : static_cast<int>(16 - s) * 8 + 5000;
+            int c = s >= T ? static_cast<int>(std::min(s, 4096L) - T) : static_cast<int>(T - s) * 8 + 5000;
             cost  = sized ? std::min(cost, c) : c;
             sized = true;
             p++;
-            strtol(p, &end, 10); // the height
+            strtol(p, &end, 10);
             p = end;
         }
         icons.push_back({resolve(href, nullptr), group * 10000 + cost});
@@ -1072,7 +975,6 @@ class bwr_container : public document_container
 
     void transform_text(std::string& text, text_transform tt) override
     {
-        // ASCII only
         if(tt == text_transform_uppercase)
             for(auto& c : text) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
         else if(tt == text_transform_lowercase)
@@ -1081,8 +983,6 @@ class bwr_container : public document_container
             text[0] = static_cast<char>(toupper(static_cast<unsigned char>(text[0])));
     }
 
-    // Called during parse for every <link rel=stylesheet> and @import. baseurl becomes the stylesheet
-    // URL so relative references inside it resolve against it.
     void import_css(std::string& text, const std::string& url, std::string& baseurl) override
     {
         std::string abs = resolve(url.c_str(), baseurl.c_str());
@@ -1121,7 +1021,6 @@ class bwr_container : public document_container
         m.height        = view_h;
         m.device_width  = VIEW_W;
         m.device_height = view_h;
-        // the same features as the reference renders in browsers/litehtml/out/lanes/device/bwr
         m.color         = 0;
         m.color_index   = 0;
         m.monochrome    = 8;
@@ -1135,13 +1034,11 @@ class bwr_container : public document_container
     }
 };
 
-// ---------------------------------------------------------------- pipeline
-
 static face_set g_fonts;
 
 bool render_init()
 {
-    fetch_init();
+    if(!fetch_init()) return false;
     text_raster_curve(TEXT_RASTER, g_text_curve);
     text_raster_curve(FALLBACK_RASTER, g_fallback_curve);
     return g_fonts.init();
@@ -1149,11 +1046,8 @@ bool render_init()
 
 static int ms_since(int64_t t0) { return static_cast<int>((esp_timer_get_time() - t0) / 1000); }
 
-// A page whose body is an image file: one <img> scaled to fit the window, aspect kept, centred, with a
-// black border of IMAGE_BORDER px. The title is the last path segment.
 static std::string image_page_html(const std::string& url, int nat_w, int nat_h)
 {
-    // scaled to fit the window with its aspect kept, centred on a black page
     int w = VIEW_W, h = static_cast<int>(static_cast<int64_t>(nat_h) * VIEW_W / nat_w);
     if(h > PAGE_H)
     {
@@ -1178,18 +1072,9 @@ static std::string image_page_html(const std::string& url, int nat_w, int nat_h)
            img + html_escape(url) + "\"></body></html>";
 }
 
-// Title and favicon for the tab bar, stored under the configured page URL (key) so the bar finds them.
-// The icon comes from the page after redirects (c.page_url): up to ICON_LINKS <link> candidates in
-// score order, then favicon.ico, favicon.png and apple-touch-icon.png at its origin. A real icon is
-// kept and never fetched again. When every candidate fails a placeholder is stored, and the candidates
-// are tried again on the next render of the page.
-// ICON_FILE_MAX holds a 1024 px apple-touch PNG (hackaday.com, 49 KB) or a JPEG icon. The file is held
-// once and decoded to 16x16. A larger ICO is decoded from the entries inside its first ICON_FILE_MAX.
 static const size_t ICON_FILE_MAX = 128 * 1024;
 static const size_t ICON_LINKS    = 4;
 
-// One icon fetch, once more after a transport failure or a 5xx answer. True for a 2xx answer, which
-// may be truncated at ICON_FILE_MAX.
 static bool fetch_icon(const std::string& url, std::string& out, fetch_result& r)
 {
     for(int attempt = 0; attempt < 2; attempt++)
@@ -1202,7 +1087,7 @@ static bool fetch_icon(const std::string& url, std::string& out, fetch_result& r
     return false;
 }
 
-static void update_tab(bwr_container& c, const std::string& key)
+static void update_tab(page_container& c, const std::string& key)
 {
     tab_info    t;
     bool        had     = tabs_load(key, t);
@@ -1212,7 +1097,6 @@ static void update_tab(bwr_container& c, const std::string& key)
     t.title             = title;
     if(!c.image_icon.empty())
     {
-        // the page is an image: its own thumbnail is the icon, refreshed when the image changes
         if(t.icon_bmp != c.image_icon || t.placeholder) changed = true;
         t.icon_bmp    = c.image_icon;
         t.placeholder = false;
@@ -1231,13 +1115,10 @@ static void update_tab(bwr_container& c, const std::string& key)
         if(!u.empty() && std::find(urls.begin(), urls.end(), u) == urls.end()) urls.push_back(u);
     };
     std::stable_sort(c.icons.begin(), c.icons.end(),
-                     [](const bwr_container::icon_cand& a, const bwr_container::icon_cand& b) { return a.score < b.score; });
+                     [](const page_container::icon_cand& a, const page_container::icon_cand& b) { return a.score < b.score; });
     for(auto& ic : c.icons)
         if(urls.size() < ICON_LINKS) add(ic.href);
-    std::string origin = c.page_url;
-    auto        p      = origin.find("://");
-    auto        q      = p == std::string::npos ? std::string::npos : origin.find('/', p + 3);
-    if(q != std::string::npos) origin = origin.substr(0, q);
+    const std::string origin = url_origin(c.page_url);
     add(origin + "/favicon.ico");
     add(origin + "/favicon.png");
     add(origin + "/apple-touch-icon.png");
@@ -1249,9 +1130,7 @@ static void update_tab(bwr_container& c, const std::string& key)
         bool        data    = u.compare(0, 5, "data:") == 0;
         if(data)
         {
-            auto comma = u.find(',');
-            if(comma == std::string::npos || u.rfind(";base64", comma) == std::string::npos) continue;
-            file = b64_decode(u.substr(comma + 1));
+            if(!data_url_bytes(u, file)) continue;
         } else
         {
             fetch_result r;
@@ -1279,19 +1158,14 @@ static void update_tab(bwr_container& c, const std::string& key)
     if(changed) tabs_save(key, t);
 }
 
-// Lays out html at VIEW_W and draws its top rows rows into frame rows 0 to rows - 1, in bands of up to
-// BAND_ROWS. For HTML that references nothing by URL: images and stylesheets come only as data URLs.
-// No collect pass runs. key stands in for the page URL.
 static bool draw_local_html(const std::string& html, const char* key, int rows, uint8_t* frame)
 {
     bool ok = false;
     {
-        bwr_container c(g_fonts, key, rows);
+        page_container c(g_fonts, key, rows);
         auto doc = document::createFromString(html, &c, litehtml::master_css, {}, static_release_after_cascade);
         if(!doc) return false;
-        c.phase  = 1;
         doc->render(VIEW_W);
-        c.phase  = 3;
         int band = std::min(rows, BAND_ROWS);
         if(c.alloc_window(band))
         {
@@ -1327,20 +1201,21 @@ bool render_html(const std::string& html, uint8_t* frame)
     return draw_local_html(html, "about:", TONE_H, frame);
 }
 
-bool render_page(const std::string& url, int offset, uint8_t* frame, render_stats& st, std::string& err)
+bool render_page(const std::string& url, int offset, uint8_t* frame, render_stats& st, std::string& err,
+                 bool (*cancel)())
 {
     st = render_stats();
     memset(frame, TONE_PAPER, static_cast<size_t>(TONE_W) * TONE_H);
     bool ok = false;
     {
-        bwr_container c(g_fonts, url, PAGE_H);
-        c.st = &st;
+        page_container c(g_fonts, url, PAGE_H);
+        c.st     = &st;
+        c.cancel = cancel;
 
         int64_t     t0 = esp_timer_get_time();
         std::string html;
         fetch_result fr;
-        // one retry after a transport failure or a 5xx, as for images
-        bool got = bwr_container::fetch_url_retry(url, html, PAGE_HTML_MAX, fr);
+        bool got = page_container::fetch_url_retry(url, html, PAGE_HTML_MAX, fr);
         st.fetch_ms = ms_since(t0);
         if(!got)
         {
@@ -1351,23 +1226,27 @@ bool render_page(const std::string& url, int offset, uint8_t* frame, render_stat
             err = buf;
             return false;
         }
+        if(c.stop())
+        {
+            err          = "cancelled";
+            st.cancelled = true;
+            return false;
+        }
         st.html_bytes = html.size();
         c.page_url = c.base_url = fr.final_url.empty() ? url : fr.final_url;
         leds_load(2, 8);
 
-        // An image file as the page: the fetched bytes become the one loaded image of a wrapper page,
-        // keyed as load_image will key its src, so nothing is fetched again and no per-image cap applies.
         {
             int iw = 0, ih = 0;
             int kind = html.size() > 8 ? sniff_size(html, iw, ih) : IMG_NONE;
             if(kind != IMG_NONE && iw > 0 && ih > 0)
             {
                 std::string key = resolve_url(c.base_url, c.base_url);
-                auto        s   = std::make_unique<bwr_container::img_src>();
+                auto        s   = std::make_unique<page_container::img_src>();
                 s->kind         = kind;
                 s->nat_w        = iw;
                 s->nat_h        = ih;
-                s->state        = bwr_container::IMG_LOADED;
+                s->state        = page_container::IMG_LOADED;
                 c.image_icon    = tabs_icon_bmp(html, false);
                 s->data.swap(html);
                 shrink_to_fit(s->data);
@@ -1381,7 +1260,7 @@ bool render_page(const std::string& url, int offset, uint8_t* frame, render_stat
 
         t0 = esp_timer_get_time();
         auto doc = document::createFromString(html, &c, litehtml::master_css, USER_CSS, static_release_after_cascade);
-        std::string().swap(html); // the engine keeps no copy of the source
+        std::string().swap(html);
         st.parse_ms = ms_since(t0);
         if(!doc)
         {
@@ -1391,24 +1270,18 @@ bool render_page(const std::string& url, int offset, uint8_t* frame, render_stat
         }
 
         leds_load(3, 8);
-        c.phase = 1;
-        t0      = esp_timer_get_time();
+        t0 = esp_timer_get_time();
         doc->render(VIEW_W);
         st.layout_ms = ms_since(t0);
         leds_load(4, 8);
         st.doc_h = static_cast<int>(std::ceil(doc->height().value()));
-        // keep the window inside the document; a short document shows from its top
         offset    = std::max(0, std::min(offset, st.doc_h - PAGE_H));
         st.offset = offset;
         c.note_psram();
 
-        // Collect pass: one draw over the whole window with painting off, so the container learns which
-        // images the window needs and how far down. Then those files are fetched. A file whose size
-        // differs from what layout used triggers one more layout and collect.
         t0 = esp_timer_get_time();
         for(int pass = 0; pass < 2; pass++)
         {
-            c.phase   = 2;
             c.collect = true;
             c.begin_band(0, PAGE_H, PAGE_H);
             position whole(0, 0, VIEW_W, PAGE_H);
@@ -1416,48 +1289,48 @@ bool render_page(const std::string& url, int offset, uint8_t* frame, render_stat
             c.collect       = false;
             c.size_mismatch = false;
             for(auto& kv : c.images)
-                if(kv.second->state == bwr_container::IMG_WANTED) c.load_full(kv.first, *kv.second);
+                if(kv.second->state == page_container::IMG_WANTED) c.load_full(kv.first, *kv.second);
             if(!c.size_mismatch) break;
             st.relayout = true;
-            c.phase     = 1; // layout again: deferred sizes stay 0 here too
             doc->render(VIEW_W);
             st.doc_h  = static_cast<int>(std::ceil(doc->height().value()));
             offset    = std::max(0, std::min(offset, st.doc_h - PAGE_H));
             st.offset = offset;
         }
         for(auto& kv : c.images)
-            if(kv.second->state == bwr_container::IMG_LOADED) st.img_in_view++;
+            if(kv.second->state == page_container::IMG_LOADED) st.img_in_view++;
         st.images_ms = ms_since(t0);
         leds_load(5, 8);
         c.note_psram();
 
-        t0      = esp_timer_get_time();
-        c.phase = 3;
+        t0 = esp_timer_get_time();
         if(!c.alloc_window(BAND_ROWS))
         {
             err = "no memory for the band buffer";
         } else
         {
             uint64_t dither_cycles = 0;
-            for(int y0 = 0; y0 < PAGE_H; y0 += BAND_ROWS)
+            for(int y0 = 0; y0 < PAGE_H && !c.stop(); y0 += BAND_ROWS)
             {
                 int y1 = std::min(PAGE_H, y0 + BAND_ROWS);
                 c.begin_band(y0, y1, PAGE_H);
                 position clip(0, y0, VIEW_W, y1 - y0);
                 doc->draw(0, 0, static_cast<pixel_t>(-offset), &clip);
                 c.end_band(y1);
-                // page row y lands on panel row TAB_H + y
-                // The cycle counter is 32 bits and per core. A band takes far less than its 17.9 s
-                // range, and the browser task is pinned to one core.
                 const uint32_t cd = esp_cpu_get_cycle_count();
                 for(int y = y0; y < y1; y++)
                     c.q.row(&c.fb[static_cast<size_t>(y - y0) * VIEW_W * 3], TAB_H + y,
                             frame + static_cast<size_t>(TAB_H + y) * TONE_W);
                 dither_cycles += static_cast<uint32_t>(esp_cpu_get_cycle_count() - cd);
-                leds_load(5 + (y1 * 3 + PAGE_H - 1) / PAGE_H, 8); // draw fills the last three LEDs
+                leds_load(5 + (y1 * 3 + PAGE_H - 1) / PAGE_H, 8);
             }
-            ok           = true;
+            ok           = !c.cancelled;
             st.dither_ms = static_cast<int>(dither_cycles / (CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ * 1000ull));
+        }
+        if(c.cancelled)
+        {
+            err          = "cancelled";
+            st.cancelled = true;
         }
         c.free_window();
         st.draw_ms  = ms_since(t0);
@@ -1473,7 +1346,6 @@ bool render_page(const std::string& url, int offset, uint8_t* frame, render_stat
                  (unsigned)st.img_fetched_bytes, (unsigned)st.img_skipped, (unsigned)st.img_fail, st.relayout ? 1 : 0);
         doc.reset();
     }
-    // the id table grows across pages without this
     reset_string_ids();
     return ok;
 }

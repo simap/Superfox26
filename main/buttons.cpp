@@ -1,16 +1,17 @@
-// Buttons are active low with pull-ups (stock firmware button.py). Polled every 10 ms, a press is
-// three low samples in a row after a high one. A button that is low when the task starts counts as
-// held, so it needs a high sample first. Presses outside the countdown are ignored.
+// Polls the four hardware buttons in a task and turns User A and User B presses into browser tab
+// moves through browser_step.
 
 #include "buttons.h"
 
-#include <cstring>
+#include <atomic>
+
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #include "browser.h"
+#include "leds.h"
 #include "power_logic.h"
 
 static const char* TAG = "buttons";
@@ -19,27 +20,31 @@ struct button
 {
     gpio_num_t  pin;
     const char* name;
-    int         step; // browser_step() delta, 0 for a button with no action
+    int         step; // 0: a Menu button, which holds and resumes
 };
 
 static const button BUTTONS[] = {
-    {GPIO_NUM_39, "User A", -1}, // SW4
-    {GPIO_NUM_40, "Menu +", 0},  // SW5
-    {static_cast<gpio_num_t>(POWER_PIN_MENU_MINUS), "Menu -", 0}, // SW6, RTC pad, wakes from deep sleep
-    {static_cast<gpio_num_t>(POWER_PIN_USER_B), "User B", 1},     // SW7, RTC pad, wakes from deep sleep
+    {GPIO_NUM_39, "User A", -1},
+    {GPIO_NUM_40, "Menu +", 0},
+    {static_cast<gpio_num_t>(POWER_PIN_MENU_MINUS), "Menu -", 0},
+    {static_cast<gpio_num_t>(POWER_PIN_USER_B), "User B", 1},
 };
 static const int NBUTTONS = sizeof BUTTONS / sizeof BUTTONS[0];
+
+static std::atomic<uint64_t> s_released{0};
 
 static void press(const button& b)
 {
     if(b.step == 0)
-        ESP_LOGI(TAG, "%s: no action", b.name);
-    else if(strcmp(browser_state(), "wait") == 0)
     {
-        ESP_LOGI(TAG, "%s: %s tab", b.name, b.step < 0 ? "previous" : "next");
-        browser_step(b.step);
-    } else
-        ESP_LOGI(TAG, "%s ignored, state %s", b.name, browser_state());
+        int held = browser_hold_toggle();
+        if(held < 0) ESP_LOGI(TAG, "%s ignored, state %s", b.name, browser_state());
+        else ESP_LOGI(TAG, "%s: %s", b.name, held ? "hold" : "resume");
+        return;
+    }
+    int tab = browser_step(b.step);
+    if(tab >= 0) ESP_LOGI(TAG, "%s: tab %d", b.name, tab + 1);
+    else ESP_LOGI(TAG, "%s ignored, state %s", b.name, browser_state());
 }
 
 static void buttons_task(void*)
@@ -58,8 +63,13 @@ static void buttons_task(void*)
                 pressed[i] = true;
                 press(BUTTONS[i]);
             }
-            if(!low) pressed[i] = false;
+            if(!low)
+            {
+                pressed[i] = false;
+                s_released.fetch_or(1ULL << BUTTONS[i].pin);
+            }
         }
+        leds_tick();
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
@@ -73,6 +83,11 @@ void buttons_start()
     io.pull_down_en = GPIO_PULLDOWN_DISABLE;
     io.intr_type    = GPIO_INTR_DISABLE;
     ESP_ERROR_CHECK(gpio_config(&io));
-    if(xTaskCreate(buttons_task, "buttons", 3072, nullptr, 2, nullptr) != pdPASS)
+    if(xTaskCreate(buttons_task, "buttons", 4096, nullptr, 2, nullptr) != pdPASS)
         ESP_LOGE(TAG, "buttons task not created");
+}
+
+uint64_t buttons_released()
+{
+    return s_released.load();
 }

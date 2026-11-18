@@ -1,4 +1,19 @@
-build/
+# ESP-IDF builds, in the project and in each probe
+build*/
 managed_components/
-.cache/
+sdkconfig
 sdkconfig.old
+.cache/
+
+# Host test and probe outputs
+out/
+
+# The merged image of tools/build_webinstall.sh
+webinstall/firmware.bin
+
+# tools/fontpack: npm packages and downloaded source fonts
+node_modules/
+tools/fontpack/cache/
+
+__pycache__/
+.DS_Store

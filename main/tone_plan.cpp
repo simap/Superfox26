@@ -1,5 +1,3 @@
-// The plan of one draw and the boot check of the expanded patterns. See tone_plan.h.
-
 #include "tone_plan.h"
 
 #include <cstdarg>
@@ -41,7 +39,6 @@ uint8_t letter_code(const char* letters, char c)
     return static_cast<uint8_t>(strchr(letters, c) - letters);
 }
 
-// Phase 1 code of pull j of the prefix, the I and P and the S and M of s, in that order.
 uint8_t p1_part_code(const tone_seq& s, unsigned j)
 {
     const unsigned pre = mag(s.prefix);
@@ -50,8 +47,6 @@ uint8_t p1_part_code(const tone_seq& s, unsigned j)
     return letter_code("SIPM", j < s.n1a ? s.p1a[j] : s.p1b[j - s.n1a]);
 }
 
-// The letters of one part: n of them from the set letters, then the NUL, n at most TONE_SEQ_MAX.
-// Returns their net through net_of, or false.
 bool part_ok(const char* part, unsigned n, const char* letters, int (*net_of)(char), int* net)
 {
     if(n > TONE_SEQ_MAX || part[n] != '\0') return false;
@@ -62,21 +57,8 @@ bool part_ok(const char* part, unsigned n, const char* letters, int (*net_of)(ch
     }
     return true;
 }
-} // namespace
+}
 
-// Three checks per entry. The generator refuses an entry that fails any check of
-// tone_pattern_expand(), so these fail only for a file that does not come from it or a generator
-// that does not follow the rules of this firmware.
-//   The parts. tone_plan_code() reads n1a, n1b and n2 letters from p1a, p1b and p2 and turns each
-//   into a table code by its place in "SIPM" or "hpiw". A count past its part or a letter outside
-//   the set would play a code the pattern does not hold.
-//   The balance. The net is the sum of the letters' nets as this firmware counts them, and the
-//   prefix, the nudge and the residual are tone_balance_of() of that net. A draw then pays back
-//   what its letters drive, and every pixel keeps only the residual the planner computes.
-//   The push. The longest run on each rail and the positive run are within the limits of
-//   epd97_config.h as compiled here, and the runs left open at the end stay within the VDH limit
-//   with the S head of the next draw. The figures are tone_push_of() over the same parts on the
-//   host. tone_tables.h holds the build to the shapes and limits they were made with.
 bool tone_plan_init(char* why, size_t why_len)
 {
     s_ready = false;
@@ -107,11 +89,6 @@ bool tone_plan_init(char* why, size_t why_len)
     return true;
 }
 
-const tone_seq& tone_plan_seq(unsigned e)
-{
-    return tone_tables::seq[e];
-}
-
 bool tone_plan_build(const uint32_t count[TONEMAP_COUNT], tone_plan* plan)
 {
     *plan = tone_plan();
@@ -125,7 +102,6 @@ bool tone_plan_build(const uint32_t count[TONEMAP_COUNT], tone_plan* plan)
         max_b             = max_u(max_b, s.n1b);
         len2              = max_u(len2, mag(s.nudge) + s.n2);
     }
-    // A draw that drives in neither phase plays nothing.
     if(max_a + max_b + len2 > 0)
     {
         plan->mid                = max_a + 1u;
@@ -141,6 +117,9 @@ uint8_t tone_plan_code(const tone_plan& plan, unsigned e, tone_phase ph, unsigne
     const tone_seq& s = tone_tables::seq[e];
     if(ph == TONE_PHASE_1)
     {
+        // Every entry's drive pulls end at mid and its S and M pulls end at len, so neighbouring
+        // pixels of different entries drive on the same pulls. This alignment matters for
+        // artifacts at the edges between tones.
         const unsigned a   = mag(s.prefix) + s.n1a;
         const unsigned b   = s.n1b;
         const unsigned len = plan.len[TONE_PHASE_1];

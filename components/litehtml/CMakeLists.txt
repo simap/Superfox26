@@ -67,7 +67,7 @@ idf_component_register(SRCS ${lh_srcs} ${gumbo_srcs}
                        PRIV_INCLUDE_DIRS "${LH}/src" "${LH}/src/gumbo/src")
 
 target_compile_definitions(${COMPONENT_LIB} PUBLIC LITEHTML_REV="${LH_REV}")
-# Upstream code has many warnings under IDF's -Werror=all set; keep them visible but not fatal.
+# Upstream code has many warnings under IDF's -Werror=all set. Keep them visible but not fatal.
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-error -Wno-unused-variable -Wno-unused-but-set-variable)
 target_compile_options(${COMPONENT_LIB} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>)
 target_compile_options(${COMPONENT_LIB} PRIVATE $<$<COMPILE_LANGUAGE:C>:-std=gnu99>)

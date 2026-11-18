@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="-58.5 -23.75 473.5 473.5" role="img" aria-label="Superfox26">
-  <!-- The X and the ring are the Supercon logo, https://hackaday.io/superconference/img/logo.svg -->
+  <!-- The X and the ring derive from the Hackaday Supercon graphic, https://hackaday.io/superconference/img/logo.svg -->
   <!-- The paper disc keeps the X and the digits readable on a dark background. -->
   <circle cx="196.4" cy="196.4" r="176" fill="#f6f3ea"/>
   <g fill="#111">

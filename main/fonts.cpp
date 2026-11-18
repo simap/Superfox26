@@ -1,5 +1,3 @@
-// FreeType faces from the data partition and the glyph cache.
-
 #include "fonts.h"
 
 #include <algorithm>
@@ -10,8 +8,6 @@
 
 static const char* TAG = "fonts";
 
-// Under CFG_BASE, by slot. tools/stage_fonts.py copies them from data/fonts, the output of
-// tools/fontpack, into the partition image.
 static const char* const FACE_FILES[NFACES] = {
     "/fonts/sans.ttf",  "/fonts/sans_b.ttf",  "/fonts/sans_i.ttf",  "/fonts/sans_bi.ttf",
     "/fonts/serif.ttf", "/fonts/serif_b.ttf", "/fonts/serif_i.ttf", "/fonts/serif_bi.ttf",
@@ -26,7 +22,6 @@ bool face_set::init()
         ESP_LOGE(TAG, "FT_Init_FreeType failed");
         return false;
     }
-    // Every other text face falls back to sans regular, so without it there is no text.
     return get(FACE_SANS) != nullptr;
 }
 
@@ -44,10 +39,8 @@ FT_Face face_set::get(int slot)
 {
     if(tried[slot]) return face[slot];
     tried[slot] = true;
-    std::string path = std::string(CFG_BASE) + FACE_FILES[slot];
+    std::string path = std::string(DATA_BASE) + FACE_FILES[slot];
     FT_Face     f    = nullptr;
-    // A stdio stream on the LittleFS file: the TTF stays in flash, FreeType reads tables and glyphs
-    // through fseek and fread as it needs them.
     FT_Error err = FT_New_Face(lib, path.c_str(), 0, &f);
     if(err)
     {
@@ -67,17 +60,8 @@ FT_Face face_set::sized(int slot, int px)
     {
         FT_Set_Pixel_Sizes(f, 0, static_cast<FT_UInt>(px));
         cur_px[slot] = px;
-        size_switches++;
     }
     return f;
-}
-
-void face_set::done()
-{
-    for(int i = 0; i < NFACES; i++)
-        if(face[i]) FT_Done_Face(face[i]);
-    if(lib) FT_Done_FreeType(lib);
-    lib = nullptr;
 }
 
 glyph_cache::entry* glyph_cache::find(uint64_t k)

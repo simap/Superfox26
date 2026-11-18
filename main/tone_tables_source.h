@@ -1,15 +1,10 @@
-// What main/tone_tables.inc is built from, for its generator (host_tests/tone_tables) and for the
-// firmware build that checks it (tone_tables.h).
-//
-// tone_tables_source_hash() is a 64 bit FNV-1a hash of the tone table and of every constant of
-// main/ and components/epd97 that the generated tables depend on: each entry's L, a and b as float
-// bits and its pattern, the paper and black patterns, TONEMAP_VDHR_PCT, TONEMAP_COMPRESS,
-// TONEMAP_GAMMA, TONEMAP_CIE_CHROMA_WEIGHT, the four phase 1 shapes, EPD_PHASE1_DRIVE,
-// EPD_SEQ_W_FRAMES, TONE_NUDGE_FRAMES, TONE_SEQ_MAX and the three push limits. The generator writes
-// the hash it saw into the file, and tone_tables.h compares it with the hash of the headers the
-// firmware compiles. The kernel constants of main/tone_fx_*_internal.h and the code of the
-// generator also shape the tables. A change there is caught by make test in host_tests/tone_tables,
-// which regenerates the file and compares.
+// Fingerprints the inputs to the tone table generator so a stale main/tone_tables.inc is caught at
+// build time.
+// The generated file stores the value as source_hash and tone_tables.h asserts it still matches
+// tone_tables_source_hash().
+// The fingerprint covers k_tonemap and a fixed list of tonemap, phase-shape, sequence and
+// push-limit constants, not every input the generator reads, so a change to a constant outside that
+// list does not trip the assert.
 #pragma once
 
 #include <cstdint>
@@ -37,7 +32,6 @@ struct tone_tables_hash
     {
         u32(__builtin_bit_cast(uint32_t, v));
     }
-    // The characters and the terminating NUL.
     constexpr void str(const char* s)
     {
         for(; *s != '\0'; s++) byte(static_cast<uint8_t>(*s));
@@ -61,7 +55,7 @@ constexpr uint64_t tone_tables_source_hash()
     x.u32(TONEMAP_VDHR_PCT);
     x.f32(TONEMAP_COMPRESS);
     x.f32(TONEMAP_GAMMA);
-    x.f32(TONEMAP_CIE_CHROMA_WEIGHT);
+    x.f32(TONEMAP_CHROMA_WEIGHT);
     x.str(EPD_PHASE1_SHAPE_S);
     x.str(EPD_PHASE1_SHAPE_I);
     x.str(EPD_PHASE1_SHAPE_P);
@@ -76,9 +70,6 @@ constexpr uint64_t tone_tables_source_hash()
     return x.h;
 }
 
-// The slot WHITE of the dither's chunk (tones.cpp) as pass A leaves it for a white pixel: the
-// target in linear light (r, g, b), the squeezed colour (L, A, B, C), the neutral pair, the slot
-// kind and entry, and white_kind, the kind the dither takes when white is not on the paper entry.
 struct tone_white_slot
 {
     q15     r, g, b, L, A, B, C;

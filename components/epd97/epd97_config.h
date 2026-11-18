@@ -1,32 +1,35 @@
 // -----------------------------------------------------------------------------
-// Pin map and tunables for the 9.7" Pervasive iTC panel on an ESP32-S3.
+// Pin map and tunables for the 9.7" Pervasive Displays iTC panel on an ESP32-S3.
 //
-// Everything here is a #ifndef, so any of it can be overridden with a -D
-// compile definition on the epd97 component without touching the file.
+// Every tunable is a #ifndef, so it can be overridden with a -D compile
+// definition on the epd97 component without touching the file. The push
+// limits at the end are not tunables. The pin map, the reset and supply
+// timings and several of the comments here follow the epd97_config.h of the
+// badge team's ITC97 driver (see the head of epd97.c).
 // -----------------------------------------------------------------------------
 #pragma once
 
 // --- Pin map -----------------------------------------------------------------
 #ifndef EPD_PIN_DC
-#define EPD_PIN_DC        10 
+#define EPD_PIN_DC        10
 #endif
 #ifndef EPD_PIN_MOSI
-#define EPD_PIN_MOSI      47   // SDA. Bidirectional: the OTP is read back on it.
+#define EPD_PIN_MOSI      47   // SDA, also the line the OTP is read back on
 #endif
 #ifndef EPD_PIN_SCK
 #define EPD_PIN_SCK       21   // SCL
 #endif
-#ifndef EPD_PIN_CS_M
-#define EPD_PIN_CS_M      13   // CS1, left COG (left half of the panel)
+#ifndef EPD_PIN_CS_L
+#define EPD_PIN_CS_L      13   // CS1, the left controller (left half of the panel)
 #endif
-#ifndef EPD_PIN_CS_S
-#define EPD_PIN_CS_S      3   // CS2, right COG (right half)
+#ifndef EPD_PIN_CS_R
+#define EPD_PIN_CS_R       3   // CS2, the right controller (right half)
 #endif
-#ifndef EPD_PIN_BUSY_M
-#define EPD_PIN_BUSY_M    12
+#ifndef EPD_PIN_BUSY_L
+#define EPD_PIN_BUSY_L    12   // BUSY of the left controller
 #endif
-#ifndef EPD_PIN_BUSY_S
-#define EPD_PIN_BUSY_S    8   // -1 if the right COG BUSY is not wired
+#ifndef EPD_PIN_BUSY_R
+#define EPD_PIN_BUSY_R     8   // BUSY of the right controller, -1 if it is not wired
 #endif
 #ifndef EPD_PIN_RST
 #define EPD_PIN_RST       11
@@ -36,18 +39,18 @@
 #endif
 // Which level on VCC_EN powers the panel.
 //
-// 0 here: the board switches the panel's VCC with an SK2301AA1SHB, a P-channel
-// MOSFET high-side switch driven straight off the GPIO. Pulling the gate LOW
-// turns it on. Set to 1 for a plain active-HIGH enable input.
+// The default is 0. The board switches the panel's VCC with an SK2301AA1SHB,
+// a P-channel MOSFET high-side switch driven straight off the GPIO. Pulling
+// the gate low turns it on. Set 1 for a plain active-high enable input.
 //
 // Getting this backwards does not look like a power problem from the outside.
-// The OTP read still succeeds - it runs during the window where the pin happens
-// to be at the other level - and the refresh only falls over at the DC/DC soft
-// start, as "booster never reported ready in 10 s".
+// The OTP read still succeeds, because it runs while the pin happens to be at
+// the other level. The refresh only fails at the DC/DC soft start, as
+// "booster never reported ready in 10 s".
 //
-// Note there is no pull-up on the gate, so between reset and epd_begin() the
-// pin is high-Z and the switch is undefined. epd_begin() parks it before it
-// drives it, but a 100k to 3V3 on the gate would close that window in hardware.
+// There is no pull-up on the gate, so between reset and epd_begin() the pin is
+// high-Z and the switch is undefined. epd_begin() parks it before it drives
+// it, but a 100k to 3V3 on the gate would close that window in hardware.
 #ifndef EPD_PWR_ACTIVE_HIGH
 #define EPD_PWR_ACTIVE_HIGH 0
 #endif
@@ -56,41 +59,19 @@
 #ifndef EPD_SPI_HOST_NUM
 #define EPD_SPI_HOST_NUM  SPI2_HOST
 #endif
-// Bulk plane data only. Register writes and the OTP readback stay bitbanged:
-// they are a few dozen bytes and the OTP wants a ~50 kHz clock.
-// The PDi reference driver runs the panel at 8 MHz. 20 MHz is PDi's stated
-// maximum for this COG family and the clock yigitabi5444/supercon26-badge-os
+// Bulk plane data only. Register writes and the OTP readback stay bitbanged.
+// They are a few dozen bytes and the OTP wants a ~50 kHz clock. The PDi
+// reference driver runs the panel at 8 MHz. 20 MHz is PDi's stated maximum for
+// this controller family and the clock that yigitabi5444/supercon26-badge-os
 // runs on the B1.
 #ifndef EPD_SPI_HZ
 #define EPD_SPI_HZ        20000000u
 #endif
-// 1: each COG's 40320-byte half of a plane is gathered into an internal DMA
-// buffer and goes out as one transaction. Planes in PSRAM need this, because
-// a COG's half is 60 bytes in every 120-byte line. Two buffers when the heap
-// has room, so the right half is gathered while the left half is on the wire.
-// 0: one 60-byte transaction per COG per line, chip selects swapped every line.
-#ifndef EPD_STAGE_INTERNAL
-#define EPD_STAGE_INTERNAL 1
-#endif
-
-// --- Driver B session --------------------------------------------------------
-// 0x70 [71 36] configures the driver B booster. Without it the panel draws
-// about 2 A during the refresh. A supply cut clears it, so 1 sends it to both
-// COGs after the last reset of every power-up. 0 sends it only in the OTP probe.
-#ifndef EPD_SEND_0x70_EVERY_POWERUP
-#define EPD_SEND_0x70_EVERY_POWERUP 1
-#endif
-
-// 1: refresh_display() runs the waveform. 0: it sends the planes and returns
-// without the waveform. epd_set_run_refresh() changes it at runtime.
-#ifndef EPD_RUN_REFRESH
-#define EPD_RUN_REFRESH 1
-#endif
 
 // --- Timing ------------------------------------------------------------------
-// Reset shape, from the vendor's b_reset(200,20,200,50,5) for the medium COG
-// with margin added. Too short announces itself as cog_initial failing and the
-// OTP reading back corrupt.
+// Reset shape, from the vendor's b_reset(200,20,200,50,5) for the medium
+// controller with margin added. Too short shows as cog_initial failing and the
+// OTP reading back corrupt. All times are in ms.
 #ifndef EPD_T_RST_PWR
 #define EPD_T_RST_PWR    800u   // settle after switching the panel supply on
 #endif
@@ -113,21 +94,23 @@
 #ifndef EPD_T_OTP_SET
 #define EPD_T_OTP_SET    400u
 #endif
-// Minimum time the panel supply stays off between two COG cycles. The booster
-// rails have to bleed down; starting a cycle on top of them stalls the update.
-// 1500 ms measured good. At 800 ms cog_initial fails and the OTP reads corrupt.
+// Minimum time the panel supply stays off between two controller cycles. The booster
+// rails have to bleed down, and a cycle started on top of them stalls the
+// update. 1500 ms is reliable. At 800 ms cog_initial fails and the OTP reads
+// corrupt.
 #ifndef EPD_T_OFF_MIN
 #define EPD_T_OFF_MIN   1500u
 #endif
 #ifndef EPD_T_DISCHARGE
 #define EPD_T_DISCHARGE  300u   // held in reset, supply already cut
 #endif
-// 1: a session close keeps the panel supply on, as the stock MicroPython
-// firmware and yig-os do. The close is the DC/DC soft shutdown, a bounded
-// wait for BUSY, then the COG held in reset. The next open skips the
-// EPD_T_OFF_MIN floor and the EPD_T_RST_PWR settle and starts at the reset.
-// Error paths, epd_sleep(), epd_deep_sleep_prepare(), the OTP dump and the
-// register read still cut the supply. 0: every close cuts the supply.
+// With 1, a session close keeps the panel supply on, as the stock MicroPython
+// firmware and yigitabi5444/supercon26-badge-os do. The close is the DC/DC
+// soft shutdown, a bounded wait for BUSY, then the controller held in reset. The
+// next open skips the EPD_T_OFF_MIN floor and the EPD_T_RST_PWR settle and
+// starts at the reset. Error paths, epd_sleep() and epd_deep_sleep_prepare()
+// still cut the supply. With 0, every close cuts the supply. The browser26
+// build sets 1 in the top level CMakeLists.txt.
 #ifndef EPD_KEEP_SUPPLY
 #define EPD_KEEP_SUPPLY    0
 #endif
@@ -139,15 +122,18 @@
 #ifndef EPD_T_PRE_UPD
 #define EPD_T_PRE_UPD    660u   // settle in front of the update registers
 #endif
+// Wait after the last 0xA7 of the update registers, before the soft start.
+// The register table stores it in units of 10 ms, so it is a multiple of 10
+// and at most 1270.
 #ifndef EPD_T_PRE_SS
-#define EPD_T_PRE_SS      50u   // after the last 0xA7, before the soft start
+#define EPD_T_PRE_SS     500u
 #endif
-// Quick profile for driver B fast and tone sessions, from yig-os
-// (DEVICE_INFO.md, 348 ms open): reset 2/4/20 ms, no settle in front of the
-// registers, 0x05 7D 50 ms, 0x05 00 1 ms, load strobes 2/10 ms, 0xB0 10 ms
-// after the last strobe, and the oscillator register 0x03 00 11 after the
-// first strobe for 23.7 ms frames. The slow OTP refresh keeps the vendor
-// waits above. yig-os never cuts the supply. EPD_KEEP_SUPPLY does the same.
+// Quick profile for driver B tone sessions, the waits
+// yigitabi5444/supercon26-badge-os uses to open a session in 348 ms: reset
+// 2/4/20 ms, a 5 ms settle in front of the registers, 0x05 7D 50 ms, 0x05 00
+// 1 ms, load strobes 2/10 ms, and the oscillator register 0x03 00 11 after the
+// first strobe for 23.7 ms frames. The slow refresh keeps the vendor waits
+// above. The push limits below depend on the 23.7 ms frame, so this is 1.
 #ifndef EPD_QUICK_OPEN
 #define EPD_QUICK_OPEN     1
 #endif
@@ -163,44 +149,21 @@
 #ifndef EPD_TQ_PRE_UPD
 #define EPD_TQ_PRE_UPD     5u
 #endif
-// A refresh on the panel's own waveform is ~51 s on the 084 and ~34 s on the
-// B1, so the ceiling has to be generous.
+// A refresh on the panel's own waveform takes about 51 s on the 084 and about
+// 35 s on the B1, so the ceiling has to be generous.
 #ifndef EPD_IDLE_WAIT_MS
 #define EPD_IDLE_WAIT_MS 180000u
 #endif
-// How long to keep watching for BUSY dropping again after the refresh reports
-// done - some panels run a second waveform pass.
+// How long to keep watching for BUSY to drop again after the refresh reports
+// done. Some panels run the waveform a second time.
 #ifndef EPD_SECOND_PASS_MS
 #define EPD_SECOND_PASS_MS 1000u
 #endif
 
-// --- Session -----------------------------------------------------------------
-// With the session held open across images the COG keeps its rails, its cached
-// OTP and its latched waveform, so an image costs its plane data plus the
-// refresh instead of a full power-up. Bounded rather than open-ended.
-#ifndef EPD_SESSION_IMAGES
-#define EPD_SESSION_IMAGES 20
-#endif
-
-// Whether a fast refresh may drive the third colour.
-//
-// 0, because the short waveform cannot make a good red. On the 084 the red
-// table is barely reached in the time the short table runs at all; on the B1
-// the refresh is a fixed ~1 s whatever the table asks for, and red is the slow
-// pigment - it comes up pale and gets worse with every frame that half-drives
-// it. Red is a slow-refresh colour on this film.
-//
-// With this off, a fast refresh draws red content as ink rather than dropping
-// it, so the picture still reads - it is just monochrome until the next slow
-// refresh. The red-clearing stages stay in play either way: a fast frame that
-// follows a red one still spends its groups pulling the red pigment back out.
-#ifndef EPD_FAST_ALLOW_RED
-#define EPD_FAST_ALLOW_RED 0
-#endif
-
-// --- Fast refresh, driver 8 (E2969JS084) -------------------------------------
-// Waveform bank on 0x45. On the 084 this picks between the OTP's temperature
-// bands; the 9.7" default is 0x86, the 12" 0x8C.
+// --- Waveform bank -----------------------------------------------------------
+// The value of the second 0x45 write of the update registers. On the 084 it
+// picks between the OTP's temperature bands. The 9.7" default is 0x86, the 12"
+// one 0x8C.
 #ifndef EPD_REG45_084
 #define EPD_REG45_084 0x86
 #endif
@@ -208,137 +171,52 @@
 #define EPD_REG45_B1  0x84
 #endif
 
-// The red stages of the 180-byte table. Measured with a camera against the
-// paper's own white balance; see README.
-#ifndef EPD_8_RED_TABLE
-#define EPD_8_RED_TABLE 2         // (red bit, bw bit) -> table index
-#endif
-#ifndef EPD_8_PAP_TABLE
-#define EPD_8_PAP_TABLE 0
-#endif
-#ifndef EPD_8_RED_LEVEL
-#define EPD_8_RED_LEVEL 0xFF      // VDHR in all four phases - the REDUCED rail
-#endif
-#ifndef EPD_8_RED_GROUPS
-#define EPD_8_RED_GROUPS 6
-#endif
-#ifndef EPD_8_RED_REP
-#define EPD_8_RED_REP 1
-#endif
-#ifndef EPD_8_RED_ERASE_GROUPS
-#define EPD_8_RED_ERASE_GROUPS 1
-#endif
-#ifndef EPD_8_RED_ERASE_REP
-#define EPD_8_RED_ERASE_REP 1
-#endif
-// A frame with no red that follows one with red: every group goes to erase,
-// because there is nothing to make, only red to get rid of.
-#ifndef EPD_8_RED_CLEAR_GROUPS
-#define EPD_8_RED_CLEAR_GROUPS 7
-#endif
-#ifndef EPD_8_RED_CLEAR_REP
-#define EPD_8_RED_CLEAR_REP 1
-#endif
-#ifndef EPD_8_RED_FRAMES
-#define EPD_8_RED_FRAMES 0x66     // six frames a phase, ~190 ms
-#endif
-
-// --- Fast refresh, driver B (E2969JS0B1) -------------------------------------
-// A different table format entirely: 5 tables x 10 groups x 8 bytes.
-#ifndef EPD_B_INK_TABLE
-#define EPD_B_INK_TABLE 1
-#endif
-#ifndef EPD_B_PAP_TABLE
-#define EPD_B_PAP_TABLE 0
-#endif
-#ifndef EPD_B_RED_TABLE
-#define EPD_B_RED_TABLE 2
-#endif
-#ifndef EPD_B_SHAKE_GROUPS
-#define EPD_B_SHAKE_GROUPS 1
-#endif
-#ifndef EPD_B_SHAKE_F
-#define EPD_B_SHAKE_F 10
-#endif
-#ifndef EPD_B_SHAKE_REP
-#define EPD_B_SHAKE_REP 3
-#endif
-#ifndef EPD_B_INK_SHAKE
-#define EPD_B_INK_SHAKE 0x66
-#endif
-#ifndef EPD_B_PAP_SHAKE
-#define EPD_B_PAP_SHAKE 0x99
-#endif
-#ifndef EPD_B_RED_SHAKE
-#define EPD_B_RED_SHAKE 0xEE
-#endif
-#ifndef EPD_B_DRIVE_GROUPS
-#define EPD_B_DRIVE_GROUPS 4
-#endif
-#ifndef EPD_B_DRIVE_ON
-#define EPD_B_DRIVE_ON 45
-#endif
-#ifndef EPD_B_DRIVE_OFF
-#define EPD_B_DRIVE_OFF 1
-#endif
-#ifndef EPD_B_DRIVE_REP
-#define EPD_B_DRIVE_REP 3
-#endif
-#ifndef EPD_B_INK_LEVEL
-#define EPD_B_INK_LEVEL 0x44      // VDH darkens
-#endif
-#ifndef EPD_B_WHITE_LEVEL
-#define EPD_B_WHITE_LEVEL 0xAA    // VDL on all four phases
-#endif
-#ifndef EPD_B_PAP_ON
-#define EPD_B_PAP_ON 45
-#endif
-#ifndef EPD_B_PAP_OFF
-#define EPD_B_PAP_OFF 3
-#endif
-#ifndef EPD_B_RED_LEVEL
-#define EPD_B_RED_LEVEL 0xFF
-#endif
-#ifndef EPD_B_RED_GROUPS
-#define EPD_B_RED_GROUPS 9
-#endif
-#ifndef EPD_B_RED_WHITE_GROUPS
-#define EPD_B_RED_WHITE_GROUPS 1  // clear before setting
-#endif
-#ifndef EPD_B_RED_WHITE_LEVEL
-#define EPD_B_RED_WHITE_LEVEL 0xAA
-#endif
-#ifndef EPD_B_PH2
-#define EPD_B_PH2 1
-#endif
-// On driver B the refresh runs for a fixed ~1070 ms whatever the table asks
-// for, so a single pass cannot carry enough dose to clear the previous frame.
-// Three pulls of the already-latched waveform, no plane data resent.
-#ifndef EPD_B_REFRESH_PULLS
-#define EPD_B_REFRESH_PULLS 3
-#endif
-// Ceiling for epd_set_fast_pulls(). Every pull repeats the table's drive.
-#ifndef EPD_B_PULLS_MAX
-#define EPD_B_PULLS_MAX 10
-#endif
-
-// --- Tone pass, driver B -----------------------------------------------------
-// Frame period of a driver B pull, in microseconds. yig-os measured 23.7 ms
-// per frame. Used for the pull length logged
-// at epd_tone_open().
+// --- Tone session, driver B --------------------------------------------------
+// Frame period of a driver B pull with the quick profile's oscillator setting,
+// in microseconds. yigitabi5444/supercon26-badge-os measured 23.7 ms per
+// frame. It sets the push limits below and the pull length logged at
+// epd_tone_open_table(). A larger value only tightens the limits, which
+// host_tests/tone_tables uses to test that the generator refuses a table. A
+// smaller value would loosen them, so it is refused below.
 #ifndef EPD_B_FRAME_US
 #define EPD_B_FRAME_US 23700u
 #endif
+// BUSY ceiling for one tone pull, in ms. A phase 1 pull is 17 frames, 403 ms
+// at EPD_B_FRAME_US. A seq pull is 10 frames, 237 ms. A pull that runs past
+// this closes the session and cuts the supply.
+#ifndef EPD_TONE_BUSY_MS
+#define EPD_TONE_BUSY_MS 5000u
+#endif
+
 // --- Push limit, never exceeded ----------------------------------------------
-// A pixel is never driven on one rail longer than the stock OTP waveform
-// drives it. A run is the frames on one rail until the other rail drives
-// that pixel, ground frames between drives not counted. Stock set 6
-// (room temperature) counted that way: black's tail 66
-// VDH, red's paper push 82 VDL, red's 30 VDHR, at the stock 28.8 ms frame
-// inferred from the measured 35.4 s refresh. The limits in our frames are
-// the same times at EPD_B_FRAME_US. The tone planner has to keep every
-// pattern under them, phase 1, pad and nudge included. The driver's tone pass
-// does not check them.
+// A hardware safety rule. No pixel is driven on one rail longer than the
+// panel's own stock OTP waveform drives a pixel on that rail. The stock
+// waveform is the only drive known to be safe for this film, so no tone
+// pattern drives harder than it.
+//
+// A run is the frames a pixel is driven on one rail, ground frames between
+// drives not counted. VDH and VDHR drive the same way, so neither ends the
+// other's run. A VDL frame ends a VDH, a VDHR and a positive run. A VDH or
+// VDHR frame ends a VDL run. The positive run, VDH and VDHR frames together
+// until a VDL frame, is held to the VDH limit. Runs continue across pulls and
+// across draws.
+//
+// The stock waveform the B1 runs at room temperature (set 6 of its OTP),
+// counted that way, has its longest runs at 66 VDH frames (the end of the
+// black table), 82 VDL frames (the paper push of the red table) and 30 VDHR
+// frames (the red table). Its frame is 28.8 ms, from the measured 35.4 s of
+// the whole refresh. The limits below are the same times in frames of
+// EPD_B_FRAME_US.
+//
+// What keeps a draw within them is the tone planner, main/tone_plan.h. The
+// generator of main/tone_tables.inc refuses a pattern that breaks a limit,
+// and tone_plan_init() checks the expanded patterns at boot. The driver does
+// not check what a pull drives (see the tone section of epd97.h).
+//
+// The limits are frame counts, so they hold only while the frame is
+// EPD_B_FRAME_US. A tone session gets that frame from the oscillator write of
+// the quick profile. Without it the B1 runs frames of about 29 ms, and the
+// same counts last longer than the stock waveform's runs.
 #define EPD_STOCK_FRAME_US   28800u
 #define EPD_STOCK_PUSH_VDH   66u
 #define EPD_STOCK_PUSH_VDL   82u
@@ -346,24 +224,22 @@
 #define EPD_PUSH_MAX_VDH   ((EPD_STOCK_PUSH_VDH * EPD_STOCK_FRAME_US) / EPD_B_FRAME_US)   // 80
 #define EPD_PUSH_MAX_VDL   ((EPD_STOCK_PUSH_VDL * EPD_STOCK_FRAME_US) / EPD_B_FRAME_US)   // 99
 #define EPD_PUSH_MAX_VDHR  ((EPD_STOCK_PUSH_VDHR * EPD_STOCK_FRAME_US) / EPD_B_FRAME_US)  // 36
-// BUSY ceiling for one tone pull, in ms. The longest cal pull is 35 frames,
-// 830 ms at EPD_B_FRAME_US. A seq pull is 10 frames, 237 ms. A pull that runs
-// past this closes the session and cuts the supply.
-#ifndef EPD_TONE_BUSY_MS
-#define EPD_TONE_BUSY_MS 5000u
-#endif
 
-// --- OTP dump ----------------------------------------------------------------
-// Bytes epd_otp_dump() clocks out after the read opener. The probe needs 88.
-// The rest shows whether the stream continues past the block. At ~50 kHz a
-// byte costs about 180 us, so 4096 bytes hold the CPU for about 0.75 s.
-#ifndef EPD_OTP_DUMP_MAX
-#define EPD_OTP_DUMP_MAX 4096
+// These guards fail the build if the push limits are loosened or if a tone
+// session's frame is not the 23.7 ms frame the limits are counted in.
+#if !EPD_QUICK_OPEN
+#error "EPD_PUSH_MAX_* are frames of 23.7 ms, which only the quick profile's oscillator write gives a tone session"
+#endif
+#if EPD_B_FRAME_US < 23700u
+#error "an EPD_B_FRAME_US below the measured 23.7 ms frame loosens the push limits"
+#endif
+#if EPD_PUSH_MAX_VDH > 80u || EPD_PUSH_MAX_VDL > 99u || EPD_PUSH_MAX_VDHR > 36u
+#error "the push limits are never loosened"
 #endif
 
 // --- Logging -----------------------------------------------------------------
 #ifndef EPD_LOG
-#define EPD_LOG 1        // one line per phase
+#define EPD_LOG 1
 #endif
 #ifndef EPD_LOG_VERBOSE
 #define EPD_LOG_VERBOSE 0

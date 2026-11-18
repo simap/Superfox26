@@ -3,7 +3,7 @@
 #   make fit    builds and runs fit, which prints the curve constants of
 #               main/tone_fx_srgb_internal.h and the exact table of ../model/tone_fx_srgb_model.cpp.
 # The kernel runs as its stand in, ../model/tone_fx_srgb_model.cpp. The vector form's instruction
-# sequence runs on the model in pie_emu.h.
+# sequence runs on the model in ../model/pie_emu.h.
 
 ROOT  := ../../..
 MODEL := ../model
@@ -13,7 +13,7 @@ CXX      := clang++
 CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -fno-exceptions -fno-rtti -I$(ROOT)/main -I$(MODEL)
 
 SRCS := srgb_test.cpp $(MODEL)/tone_fx_srgb_model.cpp
-DEPS := $(SRCS) pie_emu.h $(ROOT)/main/tone_fx_srgb.h $(ROOT)/main/tone_fx_srgb_internal.h $(ROOT)/main/tone_fx.h \
+DEPS := $(SRCS) $(MODEL)/pie_emu.h $(ROOT)/main/tone_fx_srgb.h $(ROOT)/main/tone_fx_srgb_internal.h $(ROOT)/main/tone_fx.h \
         $(MODEL)/tone_fx_model.h
 
 .PHONY: test fit clean

@@ -8,12 +8,57 @@
 
 static const page_entry PAGE_URLS[] = {
 
-    {"http://app.bhencke.com/had26/1.jpg", 0, 0},
-    {"http://app.bhencke.com/had26/3.jpg", 0, 0},
-    {"http://app.bhencke.com/had26/5.jpg", 0, 0},
-    {"http://app.bhencke.com/had26/6.jpg", 0, 0},
-    {"http://app.bhencke.com/had26/7.jpg", 0, 0},
-    {"http://app.bhencke.com/had26/11.jpg", 0, 0},
+    // Plants, leaves and fruit
+    {"http://app.bhencke.com/had26/strawberry.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/ice-plant-closeup.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/japanese-maple-autumn.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/autumn-leaves.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/hens-and-chicks-succulent.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/ice-plant-hillside.jpg", 0, 0},
+
+    // Flowers
+    {"http://app.bhencke.com/had26/red-rose-raindrops.jpg", 0, 0},
+    // {"http://app.bhencke.com/had26/pink-cyclamen.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/orange-petals-macro.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/red-flower-bud.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/blanket-flower-dewdrops.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/gazania.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/red-carnation-petal.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/sunflower-petals-sky.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/magenta-viola.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/peach-rose-dewdrops.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/pink-white-carnation.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/pink-ranunculus.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/pink-oxalis.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/barberry-blossoms.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/hanging-begonia-basket.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/pink-tea-tree-flower.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/pink-rockrose.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/red-sunflower.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/red-rose-buds.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/african-daisy-macro.jpg", 0, 0},
+
+    // Critters
+    {"http://app.bhencke.com/had26/sea-stars-anemones.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/sea-nettle-jellyfish.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/blue-damselfly.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/honeybee.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/striped-jellyfish.jpg", 0, 0},
+
+    // Sunsets and night sky
+    {"http://app.bhencke.com/had26/golden-ocean-sunset.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/sepia-ocean-sunset.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/natural-bridges-sunset.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/aurora.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/milky-way.jpg", 0, 0},
+
+    // Landscapes and cities
+    {"http://app.bhencke.com/had26/seattle.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/golden-gate-bridge.jpg", 0, 0},
+    {"http://app.bhencke.com/had26/glacier.jpg", 0, 0},
+
+    // LED
+    {"http://app.bhencke.com/had26/red-smd-led.jpg", 0, 0},
 
 
     // {"https://text.npr.org/", 0, 0},

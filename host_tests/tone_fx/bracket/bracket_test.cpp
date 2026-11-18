@@ -3,13 +3,14 @@
 //
 // 1. The neutral list of the file against the list the float dither builds.
 // 2. tone_fx_bracket, as its stand in ../model/tone_fx_bracket_model.cpp, on every int16 value of L
-//    against bracket() of tones.cpp in float on L / 32768. Every difference is listed with its L.
+//    against the float bracket() of main/tones_float_ref.inc on L / 32768. Every difference is listed
+//    with its L.
 // 3. The instruction sequence of the vector kernel on a model of the vector instructions
-//    (pie_emu.h) against the stand in on every int16 value, with and without an 8 value tail.
+//    (../model/pie_emu.h) against the stand in on every int16 value, with and without an 8 value tail.
 // Exit status 1 when any check differs.
 //
-// The reference below is the neutral list and bracket() of main/tones.cpp, copied: tones.cpp needs
-// the ESP-IDF and panel headers.
+// The reference below is the neutral list and bracket() of main/tones_float_ref.inc, copied: that
+// file builds only inside tones.cpp, which needs the ESP-IDF and panel headers.
 
 #include <algorithm>
 #include <cstdio>
@@ -22,7 +23,7 @@
 
 namespace
 {
-// From tones.cpp.
+// From main/tones_float_ref.inc.
 const float ON_ENTRY_L = 0.002f;
 uint8_t     s_neutrals[TONEMAP_COUNT];
 float       s_neutral_l[TONEMAP_COUNT];

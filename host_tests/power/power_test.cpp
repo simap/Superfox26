@@ -221,6 +221,36 @@ int main()
         check(both == 0, "judge: no rail from -100 to 6000 mV gives USB and low together");
     }
 
+    struct held_case
+    {
+        const char* name;
+        uint64_t    low, released, want;
+    };
+    const held_case HELD_CASES[] = {
+        // A press made while awake stays armed, so it wakes the chip at once.
+        {"16 low, released before", P16, P15 | P16, 0},
+        // Held since the button task started: the wake press held through the boot, or a stuck button.
+        {"16 low, never released", P16, P15, P16},
+        {"15+16 low, 15 released", P15 | P16, P15, P16},
+        {"15+16 low, none released", P15 | P16, 0, P15 | P16},
+        {"none low", 0, 0, 0},
+        // Pins that are not wake pins do not count.
+        {"3 low, never released", P3, 0, 0},
+    };
+    for(const held_case& c : HELD_CASES)
+    {
+        uint64_t got = power_held_pins(c.low, c.released);
+        snprintf(what, sizeof what, "held pins, %s: 0x%llx (got 0x%llx)", c.name, static_cast<unsigned long long>(c.want),
+                 static_cast<unsigned long long>(got));
+        check(got == c.want, what);
+    }
+
+    // A User B press at the start of a timed sleep after a page: it stays armed, so it wakes the badge.
+    {
+        power_arm got = power_sleep_arm(60, power_held_pins(P16, P15 | P16));
+        check(got.pins == (P15 | P16) && got.seconds == 60, "timed sleep, User B pressed while awake: both pins armed");
+    }
+
     for(const arm_case& c : ARM_CASES)
     {
         power_arm got = power_sleep_arm(c.seconds, c.low);

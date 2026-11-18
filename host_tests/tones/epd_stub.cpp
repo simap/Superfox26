@@ -18,7 +18,7 @@ namespace
 uint8_t          s_bw[EPD_PLANE_BYTES], s_red[EPD_PLANE_BYTES];   // the framebuffer planes
 uint8_t          s_reg_bw[EPD_PLANE_BYTES], s_reg_red[EPD_PLANE_BYTES]; // the COG's plane registers
 bool             s_open  = false;
-epd_tone_table_t s_table = EPD_TONE_TABLE_CAL;
+epd_tone_table_t s_table = EPD_TONE_TABLE_NONE;
 uint8_t          s_unit  = 0;
 unsigned         s_k     = 0; // pulls played in the open session
 
@@ -41,6 +41,14 @@ void pull_once()
     g.pulls[ph]++;
     s_k++;
     std::swap_ranges(s_reg_bw, s_reg_bw + EPD_PLANE_BYTES, s_reg_red);
+}
+
+// The tone session close of the driver's epd_sleep(). The stub has no supply.
+void tone_close()
+{
+    if(!s_open) return;
+    s_open = false;
+    g_stub.closes++;
 }
 } // namespace
 
@@ -104,17 +112,9 @@ esp_err_t epd_tone_pass(unsigned pulls, uint32_t* panel_ms_total)
     return epd_tone_pull(pulls, true, panel_ms_total);
 }
 
-void epd_tone_close(void)
-{
-    if(!s_open) return;
-    s_open = false;
-    g_stub.closes++;
-}
-
-// The driver's epd_sleep() closes the session and cuts the supply. The stub has no supply.
 void epd_sleep(void)
 {
-    epd_tone_close();
+    tone_close();
 }
 
 bool epd_tone_is_open(void)
@@ -124,7 +124,7 @@ bool epd_tone_is_open(void)
 
 epd_tone_table_t epd_tone_table(void)
 {
-    return s_open ? s_table : EPD_TONE_TABLE_CAL;
+    return s_open ? s_table : EPD_TONE_TABLE_NONE;
 }
 
 uint8_t epd_tone_unit(void)

@@ -1,11 +1,8 @@
-// PNG (libpng, row by row) and JPEG (libjpeg-turbo, scale_denom then box filter) decoders. The compressed
-// bytes are in memory. Decoding happens at the drawn size, so a decoded copy is never larger than what
-// is blitted.
-
 #include "image.h"
 #include "downsample.h"
-#include "image_legacy.h"
+#include "image_gif_bmp.h"
 #include "image_webp.h"
+#include "util.h"
 
 #include <png.h>
 #include <jpeglib.h>
@@ -45,9 +42,10 @@ bool decode_png(const std::string& data, gimage& img, int dw, int dh)
         if(p) png_destroy_read_struct(&p, nullptr, nullptr);
         return false;
     }
-    mem_reader           src{&data, 0};
-    std::vector<uint8_t> row, full, g, a;
-    downsampler          ds;
+    mem_reader             src{&data, 0};
+    std::vector<uint8_t>   row, full, g, a;
+    std::vector<png_bytep> rows;
+    downsampler            ds;
     if(setjmp(png_jmpbuf(p)))
     {
         png_destroy_read_struct(&p, &info, nullptr);
@@ -60,7 +58,7 @@ bool decode_png(const std::string& data, gimage& img, int dw, int dh)
     png_set_expand(p);
     png_set_strip_16(p);
     png_set_gray_to_rgb(p);
-    png_set_filler(p, 0xFF, PNG_FILLER_AFTER); // RGBA, alpha 255 where the file has none
+    png_set_filler(p, 0xFF, PNG_FILLER_AFTER);
     int passes = png_set_interlace_handling(p);
     png_read_update_info(p, info);
     int sw = static_cast<int>(png_get_image_width(p, info)), sh = static_cast<int>(png_get_image_height(p, info));
@@ -85,9 +83,8 @@ bool decode_png(const std::string& data, gimage& img, int dw, int dh)
         }
     } else
     {
-        // interlaced: needs the whole image at natural size (transient)
         full.resize(static_cast<size_t>(sw) * 4 * sh);
-        std::vector<png_bytep> rows(sh);
+        rows.resize(sh);
         for(int y = 0; y < sh; y++) rows[y] = &full[static_cast<size_t>(y) * sw * 4];
         png_read_image(p, rows.data());
         for(int y = 0; y < sh; y++) push_rgba(y, rows[y]);
@@ -131,7 +128,6 @@ bool decode_jpeg(const std::string& data, gimage& img, int dw, int dh)
     jpeg_create_decompress(&cinfo);
     jpeg_mem_src(&cinfo, reinterpret_cast<const unsigned char*>(data.data()), static_cast<unsigned long>(data.size()));
     jpeg_read_header(&cinfo, TRUE);
-    // largest 1/denom that still gives at least dw x dh; the downsampler does the rest
     int nw = static_cast<int>(cinfo.image_width), nh = static_cast<int>(cinfo.image_height);
     int denom = 1;
     while(denom < 8 && (nw + 2 * denom - 1) / (2 * denom) >= dw && (nh + 2 * denom - 1) / (2 * denom) >= dh)
@@ -155,13 +151,10 @@ bool decode_jpeg(const std::string& data, gimage& img, int dw, int dh)
     jpeg_destroy_decompress(&cinfo);
     return true;
 }
-} // namespace
+}
 
-static uint32_t le16(const unsigned char* p) { return p[0] | (p[1] << 8); }
 static uint32_t le24(const unsigned char* p) { return p[0] | (p[1] << 8) | (p[2] << 16); }
 
-// Canvas size from the first WebP chunk, so a prefix of the file is enough. WebPGetInfo would need
-// the whole VP8X chunk list, which fails on a prefix when an ICC or alpha chunk comes first.
 static bool webp_header_size(const unsigned char* u, size_t n, int& w, int& h)
 {
     if(n < 30) return false;
@@ -173,7 +166,6 @@ static bool webp_header_size(const unsigned char* u, size_t n, int& w, int& h)
     }
     if(!memcmp(u + 12, "VP8 ", 4))
     {
-        // key frame: 3-byte frame tag at 20, start code 9d 01 2a at 23, then 14-bit width and height
         if(u[23] != 0x9d || u[24] != 0x01 || u[25] != 0x2a) return false;
         w = static_cast<int>(le16(u + 26) & 0x3fff);
         h = static_cast<int>(le16(u + 28) & 0x3fff);
@@ -230,7 +222,7 @@ int sniff_size(const std::string& data, int& w, int& h, bool* incomplete)
             }
             o += 2 + be16(u + o + 2);
         }
-        if(incomplete) *incomplete = true; // the frame header lies past the end of data
+        if(incomplete) *incomplete = true;
         return IMG_NONE;
     }
     if(n > 10 && !memcmp(u, "GIF8", 4))
@@ -249,9 +241,6 @@ int sniff_size(const std::string& data, int& w, int& h, bool* incomplete)
     return IMG_NONE;
 }
 
-// libwebp keeps the whole image at its natural size while decoding: measured 6.4 bytes per natural
-// pixel for lossy with alpha and 4.2 for lossless, plus the output. A decode that would not leave
-// 1 MB of PSRAM is skipped, since an allocation failure aborts the firmware.
 static bool webp_fits(const std::string& data, int dw, int dh)
 {
     int nw = 0, nh = 0;

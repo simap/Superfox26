@@ -7,10 +7,10 @@ idf_component_register(SRCS "main.cpp" "browser.cpp" "console.cpp" "config.cpp" 
                             "url.cpp" "fonts.cpp" "image.cpp" "render.cpp" "leds.cpp" "buttons.cpp" "sizecache.cpp"
                             "rtcstate.cpp" "tabs.cpp" "tones.cpp" "tone_plan.cpp" "power.cpp"
                             ${tone_fx_srcs}
-                            "image_legacy.cpp"
+                            "image_gif_bmp.cpp"
                             "image_webp.cpp"
                        INCLUDE_DIRS "."
-                       EMBED_FILES "../logo/panel_32.png" "../logo/panel_100.png"
+                       EMBED_FILES "../logo/panel_32.png" "../logo/panel_200.png"
                        PRIV_REQUIRES litehtml epd97 esp_psram esp_partition esp_timer heap esp_app_format
                                      nvs_flash esp_wifi esp_netif esp_event esp_http_client esp-tls
                                      esp_driver_usb_serial_jtag esp_driver_gpio esp_adc vfs joltwallet__littlefs
@@ -19,21 +19,10 @@ idf_component_register(SRCS "main.cpp" "browser.cpp" "console.cpp" "config.cpp" 
                                      webp)
 
 target_compile_options(${COMPONENT_LIB} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>)
-# The dither runs per pixel over the whole panel. At the project's -Os its helpers stay out of line
-# and the row loop spills around every call. The kernels take the same level, so the bench compares
-# the float and the fixed point code at one optimisation level.
+# The dither is per pixel code over the whole panel. At the project's -Os its helpers stay out of
+# line and the row loop spills registers around every call. The tone benchmark (probes/bench)
+# builds these files with the same flags.
 set_source_files_properties(tones.cpp ${tone_fx_srcs} PROPERTIES COMPILE_OPTIONS "-O2")
-# tools/idf.sh -DTONES_BENCH=1 build: the firmware times the tone code at boot (tones_bench.inc) and
-# stops before the browser starts. It also builds the float dither of
-# tones_float_ref.inc that the bench times against. -DTONES_BENCH=0 turns it off again, the value
-# stays in the cache.
-if(TONES_BENCH)
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE TONES_BENCH=1)
-    # -DTONES_BENCH_ALL=1 adds the kernel rows and the float frames without the cache.
-    if(TONES_BENCH_ALL)
-        target_compile_definitions(${COMPONENT_LIB} PRIVATE TONES_BENCH_ALL=1)
-    endif()
-endif()
 
 # The data partition image: a LittleFS volume built from build/fsroot, which holds the font pack
 # tools/stage_fonts.py copies from data/fonts (the output of tools/fontpack). B26_FONT_DIR in the

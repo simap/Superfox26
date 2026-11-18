@@ -14,4 +14,8 @@ set_source_files_properties("${fw}/tones.cpp" ${tone_fx_srcs} PROPERTIES COMPILE
 # the benchmark and the float dither, and the probe runs tones_init() alone.
 if(NOT DEFINED TONES_BENCH OR TONES_BENCH)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE TONES_BENCH=1)
+    # -DTONES_BENCH_ALL=1 adds the kernel rows and the float frames without the cache.
+    if(TONES_BENCH_ALL)
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE TONES_BENCH_ALL=1)
+    endif()
 endif()

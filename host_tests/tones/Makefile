@@ -3,14 +3,17 @@
 # tones.cpp and tone_plan.cpp build unchanged against the ESP-IDF stub headers in stub/ and the
 # firmware's components/epd97 headers. epd_stub.cpp is a model of the epd97 calls tones_draw()
 # makes: it plays no panel and checks every pull against the plan. FreeType from pkg-config draws
-# the text test. FREETYPE=0 builds without it. IMAGE picks the images.
+# the text test. FREETYPE=0 builds without it. The tests generate their own images. IMAGE adds
+# 960 px wide 8-bit gray plus alpha PNGs as more tests, none by default. TONES_FONT is the face of
+# the text test, the sans face of the font pack by default.
 
 ROOT     := ../..
 MODEL    := ../tone_fx/model
 OUT      := out
-IMAGES   := $(ROOT)/../images
-IMAGE    ?= $(IMAGES)/01.png
+IMAGE    ?=
 FREETYPE ?= $(shell pkg-config --exists freetype2 && echo 1 || echo 0)
+TONES_FONT ?= $(ROOT)/data/fonts/sans.ttf
+export TONES_FONT
 
 CC       := clang
 CXX      := clang++
@@ -36,50 +39,7 @@ HDRS := $(ROOT)/main/tones.h $(ROOT)/main/tones_float_ref.inc $(ROOT)/main/tonem
         $(foreach k,$(FX),$(ROOT)/main/tone_fx_$(k).h $(ROOT)/main/tone_fx_$(k)_internal.h) \
         $(wildcard $(ROOT)/components/epd97/*.h) $(wildcard stub/*.h) epd_stub.h lodepng.h
 
-# make sweep: one build per config with the dither settings of main/tones.cpp overridden, each run
-# into out/sweep/<config>/, then the side by side comparison. CFG_<config> holds the overrides.
-SWEEP := $(OUT)/sweep
-# Every config sets all six: kernel, noise in L, noise as a share of the gap between the two
-# nearest entries, blue (1) or white (0) noise, hybrid distance, share of chroma error kept.
-CFG = -DTONES_DITHER_KERNEL=KERNEL_$(1) -DTONES_DITHER_NOISE_L=$(2)f -DTONES_DITHER_NOISE_REL=$(3)f \
-      -DTONES_DITHER_NOISE_BLUE=$(4) -DTONES_DITHER_HYBRID_NEAR=$(5)f -DTONES_ERR_KEEP_C=$(6)f
-CFG_atkinson                := $(call CFG,ATKINSON,0.0,0.0,1,0.0,1.0)
-CFG_floyd_steinberg         := $(call CFG,FLOYD_STEINBERG,0.0,0.0,1,0.0,1.0)
-CFG_jjn                     := $(call CFG,JJN,0.0,0.0,1,0.0,1.0)
-CFG_stucki                  := $(call CFG,STUCKI,0.0,0.0,1,0.0,1.0)
-CFG_atkinson_blue_02        := $(call CFG,ATKINSON,0.02,0.0,1,0.0,1.0)
-CFG_floyd_st_blue_02        := $(call CFG,FLOYD_STEINBERG,0.02,0.0,1,0.0,1.0)
-CFG_jjn_blue_02             := $(call CFG,JJN,0.02,0.0,1,0.0,1.0)
-CFG_stucki_blue_02          := $(call CFG,STUCKI,0.02,0.0,1,0.0,1.0)
-CFG_stucki_white_02         := $(call CFG,STUCKI,0.02,0.0,0,0.0,1.0)
-CFG_stucki_blue_04          := $(call CFG,STUCKI,0.04,0.0,1,0.0,1.0)
-CFG_stucki_blue_02_hyb01    := $(call CFG,STUCKI,0.02,0.0,1,0.01,1.0)
-CFG_stucki_kc75             := $(call CFG,STUCKI,0.0,0.0,1,0.0,0.75)
-CFG_stucki_kc50             := $(call CFG,STUCKI,0.0,0.0,1,0.0,0.5)
-CFG_atkinson_rel25          := $(call CFG,ATKINSON,0.0,0.25,1,0.0,1.0)
-CFG_floyd_st_rel25_kc75     := $(call CFG,FLOYD_STEINBERG,0.0,0.25,1,0.0,0.75)
-CFG_jjn_rel25_kc75          := $(call CFG,JJN,0.0,0.25,1,0.0,0.75)
-CFG_stucki_rel15_kc75       := $(call CFG,STUCKI,0.0,0.15,1,0.0,0.75)
-CFG_stucki_rel25_kc75       := $(call CFG,STUCKI,0.0,0.25,1,0.0,0.75)
-CFG_stucki_rel35_kc75       := $(call CFG,STUCKI,0.0,0.35,1,0.0,0.75)
-CFG_stucki_wrel25_kc75      := $(call CFG,STUCKI,0.0,0.25,0,0.0,0.75)
-CFG_stucki_rel25_kc50       := $(call CFG,STUCKI,0.0,0.25,1,0.0,0.5)
-CFG_stucki_rel25            := $(call CFG,STUCKI,0.0,0.25,1,0.0,1.0)
-CFG_stucki_rel25_kc35       := $(call CFG,STUCKI,0.0,0.25,1,0.0,0.35)
-CFG_stucki_rel35_kc50       := $(call CFG,STUCKI,0.0,0.35,1,0.0,0.5)
-CFG_jjn_rel25_kc50          := $(call CFG,JJN,0.0,0.25,1,0.0,0.5)
-CFG_floyd_st_rel25_kc50     := $(call CFG,FLOYD_STEINBERG,0.0,0.25,1,0.0,0.5)
-CFG_stucki_rel25_kc50_hyb01 := $(call CFG,STUCKI,0.0,0.25,1,0.01,0.5)
-CONFIGS ?= atkinson floyd_steinberg jjn stucki atkinson_blue_02 floyd_st_blue_02 jjn_blue_02 stucki_blue_02 \
-           stucki_white_02 stucki_blue_04 stucki_blue_02_hyb01 stucki_kc75 stucki_kc50 atkinson_rel25 \
-           floyd_st_rel25_kc75 jjn_rel25_kc75 stucki_rel15_kc75 stucki_rel25_kc75 stucki_rel35_kc75 \
-           stucki_wrel25_kc75 stucki_rel25_kc50 stucki_rel25 stucki_rel25_kc35 stucki_rel35_kc50 jjn_rel25_kc50 \
-           floyd_st_rel25_kc50 stucki_rel25_kc50_hyb01
-# the configs in the side by side PNGs, three across
-SHOW    ?= atkinson stucki stucki_blue_02 stucki_kc50 atkinson_rel25 floyd_st_rel25_kc50 jjn_rel25_kc50 \
-           stucki_rel25_kc50 stucki_rel25_kc35
-
-.PHONY: all run sweep clean
+.PHONY: all run clean
 
 all: $(OUT)/tones_host
 
@@ -92,16 +52,6 @@ $(OUT)/tones_host: $(SRCS) $(HDRS) $(OUT)/lodepng.o
 
 run: $(OUT)/tones_host
 	$(OUT)/tones_host $(OUT) $(IMAGE) | tee $(OUT)/report.txt
-
-$(SWEEP)/%/tones_host: $(SRCS) $(HDRS) $(OUT)/lodepng.o
-	mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(CFG_$*) -o $@ $(SRCS) $(OUT)/lodepng.o $(LIBS)
-
-sweep: $(OUT)/tones_host $(foreach c,$(CONFIGS),$(SWEEP)/$(c)/tones_host)
-	for c in $(CONFIGS); do $(SWEEP)/$$c/tones_host $(SWEEP)/$$c $(IMAGE) > $(SWEEP)/$$c/report.txt || exit 1; done
-	$(OUT)/tones_host --compare $(SWEEP) $(CONFIGS) > $(SWEEP)/compare.txt
-	$(OUT)/tones_host --compare $(SWEEP) $(SHOW) > /dev/null
-	cat $(SWEEP)/compare.txt
 
 clean:
 	rm -rf $(OUT)

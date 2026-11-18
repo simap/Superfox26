@@ -2,7 +2,7 @@
   <!-- The editable original: the "26" is live text in Pirata One. It shows in that face only where the
        font is installed or the import below loads. superfox26.svg has the digits as outlines. -->
   <style>@import url("https://fonts.googleapis.com/css2?family=Pirata+One&amp;display=block");</style>
-  <!-- The X and the ring are the Supercon logo, https://hackaday.io/superconference/img/logo.svg -->
+  <!-- The X and the ring derive from the Hackaday Supercon graphic, https://hackaday.io/superconference/img/logo.svg -->
   <!-- The paper disc keeps the X and the digits readable on a dark background. -->
   <circle cx="196.4" cy="196.4" r="176" fill="#f6f3ea"/>
   <g fill="#111">

@@ -1,27 +1,42 @@
 // -----------------------------------------------------------------------------
 // epd97: Pervasive Displays iTC 9.7" dual-COG panel on an ESP32-S3, ESP-IDF.
 //
-// Ported from the EFR32FG22 OEPL driver (oepl_display_driver_pervasive_itc_
-// medium.c), which is where all the measured numbers in the comments come from.
+// Written for this project, with reference to these sources:
+//   Hack-a-Day/2026-Billboard_Badge
+//     (https://github.com/Hack-a-Day/2026-Billboard_Badge), the badge team's
+//     ITC97 driver, firmware/esp32s3-itc97-drag-drop/src/epd97.cpp at commit
+//     6ba6dd8. The bus, power, OTP detection, update register, soft start and
+//     brownout code of this file come from it, much of it unchanged. Its
+//     header names the OpenEPaperLink EFR32FG22 driver for this panel as its
+//     own origin.
+//   The badge's stock MicroPython driver in the same repository,
+//     firmware/badge/lib/epd.py, itself ported from PervasiveDisplays
+//     EPD_Driver_GU_large. It gives the 0x70 booster setting of driver B and
+//     the plane resend that keeps a 0xB0 table latched.
+//   yigitabi5444/supercon26-badge-os
+//     (https://github.com/yigitabi5444/supercon26-badge-os),
+//     components/os/epd.c and docs/DEVICE_INFO.md. It gives the quick open
+//     waits, the 0x03 oscillator value for 23.7 ms frames, the kept supply
+//     between sessions and the one frame group of the seq set.
+//   phthallo/supercon (https://github.com/phthallo/supercon),
+//     firmware/lib/luts.py. It shows which zero count bytes the B1 skips.
+// The comments name the source where a value or a behaviour comes from one.
 //
-// The panel is two COGs behind one FPC, each owning half of a 960 px scan line.
-// The left COG takes the left 60 bytes of every line and the right COG the right 60.
-// Register writes go to both at once.
+// The panel is two controllers behind one FPC, each owning half of a 960 px
+// scan line. The left controller takes the left 60 bytes of every line and the
+// right controller the right 60. Register writes go to both at once.
 //
-// Bus arrangement: register writes and the OTP readback are bitbanged, because
-// they are a few dozen bytes and the OTP wants a ~50 kHz clock with the data
-// pin turned around for the read. The two 80640-byte planes go out over SPI2
-// with DMA. The two share MOSI and SCK, so the GPIO matrix is re-pointed
-// between them and the bus is never torn down.
+// The register writes and the OTP readback are bitbanged. They are a few dozen
+// bytes, and the OTP wants a ~50 kHz clock with the data pin turned around for
+// the read. The two 80640 byte planes go out over SPI2 with DMA. The two share
+// MOSI and SCK, so the GPIO matrix is re-pointed between them and the bus is
+// never torn down.
 // -----------------------------------------------------------------------------
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "sdkconfig.h"
-// Compiles the DLOGF lines in at any CONFIG_LOG_MAXIMUM_LEVEL. They print only
-// when the "epd" tag is at debug level, for example after
-// esp_log_level_set("epd", ESP_LOG_DEBUG).
 #define LOG_LOCAL_LEVEL ESP_LOG_DEBUG
 #include "esp_log.h"
 #include "esp_attr.h"
@@ -45,14 +60,11 @@
 
 static const char* TAG = "epd";
 
-// The disabled forms keep the arguments compiled, so a value that only feeds a
-// log line does not become an unused variable.
 #if EPD_LOG
 #define LOGF(...) ESP_LOGI(TAG, __VA_ARGS__)
 #else
 #define LOGF(...) do { if (0) ESP_LOGI(TAG, __VA_ARGS__); } while (0)
 #endif
-// Debug level, for lines that repeat on every pull.
 #if EPD_LOG
 #define DLOGF(...) ESP_LOGD(TAG, __VA_ARGS__)
 #else
@@ -64,18 +76,28 @@ static const char* TAG = "epd";
 #define VLOGF(...) do { if (0) ESP_LOGI(TAG, __VA_ARGS__); } while (0)
 #endif
 
+#if EPD_T_PRE_SS % 10u != 0u || EPD_T_PRE_SS / 10u > 127u
+#error "EPD_T_PRE_SS is stored in units of 10 ms in a 7 bit field"
+#endif
+
 #define EPD_OTP_LEN   88
-#define COG_M         0x01
-#define COG_S         0x02
-#define COG_BOTH      (COG_M | COG_S)
+#define COG_L         0x01
+#define COG_R         0x02
+#define COG_BOTH      (COG_L | COG_R)
 #define HALF_BYTES    (EPD_STRIDE / 2)        // 60
-#define HALF_PLANE    (HALF_BYTES * EPD_H)    // 40320, one COG's share of a plane
+#define HALF_PLANE    (HALF_BYTES * EPD_H)    // 40320, one controller's share of a plane
+
+typedef enum {
+  EPD_PANEL_UNKNOWN = 0,
+  EPD_PANEL_084,          // E2969JS084, driver 8
+  EPD_PANEL_B1            // E2969JS0B1, driver B
+} epd_panel_t;
 
 // The vendor's update register sequence for the 9.7", TCON before STV. Each
-// step is a register, its argument, a delay field and the quick-profile delay.
+// step is a register, its argument, a delay field and the quick profile delay.
 // In the delay field bit 0 says the argument is an OTP offset rather than a
-// literal, the upper bits are units of 10 ms. qms is the wait in ms when
-// s_quick is set (EPD_QUICK_OPEN in epd97_config.h).
+// literal, and the upper bits are the wait in units of 10 ms. qms is the wait
+// in ms when s_quick is set (EPD_QUICK_OPEN in epd97_config.h).
 typedef struct { uint8_t cmd; uint8_t arg; uint8_t dly; uint8_t qms; } upd_step_t;
 
 static const upd_step_t k_upd[] = {
@@ -85,7 +107,7 @@ static const upd_step_t k_upd[] = {
   { 0xD8, 0x1D,  1,        0 },
   { 0xD6, 0x1E,  1,        0 },
   { 0xA7, 0x10, 10u << 1,  2 },
-  { 0xA7, 0x00, 10u << 1, 10 },
+  { 0xA7, 0x00, 10u << 1, 10 },   // the oscillator write follows this step
   { 0x44, 0x00,  0,        0 },
   { 0x45, 0x80,  0,        0 },
   { 0xA7, 0x10, 10u << 1,  2 },
@@ -93,16 +115,15 @@ static const upd_step_t k_upd[] = {
   { 0x44, 0x06,  0,        0 },
   { 0x45, 0x86,  0,        0 },              // patched at runtime with the waveform bank
   { 0xA7, 0x10, 10u << 1,  2 },
-  { 0xA7, 0x00, EPD_T_PRE_SS << 1, 10 },
+  { 0xA7, 0x00, (EPD_T_PRE_SS / 10u) << 1, 10 },
   { 0x60, 0x0B,  1,        0 },
   { 0x61, 0x1C,  1,        0 },
   { 0x01, 0x10,  1,        0 },
   { 0x02, 0x11,  1,        0 },
 };
 #define UPD_STEPS (sizeof(k_upd) / sizeof(k_upd[0]))
-// The steps before the four geometry registers that close k_upd. The last of
-// them is the final 0xA7 0x00.
-#define UPD_PRE_GEOM (UPD_STEPS - 4u)
+// Index of the k_upd step after which the oscillator register is written.
+#define UPD_OSC_AFTER 6u
 
 // -----------------------------------------------------------------------------
 // State
@@ -120,83 +141,46 @@ static bool      s_driver_b;          // true = E2969JS0B1, false = E2969JS084
 static epd_panel_t s_panel = EPD_PANEL_UNKNOWN;
 
 // The OTP survives deep sleep in RTC memory. It is a fuse block on a panel that
-// is still plugged into the same board, so re-probing it on every wake costs a
-// full power cycle and about three seconds for an answer that cannot have
-// changed. Only trusted after a deep-sleep wake, so unplugging the panel and
-// power-cycling the board re-probes.
+// is still plugged into the same board, so reading it again on every wake costs
+// a full power cycle and about three seconds for an answer that cannot have
+// changed. It is only trusted after a deep-sleep wake, so unplugging the panel
+// and power-cycling the board reads it again.
 #define OTP_RTC_MAGIC 0x69544301u
 RTC_DATA_ATTR static uint32_t s_rtc_magic;
 RTC_DATA_ATTR static uint8_t  s_rtc_otp[EPD_OTP_LEN];
 RTC_DATA_ATTR static uint8_t  s_rtc_driver_b;
 
-static uint8_t   s_lut8[LUT8_BYTES];
-static uint8_t   s_lutb[LUTB_BYTES];
-static bool      s_lut8_has_red;
-// s_lutb holds a table from epd_set_fast_lut() rather than the built-in one.
-static bool      s_lutb_custom;
-// s_lutb changed after the open session latched its waveform.
-static bool      s_lutb_dirty;
-static unsigned  s_fast_pulls = EPD_B_REFRESH_PULLS;
-
-static bool      s_frame_has_red;
-// Whether the picture currently ON the panel carries red. It has to survive
-// deep sleep: what the film is holding is not reset by the ESP32 losing its
-// RAM, and a wake that starts out believing the panel is red-free will run a
-// fast refresh straight over red that nothing short can remove. RTC memory is
-// cleared on a power-on reset, which is the case a cold boot's clearing pass
-// covers anyway.
-RTC_DATA_ATTR static bool s_prev_has_red;
-
-static bool      s_session_open;
-static bool      s_lut_latched;
-static epd_refresh_t s_latched_mode = EPD_SLOW;
-static uint32_t  s_session_images;
-static bool      s_keep_awake;
-static bool      s_run_refresh = (EPD_RUN_REFRESH != 0);
 static volatile bool s_refreshing;
-static bool      s_allow_fast_red;
+// No controller answered at epd_begin(). The OTP is a stand-in and the BUSY
+// waits are capped.
 static bool      s_headless;
-static bool      s_otp_standin;
-static bool      s_planes_only;
 
-// Tone session. s_session_open and s_lut_latched are also set while it is open,
-// so every path that closes a session closes this one.
 static uint8_t   s_tone_lut[LUTB_BYTES];
 static bool      s_tone_open;
 static uint8_t   s_tone_unit;
-static bool      s_tone_red;          // a pass in this session sent red plane bits
-static epd_tone_table_t s_tone_table;
+static epd_tone_table_t s_tone_table = EPD_TONE_TABLE_NONE;
 
 static uint32_t  s_power_off_ms;
 static bool      s_power_off_valid;
 // The panel supply switch is on. With EPD_KEEP_SUPPLY it stays on between
-// sessions, with the COG held in reset.
+// sessions, with the controller held in reset.
 static bool      s_supply_on;
 static uint32_t  s_last_panel_ms;
-static uint32_t  s_last_frame_ms;
-static uint32_t  s_last_send_ms;
-// Quick waits for this open (EPD_QUICK_OPEN). Set by the fast and tone
-// openers on driver B, cleared by cog_stop_ex().
 static bool      s_quick;
-static int64_t   s_last_send_end_us;  // 0 until the first send
 
-#if EPD_STAGE_INTERNAL
-// Internal DMA memory, one COG's half of a plane each. s_stage[1] is NULL when
+// Internal DMA memory, one controller's half of a plane each. The planes live
+// in PSRAM, and a controller's half is 60 bytes in every 120 byte line, so each
+// half is gathered here and goes out as one transfer. s_stage[1] is NULL when
 // the heap had room for only one.
 static uint8_t*  s_stage[2];
-#else
-// One half line. The planes live in PSRAM and the line has to be gathered
-// before DMA can send it.
-static DMA_ATTR uint8_t s_txbuf[HALF_BYTES];
-#endif
 
 // -----------------------------------------------------------------------------
 // Time
 // -----------------------------------------------------------------------------
 static inline uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
-// Scheduler ticks from 10 ms up, a busy wait below that. The tick waits assume
-// CONFIG_FREERTOS_HZ 1000. At 100 Hz pdMS_TO_TICKS truncates to 10 ms steps.
+// The tick waits assume CONFIG_FREERTOS_HZ 1000. At 100 Hz pdMS_TO_TICKS
+// truncates to 10 ms steps.
 static void delay_ms(uint32_t ms)
 {
   if (ms >= 10u) vTaskDelay(pdMS_TO_TICKS(ms));
@@ -215,27 +199,27 @@ static inline void cog_select(uint8_t which) { s_cog = which; }
 
 static void cs_hi(void)
 {
-  gpio_set_level((gpio_num_t)EPD_PIN_CS_M, 1);
-  gpio_set_level((gpio_num_t)EPD_PIN_CS_S, 1);
+  gpio_set_level((gpio_num_t)EPD_PIN_CS_L, 1);
+  gpio_set_level((gpio_num_t)EPD_PIN_CS_R, 1);
 }
 
-// Raise the deselected side before lowering the selected one, so the two COGs
-// are never both listening.
+// Raise the deselected side before lowering the selected one, so the two
+// controllers are never both listening by accident.
 static void cs_lo(void)
 {
-  if (!(s_cog & COG_M)) gpio_set_level((gpio_num_t)EPD_PIN_CS_M, 1);
-  if (!(s_cog & COG_S)) gpio_set_level((gpio_num_t)EPD_PIN_CS_S, 1);
-  if (s_cog & COG_M)    gpio_set_level((gpio_num_t)EPD_PIN_CS_M, 0);
-  if (s_cog & COG_S)    gpio_set_level((gpio_num_t)EPD_PIN_CS_S, 0);
+  if (!(s_cog & COG_L)) gpio_set_level((gpio_num_t)EPD_PIN_CS_L, 1);
+  if (!(s_cog & COG_R)) gpio_set_level((gpio_num_t)EPD_PIN_CS_R, 1);
+  if (s_cog & COG_L)    gpio_set_level((gpio_num_t)EPD_PIN_CS_L, 0);
+  if (s_cog & COG_R)    gpio_set_level((gpio_num_t)EPD_PIN_CS_R, 0);
 }
 
-// Both COGs have to report ready. A panel with only the left COG BUSY wired can
-// set EPD_PIN_BUSY_S to -1.
+// Both controllers have to report ready. A panel with only the left
+// controller's BUSY wired can set EPD_PIN_BUSY_R to -1.
 static bool busy_idle(void)
 {
-  if (!gpio_get_level((gpio_num_t)EPD_PIN_BUSY_M)) return false;
-#if EPD_PIN_BUSY_S >= 0
-  if (!gpio_get_level((gpio_num_t)EPD_PIN_BUSY_S)) return false;
+  if (!gpio_get_level((gpio_num_t)EPD_PIN_BUSY_L)) return false;
+#if EPD_PIN_BUSY_R >= 0
+  if (!gpio_get_level((gpio_num_t)EPD_PIN_BUSY_R)) return false;
 #endif
   return true;
 }
@@ -245,7 +229,7 @@ static bool busy_idle(void)
 // -----------------------------------------------------------------------------
 // Only the two bus pins change hands. DC, RST and the two chip selects are
 // configured as outputs once in epd_begin() and stay driven while the panel
-// supply is off. Releasing them with the supply off stopped the refresh at the
+// supply is off. Releasing them with the supply off stops the refresh at the
 // DC/DC soft start with BUSY never ready.
 static void bus_bitbang(void)
 {
@@ -265,8 +249,8 @@ static void bus_spi(void)
       EPD_PIN_SCK, spi_periph_signal[EPD_SPI_HOST_NUM].spiclk_out, false, false);
 }
 
-// Mode 0 by hand: set the data, raise the clock, lower it. The panel samples on
-// the rising edge and the clock idles low.
+// SPI mode 0 by hand. The panel samples on the rising edge and the clock idles
+// low.
 static void bb_byte(uint8_t v)
 {
   for (uint8_t i = 0; i < 8; i++) {
@@ -334,8 +318,8 @@ static void send_otp(uint8_t index, uint8_t off, uint8_t n)
 static void power_on(void)
 {
   // The booster rails have to bleed down before the next cycle powers up, or
-  // the COG sits on the update waiting for its own voltages. This shows up
-  // mostly on the second refresh, which is what points at the rails.
+  // the controller sits on the update waiting for its own voltages. It shows up
+  // mostly on the second refresh.
   if (s_power_off_valid) {
     uint32_t off = now_ms() - s_power_off_ms;
     if (off < EPD_T_OFF_MIN) {
@@ -372,17 +356,16 @@ static void cog_reset(void)
 // -----------------------------------------------------------------------------
 // OTP: which panel is this?
 // -----------------------------------------------------------------------------
-// The opener has gone out with the left COG's chip select still low. Turns
-// MOSI around, drops the dummy byte when `dummy` is set and reads `n` bytes
-// into `dst`.
-static void otp_read_tail(uint8_t* dst, size_t n, bool dummy)
+// The opener left the left controller's chip select low. This read turns MOSI
+// around and drops the leading dummy byte the controller sends before the OTP.
+static void otp_read_tail(uint8_t* dst, size_t n)
 {
   delay_ms(1);
 
   dc_set(1);
   gpio_set_direction((gpio_num_t)EPD_PIN_MOSI, GPIO_MODE_INPUT);
   gpio_set_pull_mode((gpio_num_t)EPD_PIN_MOSI, GPIO_PULLDOWN_ONLY);
-  if (dummy) (void)bb_in_slow();
+  (void)bb_in_slow();
   for (size_t i = 0; i < n; i++) dst[i] = bb_in_slow();
   cs_hi();
   gpio_set_direction((gpio_num_t)EPD_PIN_MOSI, GPIO_MODE_OUTPUT);
@@ -391,21 +374,20 @@ static void otp_read_tail(uint8_t* dst, size_t n, bool dummy)
   cog_select(COG_BOTH);
 }
 
-// `n` bytes after the dummy byte into `dst`. The probe reads EPD_OTP_LEN.
-// epd_otp_dump() reads further to see what the stream holds past the block.
 static void otp_read_raw(bool use_b9, uint8_t* dst, size_t n)
 {
-  cog_select(COG_M);
+  cog_select(COG_L);
   cog_reset();
 
   if (use_b9) {
     // Driver B opens the session with 0x70 before the OTP read. A panel that
     // never gets that register draws about 2 A during refresh, so it is
-    // configuring the booster. It goes to both COGs. Only the read itself is
-    // left COG only, because both COGs would otherwise drive the bus.
+    // configuring the booster. It goes to both controllers. Only the read
+    // itself is left controller only, because both would otherwise drive the
+    // bus.
     cog_select(COG_BOTH);
     send_u8x2(0x70, 0x71, 0x36);
-    cog_select(COG_M);
+    cog_select(COG_L);
     dc_set(0);
     cs_lo();
     bb_out_slow(0xB9);
@@ -417,45 +399,13 @@ static void otp_read_raw(bool use_b9, uint8_t* dst, size_t n)
     cs_lo();
     bb_out_slow(0xA8);
   }
-  otp_read_tail(dst, n, true);
-}
-
-// The 0xA7 steps of k_upd wait 10 units of 10 ms.
-#define OTP_A7_WAIT_MS 100u
-
-// otp_read_raw() with the writes before the opener taken from `p`. Used only
-// by epd_otp_dump_ex(). Panel detection uses otp_read_raw().
-static void otp_read_probe(const epd_otp_probe_t* p, uint8_t* dst, size_t n)
-{
-  cog_select(COG_M);
-  cog_reset();
-
-  cog_select(COG_BOTH);
-  if (!p->skip_0x70) send_u8x2(0x70, 0x71, 0x36);
-  if (p->set_addr) {
-    send_u8(0xA1, 0x00);
-    send_u8(0xA7, 0x80);
-    send_u8x2(0xA3, (uint8_t)(p->addr >> 8), (uint8_t)(p->addr & 0xFFu));
-  }
-  if (p->set_ptr) {
-    send_u8(0x44, p->ptr);
-    send_u8(0x45, p->bank);
-    send_u8(0xA7, 0x10);
-    delay_ms(OTP_A7_WAIT_MS);
-    send_u8(0xA7, 0x00);
-    delay_ms(OTP_A7_WAIT_MS);
-  }
-  cog_select(COG_M);
-  dc_set(0);
-  cs_lo();
-  bb_out_slow(p->opener);
-  otp_read_tail(dst, n, true);
+  otp_read_tail(dst, n);
 }
 
 // Stage 0 of the DC/DC ramp must not be 0xFF. That ramps the booster 127x and
-// hangs BUSY. All four stages are checked: the booster loop runs the OTP repeat
-// counts verbatim, so a garbled block has to be rejected here and not clamped
-// later.
+// hangs BUSY. All four stages are checked, because the booster loop runs the
+// OTP repeat counts verbatim. A garbled block has to be rejected here and not
+// clamped later.
 static bool otp_sane(void)
 {
   for (uint8_t stage = 0; stage < 4; stage++) {
@@ -466,9 +416,9 @@ static bool otp_sane(void)
       return false;
     }
   }
-  // Both variants are checked in the driver-8 layout (driver B is remapped into
+  // Both variants are checked in the driver 8 layout (driver B is remapped into
   // it first). DUW sits at 0x16..0x1B and DRFW at 0x0C..0x0F, and for a 960 px
-  // dual COG both carry x_end = 0x3B, 60 bytes per half.
+  // two-controller panel both carry x_end = 0x3B, 60 bytes per half.
   if (s_otp[0x17] != 0x3B || s_otp[0x0D] != 0x3B) {
     LOGF("OTP window check failed: DUW xe=0x%02X DRFW xe=0x%02X",
          (unsigned)s_otp[0x17], (unsigned)s_otp[0x0D]);
@@ -482,6 +432,7 @@ static bool otp_looks_like_driver_b(void)
   return (s_otp[0x16] == 0x3B && s_otp[0x0D] == 0x3B && (s_otp[0x28] & 0x80) != 0);
 }
 
+// Moves a driver B block into the driver 8 layout the rest of the driver reads.
 static void otp_remap_b_to_8(void)
 {
   for (uint8_t i = 0x1E; i > 0x12; i--) s_otp[i] = s_otp[i - 1];
@@ -496,7 +447,6 @@ static void otp_stash(void)
   s_rtc_magic = OTP_RTC_MAGIC;
 }
 
-// Recover the probe result from a previous wake, if this boot is one.
 static bool otp_restore(void)
 {
   if (esp_reset_reason() != ESP_RST_DEEPSLEEP) return false;
@@ -508,20 +458,14 @@ static bool otp_restore(void)
   return true;
 }
 
-// The OTP is a fuse block: it cannot change between refreshes, and reading it
-// costs about 2.8 s because it is clocked out at 50 kHz and tried twice, once
+// The OTP is a fuse block and cannot change between refreshes. Reading it
+// costs about 2.8 s, because it is clocked out at 50 kHz and tried twice, once
 // per variant. So it is read once and kept.
 static int otp_read(void)
 {
-  // The stand-in block is only there so a planes-only transfer has window
-  // registers to send. A real waveform must not ramp the booster from it.
-  if (s_otp_valid && s_otp_standin && s_run_refresh && !s_headless) {
-    s_otp_valid = false;
-    s_otp_standin = false;
-  }
   if (s_otp_valid) {
     VLOGF("OTP from cache (%s)",
-          s_otp_standin ? "stand-in" : (s_driver_b ? "driver B" : "driver 8"));
+          s_headless ? "stand-in" : (s_driver_b ? "driver B" : "driver 8"));
     return 0;
   }
 
@@ -531,7 +475,7 @@ static int otp_read(void)
     otp_remap_b_to_8();
     s_driver_b = true;
     if (!otp_sane()) {
-      LOGF("driver-B remap failed the soft-start sanity check");
+      LOGF("driver B remap failed the soft start sanity check");
       return -1;
     }
     s_panel = EPD_PANEL_B1;
@@ -544,7 +488,7 @@ static int otp_read(void)
   otp_read_raw(false, s_otp, EPD_OTP_LEN);
   s_driver_b = false;
   if (s_otp[0] != 0xA5 || !otp_sane()) {
-    LOGF("driver-8 OTP read unusable (hdr=0x%02X)", (unsigned)s_otp[0]);
+    LOGF("driver 8 OTP read unusable (hdr=0x%02X)", (unsigned)s_otp[0]);
     return -2;
   }
   s_panel = EPD_PANEL_084;
@@ -553,10 +497,6 @@ static int otp_read(void)
   otp_stash();
   return 0;
 }
-
-#if EPD_KEEP_SUPPLY && !EPD_SEND_0x70_EVERY_POWERUP
-#error "EPD_KEEP_SUPPLY needs EPD_SEND_0x70_EVERY_POWERUP: an open on a kept supply starts at the reset, and driver B needs 0x70 after every reset"
-#endif
 
 static int cog_initial(void)
 {
@@ -576,56 +516,46 @@ static int cog_initial(void)
     return rc;
   }
   // Second reset after the OTP read, as the stock firmware does. The quick
-  // profile uses the yig-os reset shape. cog_close() leaves RST low on a kept
-  // supply, and the pulse starts from high.
+  // profile uses the reset shape of yigitabi5444/supercon26-badge-os.
+  // cog_close() leaves RST low on a kept supply, and the pulse starts from
+  // high.
   if (warm) rst_set(1);
   delay_ms(s_quick ? EPD_TQ_RST_HI : EPD_T_OTP_HI);
   rst_set(0);
   delay_ms(s_quick ? EPD_TQ_RST_LO : EPD_T_OTP_LO);
   rst_set(1);
   delay_ms(s_quick ? EPD_TQ_RST_SET : EPD_T_OTP_SET);
-#if EPD_SEND_0x70_EVERY_POWERUP
-  // The probe's 0x70 does not survive the supply cut in cog_stop(), so driver
-  // B gets it again after the last reset. It has to precede the window
-  // registers in write_plane().
+  // 0x70 configures the driver B booster. Without it the panel draws about
+  // 2 A during the refresh. A supply cut clears it, so driver B gets it after
+  // the last reset of every open, also on a kept supply. It has to precede
+  // the window registers in write_plane().
   if (s_driver_b) {
     cog_select(COG_BOTH);
     send_u8x2(0x70, 0x71, 0x36);
   }
-#endif
   return 0;
 }
 
 // -----------------------------------------------------------------------------
 // Plane transfer
 // -----------------------------------------------------------------------------
-// `orsrc`, when given, is merged in bit by bit. That is how a fast refresh
-// draws red as ink: the red plane is OR'ed into the black one on the way out
-// and the red plane itself goes out empty. A NULL `fb` sends zeros.
-#if EPD_STAGE_INTERNAL
-
-// One COG's half of a plane, line after line. `half` is 0 for the left COG and
-// HALF_BYTES for the right COG.
-static void stage_half(uint8_t* dst, const uint8_t* fb, const uint8_t* orfb, size_t half)
+static void stage_half(uint8_t* dst, const uint8_t* fb, size_t half)
 {
   for (int y = 0; y < EPD_H; y++) {
     const size_t off = (size_t)y * EPD_STRIDE + half;
     uint8_t* d = dst + (size_t)y * HALF_BYTES;
     if (fb) memcpy(d, fb + off, HALF_BYTES);
     else    memset(d, 0, HALF_BYTES);
-    if (orfb) {
-      for (unsigned i = 0; i < HALF_BYTES; i++) d[i] |= orfb[off + i];
-    }
   }
 }
 
 // The S3 GPSPI takes at most SPI_LL_DATA_MAX_BIT_LEN bits (32768 bytes) per
-// transaction, so a 40320-byte half goes out as two chunks. The COG keeps its
-// RAM pointer across chip select, so the chunks and the chip select swap per
-// plane are invisible to it.
+// transaction, so a 40320 byte half goes out as two chunks. The controller
+// keeps its RAM pointer across chip select, so the chunks and the chip select
+// swap per plane are invisible to it.
 #define SPI_CHUNK (HALF_PLANE / 2)   // 20160
 
-static void send_chunks(const uint8_t* buf, size_t len)
+static bool send_chunks(const uint8_t* buf, size_t len)
 {
   while (len) {
     const size_t n = len > SPI_CHUNK ? SPI_CHUNK : len;
@@ -633,115 +563,87 @@ static void send_chunks(const uint8_t* buf, size_t len)
     esp_err_t e = spi_device_polling_transmit(s_spi, &t);
     if (e != ESP_OK) {
       LOGF("spi transmit failed: %s", esp_err_to_name(e));
-      return;
+      return false;
     }
     buf += n;
     len -= n;
   }
+  return true;
 }
 
-static void send_plane_data(const uint8_t* fb, const uint8_t* orfb)
+static bool send_plane_data(const uint8_t* fb)
 {
   uint8_t* a = s_stage[0];
   uint8_t* b = s_stage[1] ? s_stage[1] : s_stage[0];
+  bool ok;
 
-  stage_half(a, fb, orfb, 0);
-  cog_select(COG_M);
+  stage_half(a, fb, 0);
+  cog_select(COG_L);
   cs_lo();
   if (b != a) {
-    // The right half is gathered while the first chunk of the left half is on
-    // the wire. polling_end runs only after a successful polling_start.
     spi_transaction_t t = { .length = SPI_CHUNK * 8u, .tx_buffer = a };
     esp_err_t e = spi_device_polling_start(s_spi, &t, portMAX_DELAY);
-    stage_half(b, fb, orfb, HALF_BYTES);
-    if (e == ESP_OK) spi_device_polling_end(s_spi, portMAX_DELAY);
-    else LOGF("spi start failed: %s", esp_err_to_name(e));
-    send_chunks(a + SPI_CHUNK, HALF_PLANE - SPI_CHUNK);
+    stage_half(b, fb, HALF_BYTES);
+    if (e == ESP_OK) {
+      ok = spi_device_polling_end(s_spi, portMAX_DELAY) == ESP_OK;
+    } else {
+      LOGF("spi start failed: %s", esp_err_to_name(e));
+      ok = send_chunks(a, SPI_CHUNK);
+    }
+    ok = ok && send_chunks(a + SPI_CHUNK, HALF_PLANE - SPI_CHUNK);
   } else {
-    // One buffer. It is read until the last chunk ends, so gather after.
-    send_chunks(a, HALF_PLANE);
-    stage_half(b, fb, orfb, HALF_BYTES);
+    ok = send_chunks(a, HALF_PLANE);
+    stage_half(b, fb, HALF_BYTES);
   }
+  if (!ok) return false;
 
-  cog_select(COG_S);
+  cog_select(COG_R);
   cs_lo();
-  send_chunks(b, HALF_PLANE);
+  return send_chunks(b, HALF_PLANE);
 }
 
-#else
-
-static void spi_half(uint8_t which, const uint8_t* src, const uint8_t* orsrc)
+// The bw plane goes out with data command 0x10, the red plane with 0x11. The
+// window registers come out of the OTP and have to precede the first plane.
+// The controller wants both planes either way.
+static bool write_plane(bool red, const uint8_t* fb)
 {
-  memcpy(s_txbuf, src, HALF_BYTES);
-  if (orsrc) {
-    for (unsigned i = 0; i < HALF_BYTES; i++) s_txbuf[i] |= orsrc[i];
-  }
-  cog_select(which);
-  cs_lo();
-  spi_transaction_t t = { .length = HALF_BYTES * 8u, .tx_buffer = s_txbuf };
-  spi_device_polling_transmit(s_spi, &t);
-}
-
-// Every line goes out as 60 bytes to the left COG, chip select swapped, 60 bytes
-// to the right COG.
-static void send_plane_data(const uint8_t* fb, const uint8_t* orfb)
-{
-  static const uint8_t zeros[HALF_BYTES] = { 0 };
-
-  for (int y = 0; y < EPD_H; y++) {
-    const size_t off = (size_t)y * EPD_STRIDE;
-    const uint8_t* line = fb   ? (fb + off)   : zeros;
-    const uint8_t* orl  = orfb ? (orfb + off) : NULL;
-    spi_half(COG_M, line, orl);
-    spi_half(COG_S, fb ? (line + HALF_BYTES) : zeros,
-                    orl ? (orl + HALF_BYTES) : NULL);
-  }
-}
-
-#endif
-
-// 0x10 is the black/white plane, 0x13 the red one. The window registers come
-// out of the OTP and have to precede the first plane. A NULL framebuffer sends
-// a plane of zeros, which is what the red plane is on a frame with no red. The
-// COG wants both planes either way. `orfb` is merged in per line if given.
-static void write_plane(uint8_t index, const uint8_t* fb, const uint8_t* orfb)
-{
-  if (index == 0x10) {
-    // Driver B sets DCTL before the window registers, exactly as its stock
-    // trace does. Driver 8 sends 0x01 at the end of the update sequence. A
-    // resend inside a latched session leaves DCTL alone: the stock plane
-    // resend (epd.py _send_images) writes only DUW, DRFW, RAM_RW and data, and
-    // that is the only resend seen to keep a 0xB0 table latched.
-    if (s_driver_b && !s_lut_latched) send_u8(0x01, s_otp[0x10]);
+  uint8_t cmd;
+  if (!red) {
+    // Driver B sets DCTL (0x01) before the window registers, as the stock
+    // firmware does. Driver 8 sends 0x01 at the end of the update sequence. A
+    // resend inside an open tone session leaves DCTL alone. The stock plane
+    // resend (epd.py, _send_images) writes only DUW, DRFW, RAM_RW and data, and
+    // it is the only resend seen to keep a 0xB0 table latched.
+    if (s_driver_b && !s_tone_open) send_u8(0x01, s_otp[0x10]);
     send_otp(0x13, 0x16, 6);   // DUW
     send_otp(0x90, 0x0C, 4);   // DRFW
     send_otp(0x12, 0x13, 3);   // RAM_RW
+    cmd = 0x10;
   } else {
-    send_otp(0x12, 0x13, 3);
-    index = 0x11;
+    send_otp(0x12, 0x13, 3);   // RAM_RW
+    cmd = 0x11;
   }
 
   dc_set(0);
   cs_lo();
-  bb_byte(index);
+  bb_byte(cmd);
   cs_hi();
   dc_set(1);
 
   bus_spi();
-  send_plane_data(fb, orfb);
+  const bool ok = send_plane_data(fb);
   bus_bitbang();
   cs_hi();
   cog_select(COG_BOTH);
+  return ok;
 }
 
-// Both planes, timed for epd_last_send_ms().
-static void send_planes(bool have_red, bool draw_red)
+static bool send_planes(const uint8_t* bw, const uint8_t* red, uint32_t* ms)
 {
   const int64_t t0 = esp_timer_get_time();
-  write_plane(0x10, s_bw, (have_red && !draw_red) ? s_red : NULL);
-  write_plane(0x13, draw_red ? s_red : NULL, NULL);
-  s_last_send_end_us = esp_timer_get_time();
-  s_last_send_ms = (uint32_t)((s_last_send_end_us - t0) / 1000);
+  const bool ok = write_plane(false, bw) && write_plane(true, red);
+  if (ms) *ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
+  return ok;
 }
 
 // -----------------------------------------------------------------------------
@@ -753,8 +655,8 @@ static void stage_delay(uint8_t d)
   else          esp_rom_delay_us(10u * (uint32_t)(d & 0x7F));
 }
 
-// Literally the vendor loop: the repeat count is whatever the OTP says, no
-// skipping and no cap. Ramping the booster differently is what stresses a
+// The vendor loop as it is. The repeat count is whatever the OTP says, with
+// no skipping and no cap. Ramping the booster differently is what stresses a
 // panel, so the OTP is validated up front instead and a garbled block never
 // gets this far.
 static void dcdc_soft_start(void)
@@ -787,10 +689,10 @@ static void dcdc_soft_start(void)
   VLOGF("soft start done, %u booster rounds", rounds);
 }
 
-// The long LUT holds the panel rails up for about half a minute. On this
-// board that dips VDD far enough to fire the brownout detector, which
-// reboots the chip. Hold the detector off for the whole waveform, including
-// the gaps between BUSY waits.
+// The panel's own waveform holds the panel rails up for about half a minute.
+// On this board that dips VDD far enough to fire the brownout detector, which
+// reboots the chip. The detector is held off for the whole waveform, including
+// the gaps between BUSY waits, and for every tone pull.
 static uint32_t s_bod_brown;
 static uint32_t s_bod_int_ena;
 static bool s_bod_held;
@@ -819,11 +721,9 @@ static void bod_restore(void)
 
 static int wait_busy(unsigned want_idle, uint32_t timeout_ms, const char* tag)
 {
-  // No COG answered the probe. A floating BUSY line must not hold the caller
-  // for the full waveform timeout.
+  // No controller answered at epd_begin(). A floating BUSY line must not hold
+  // the caller for the full waveform timeout.
   if (s_headless && timeout_ms > 2000u) timeout_ms = 2000u;
-  // esp_task_wdt_reset() logs an error on every call from a task the watchdog
-  // does not watch, so it is only called for a subscribed task.
 #if CONFIG_ESP_TASK_WDT_INIT
   const bool feed_wdt = (esp_task_wdt_status(NULL) == ESP_OK);
 #else
@@ -851,9 +751,9 @@ static int wait_busy(unsigned want_idle, uint32_t timeout_ms, const char* tag)
   return result;
 }
 
-// Trigger the update again without touching any register the waveform lives in.
-// Everything the panel needs is already loaded: the planes, the table and the
-// booster rails. idle_ms bounds the wait for the pull to finish.
+// One pull. It triggers the update again without touching the registers the
+// waveform lives in. The planes, the drive table and the booster rails are
+// already loaded.
 static int retrigger(uint32_t idle_ms)
 {
   send_u8(0x15, 0x3C);
@@ -864,15 +764,13 @@ static int retrigger(uint32_t idle_ms)
   return 0;
 }
 
-// The settle and the first `steps` entries of k_upd. do_refresh() sends all of
-// them. epd_reg_read() stops before the geometry registers.
-static void send_upd(size_t steps)
+static void send_upd(void)
 {
   const uint8_t reg45 = s_driver_b ? (uint8_t)EPD_REG45_B1 : (uint8_t)EPD_REG45_084;
 
   delay_ms(s_quick ? EPD_TQ_PRE_UPD : EPD_T_PRE_UPD);
 
-  for (size_t i = 0; i < steps; i++) {
+  for (size_t i = 0; i < UPD_STEPS; i++) {
     uint8_t d = k_upd[i].dly;
     if (s_driver_b && (k_upd[i].cmd == 0xC2 || k_upd[i].cmd == 0x01)) continue;
 
@@ -889,41 +787,25 @@ static void send_upd(size_t steps)
     }
 
     // 0x03 is the oscillator. The stock sequence only sends it on driver 8.
-    // Driver B gets the yig-os value in the quick profile: 23.7 ms frames
-    // instead of 29 ms.
-    if (i == 6) {
+    // Driver B gets the value of yigitabi5444/supercon26-badge-os in the quick
+    // profile, which gives 23.7 ms frames instead of about 29 ms. The push
+    // limits depend on it (epd97_config.h).
+    if (i == UPD_OSC_AFTER) {
       if (!s_driver_b)  send_u8x2(0x03, 0x00, s_otp[0x12]);
       else if (s_quick) send_u8x2(0x03, 0x00, 0x11);
     }
   }
 }
 
-static int do_refresh(epd_refresh_t mode, bool need_red_lut)
+static int do_refresh(void)
 {
-  send_upd(UPD_STEPS);
-
-  // After the register table and before the soft start: everything above would
-  // have overwritten 0xB0, and nothing below touches it. Both chip selects are
-  // low here, so both COGs get the same table in one go.
-  if (mode == EPD_FAST) {
-    if (s_driver_b) {
-      send_index(0xB0, s_lutb, (uint16_t)LUTB_BYTES);
-      s_lutb_dirty = false;
-    } else {
-      // Built here and not once at startup: which table this frame needs
-      // depends on whether it carries red, and on whether the one before it did.
-      epd_build_lut8(s_lut8, need_red_lut, need_red_lut && !s_frame_has_red);
-      s_lut8_has_red = need_red_lut;
-      send_index(0xB0, s_lut8, (uint16_t)LUT8_BYTES);
-    }
-  }
-
+  send_upd();
   dcdc_soft_start();
 
-  // Stock fires 0x15 about 100 ms after the last soft-start write. The 084 is
+  // Stock fires 0x15 about 100 ms after the last soft start write. The 084 is
   // ready by then. The B1 still holds BUSY low because its DC/DC ramp is not
-  // finished, and starting the update into a booster that is still ramping is
-  // the intermittent "sits still for a minute, then draws" symptom.
+  // finished, and starting the update into a booster that is still ramping
+  // makes the panel sit still for a minute before it draws.
   delay_ms(100);
   if (!busy_idle()) {
     int ready = wait_busy(1, 10000, "pre-0x15 ready");
@@ -939,14 +821,15 @@ static int do_refresh(epd_refresh_t mode, bool need_red_lut)
   int waited = wait_busy(1, EPD_IDLE_WAIT_MS, "refresh done");
   if (waited < 0) return -3;
 
-  // Watch a little longer: some panels drop BUSY again for a second waveform
-  // pass, which is what a refresh that seems to sit still and then suddenly
-  // draws actually is.
+  // Watch a little longer. Some panels drop BUSY again and run the waveform a
+  // second time, which looks like a refresh that sits still and then draws.
+  // A second run that does not finish fails the refresh.
   for (uint32_t i = 0; i < EPD_SECOND_PASS_MS / 10u; i++) {
     vTaskDelay(pdMS_TO_TICKS(10));
     if (!busy_idle()) {
       int again = wait_busy(1, EPD_IDLE_WAIT_MS, "second pass");
-      if (again > 0) waited += again;
+      if (again < 0) return -3;
+      waited += again;
       break;
     }
   }
@@ -955,9 +838,9 @@ static int do_refresh(epd_refresh_t mode, bool need_red_lut)
 }
 
 // The DC/DC soft shutdown. cut true then cuts the supply. cut false leaves
-// the supply on and the COG in reset with RST low, as the stock firmware and
-// yig-os close a session. A BUSY that stays low past EPD_T_SHUTDOWN_BUSY
-// turns a kept supply into a cut.
+// the supply on and the controller in reset with RST low, as the stock firmware and
+// yigitabi5444/supercon26-badge-os close a session. A BUSY that stays low past
+// EPD_T_SHUTDOWN_BUSY turns a kept supply into a cut.
 static void cog_stop_ex(bool cut)
 {
   send_u8(0x09, 0x7F);
@@ -984,14 +867,12 @@ static void cog_stop_ex(bool cut)
   s_quick = false;
 }
 
-// Error paths and the final shutdown.
 static void cog_stop(void) { cog_stop_ex(true); }
 
-// The end of a session that completed.
 static void cog_close(void) { cog_stop_ex(EPD_KEEP_SUPPLY == 0); }
 
-// Cuts a supply that cog_close() left on. The COG is already shut down and
-// held in reset, so only the supply cut and the discharge remain.
+// Cuts a supply that cog_close() left on. The controller is already shut down
+// and held in reset, so only the supply cut and the discharge remain.
 static void supply_cut(void)
 {
   if (!s_supply_on) return;
@@ -1004,37 +885,10 @@ static void supply_cut(void)
   rst_set(1);
 }
 
-// -----------------------------------------------------------------------------
-// Public
-// -----------------------------------------------------------------------------
-static bool frame_has_red(void)
-{
-  const uint32_t* p = (const uint32_t*)s_red;
-  for (size_t i = 0; i < EPD_PLANE_BYTES / 4; i++) if (p[i]) return true;
-  return false;
-}
-
-// Which waveform a frame runs and whether it draws red. Same rules as
-// esp32s3-itc97-drag-drop/src/epd_policy.c. With allow-fast-red on, a fast
-// request is never promoted: promoting it would draw the red again, leave
-// s_prev_has_red set, and force every later red image onto the full waveform.
-static void refresh_choice(bool requested_fast, bool have_red,
-                           bool* drive_fast, bool* draw_red)
-{
-  *drive_fast = requested_fast;
-  *draw_red = have_red &&
-      (!requested_fast || (EPD_FAST_ALLOW_RED != 0) || s_allow_fast_red);
-  if (requested_fast && s_allow_fast_red) {
-    *drive_fast = true;
-  } else if (requested_fast && s_prev_has_red && !s_headless) {
-    *drive_fast = false;
-    *draw_red = false;
-  }
-}
-
-// Enough of a geometry block for write_plane() to emit the window registers a
-// 960-wide dual COG expects. Not a captured OTP: the booster repeat counts
-// stay zero so this must never be handed to dcdc_soft_start().
+// Enough of an OTP block for write_plane() to emit the window registers a
+// 960 wide two-controller panel expects, for a board with no panel. It is not a
+// captured OTP. The booster repeat counts are zero, so dcdc_soft_start() sends
+// nothing.
 static void otp_standin(void)
 {
   memset(s_otp, 0, sizeof s_otp);
@@ -1044,43 +898,11 @@ static void otp_standin(void)
   s_driver_b = false;
   s_panel = EPD_PANEL_UNKNOWN;
   s_otp_valid = true;
-  s_otp_standin = true;
 }
 
-// Clock both planes out and return. No 0x15, no BUSY poll. The first call
-// still powers and resets the COG so the bytes land on a live panel when one
-// is wired. That path uses fixed delays, not the refresh timeout.
-static bool send_planes_only(uint32_t t_frame, bool have_red, bool draw_red)
-{
-  if (!s_spi) {
-    LOGF("SPI was not set up, planes not sent");
-    return false;
-  }
-  if (!s_session_open) {
-    // Nothing is attached, so there are no booster rails to bleed down.
-    if (s_headless) s_power_off_valid = false;
-    bus_bitbang();
-    if (cog_initial() != 0) {
-      LOGF("cog_initial failed, sending the planes anyway");
-      if (!s_otp_valid) otp_standin();
-    }
-    s_session_open = true;
-    s_session_images = 0;
-  } else {
-    bus_bitbang();
-  }
-
-  send_planes(have_red, draw_red);
-  s_session_images++;
-  s_planes_only = true;
-  s_last_panel_ms = 0;
-  s_last_frame_ms = now_ms() - t_frame;
-  LOGF("planes on SPI, %u bytes x2 in %u ms, frame %u ms, BUSY not waited",
-       (unsigned)EPD_PLANE_BYTES, (unsigned)s_last_send_ms,
-       (unsigned)s_last_frame_ms);
-  return true;
-}
-
+// -----------------------------------------------------------------------------
+// Public
+// -----------------------------------------------------------------------------
 bool epd_begin(void)
 {
   ESP_LOGI(TAG, "9.7\" iTC, %ux%u, planes %u bytes each",
@@ -1089,7 +911,8 @@ bool epd_begin(void)
   s_bw  = (uint8_t*)heap_caps_malloc(EPD_PLANE_BYTES, MALLOC_CAP_SPIRAM);
   s_red = (uint8_t*)heap_caps_malloc(EPD_PLANE_BYTES, MALLOC_CAP_SPIRAM);
   if (!s_bw || !s_red) {
-    // No PSRAM: 161 kB of internal RAM is a squeeze but not impossible.
+    // Without PSRAM the two planes take 161 kB of internal RAM. That is tight
+    // but possible.
     LOGF("no PSRAM, falling back to internal RAM");
     free(s_bw); free(s_red);
     s_bw  = (uint8_t*)malloc(EPD_PLANE_BYTES);
@@ -1101,7 +924,6 @@ bool epd_begin(void)
   }
   epd_clear();
 
-#if EPD_STAGE_INTERNAL
   s_stage[0] = (uint8_t*)heap_caps_malloc(HALF_PLANE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
   s_stage[1] = (uint8_t*)heap_caps_malloc(HALF_PLANE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
   if (!s_stage[0]) {
@@ -1113,17 +935,16 @@ bool epd_begin(void)
     return false;
   }
   if (!s_stage[1]) LOGF("one SPI staging buffer, halves not overlapped");
-#endif
 
-  // Park the supply switch BEFORE the pin becomes an output: the OUT register
+  // Park the supply switch before the pin becomes an output. The OUT register
   // is written while it is still high-Z, so the first level the gate ever sees
   // driven is the off one. Without this the pin leaves gpio_config at 0, and
-  // on a P-channel high-side switch 0 is ON.
+  // on a P-channel high-side switch 0 is on.
   gpio_set_level((gpio_num_t)EPD_PIN_PWR, EPD_PWR_ACTIVE_HIGH ? 0 : 1);
 
   const uint64_t out_mask =
       (1ULL << EPD_PIN_DC) | (1ULL << EPD_PIN_RST) | (1ULL << EPD_PIN_PWR) |
-      (1ULL << EPD_PIN_CS_M) | (1ULL << EPD_PIN_CS_S);
+      (1ULL << EPD_PIN_CS_L) | (1ULL << EPD_PIN_CS_R);
   gpio_config_t oc = { .pin_bit_mask = out_mask, .mode = GPIO_MODE_OUTPUT };
   gpio_config(&oc);
 
@@ -1133,9 +954,9 @@ bool epd_begin(void)
   gpio_hold_dis((gpio_num_t)EPD_PIN_PWR);
   gpio_deep_sleep_hold_dis();
 
-  uint64_t in_mask = (1ULL << EPD_PIN_BUSY_M);
-#if EPD_PIN_BUSY_S >= 0
-  in_mask |= (1ULL << EPD_PIN_BUSY_S);
+  uint64_t in_mask = (1ULL << EPD_PIN_BUSY_L);
+#if EPD_PIN_BUSY_R >= 0
+  in_mask |= (1ULL << EPD_PIN_BUSY_R);
 #endif
   gpio_config_t ic = {
     .pin_bit_mask = in_mask,
@@ -1150,7 +971,7 @@ bool epd_begin(void)
   cs_hi();
   dc_set(1);
 
-  // One transaction carries one COG's half of a plane.
+  // One transaction carries one controller's half of a plane.
   spi_bus_config_t bus = {
     .mosi_io_num = EPD_PIN_MOSI,
     .miso_io_num = -1,
@@ -1175,193 +996,77 @@ bool epd_begin(void)
   }
   bus_bitbang();
 
-  epd_build_lut8(s_lut8, false, false);
-  if (!s_lutb_custom) epd_build_lutb(s_lutb);
-
-  // One power-up to find out what is attached, unless a previous wake already
-  // answered that. The OTP is cached from here on either way.
   if (otp_restore()) {
-    LOGF("panel from RTC memory, probe skipped");
+    LOGF("panel from RTC memory, detection skipped");
   } else if (cog_initial() != 0) {
     cog_stop();
     otp_standin();
     s_headless = true;
-    LOGF("no panel answered. SPI plane transfer still runs, waveform refresh %s",
-         s_run_refresh ? "on" : "off");
+    LOGF("no panel answered. Refreshes send the planes and give up at the first BUSY wait");
   } else {
     cog_stop();
   }
   s_ready = true;
-  if (!s_headless) {
-    LOGF("ready, panel %s%s", epd_panel_name(),
-         s_run_refresh ? "" : ", waveform refresh off");
-  }
+  if (!s_headless) LOGF("ready, panel %s", epd_panel_name());
   return true;
-}
-
-bool refresh_display(epd_refresh_t mode)
-{
-  if (!s_ready) {
-    LOGF("refresh_display() before a successful epd_begin()");
-    return false;
-  }
-  // A tone session holds its own table latched. Close it so this
-  // refresh opens a session on the waveform it needs. cal reopens on demand.
-  if (s_tone_open) {
-    LOGF("closing the open tone session for the refresh");
-    epd_tone_close();
-  }
-  s_refreshing = true;
-  const uint32_t t_frame = now_ms();
-
-  const bool have_red = frame_has_red();
-  bool drive_fast;
-  bool draw_red;
-  refresh_choice(mode == EPD_FAST, have_red, &drive_fast, &draw_red);
-
-  if (!s_run_refresh) {
-    bool planes_ok = send_planes_only(t_frame, have_red, draw_red);
-    s_refreshing = false;
-    return planes_ok;
-  }
-
-  // Planes-only leaves the session open with no latched waveform. A real
-  // panel has to start a fresh session, and must not ramp its booster off a
-  // stand-in OTP. With nothing attached the stand-in stays: the fast
-  // sequence still runs, and the BUSY cap in wait_busy() keeps it short.
-  if (s_planes_only) {
-    s_lut_latched = false;
-    s_planes_only = false;
-    if (!s_headless) {
-      s_session_open = false;
-      if (s_otp_standin) {
-        s_otp_valid = false;
-        s_otp_standin = false;
-      }
-    }
-  }
-
-  s_frame_has_red = draw_red;
-
-  epd_refresh_t drive = drive_fast ? EPD_FAST : EPD_SLOW;
-  if (mode == EPD_FAST && drive == EPD_SLOW) {
-    LOGF("red on the panel, this fast refresh runs slow to clear it");
-  }
-
-  // Red stages when this frame draws red, or when the previous one did and
-  // this fast frame still has to erase it. refresh_choice() clears draw_red
-  // on a promoted pass, and the latch below stores that.
-  const bool need_red_lut = draw_red || s_prev_has_red;
-
-  // The panel latches one waveform per session and will not take a second one,
-  // so anything that changes the waveform has to close the session first.
-  if (s_session_open &&
-      (drive != s_latched_mode ||
-       (drive == EPD_FAST && !s_driver_b && need_red_lut != s_lut8_has_red) ||
-      (drive == EPD_FAST && s_driver_b && s_lutb_dirty))) {
-    VLOGF("the waveform changed, reopening the session");
-    cog_close();
-    s_session_open = false;
-    s_lut_latched = false;
-  }
-
-  if (!s_session_open) {
-    bus_bitbang();
-    s_quick = EPD_QUICK_OPEN && s_driver_b && drive == EPD_FAST;
-    if (cog_initial() != 0) {
-      LOGF("cog_initial failed");
-      cog_stop();
-      s_refreshing = false;
-      return false;
-    }
-    s_session_open = true;
-    s_lut_latched = false;
-    s_session_images = 0;
-  } else {
-    VLOGF("reusing the open session, image %u",
-          (unsigned)s_session_images + 1u);
-  }
-
-  send_planes(have_red, draw_red);
-  LOGF("planes on SPI, %u bytes x2 in %u ms",
-       (unsigned)EPD_PLANE_BYTES, (unsigned)s_last_send_ms);
-  LOGF("%s waveform armed", drive == EPD_FAST ? "fast" : "slow");
-
-  // The first image of a session goes through the full sequence, which is what
-  // latches the waveform. Later images only need the planes and a trigger:
-  // rewriting 0xB0 inside a session does not re-latch, it drops the panel back
-  // onto its own waveform.
-  bod_hold_off();
-  int rc = s_lut_latched ? retrigger(EPD_IDLE_WAIT_MS) : do_refresh(drive, need_red_lut);
-
-  // Only driver B needs more than one pull. Its refresh runs for a fixed time
-  // whatever the table asks for, so a single pass cannot carry enough dose to
-  // clear the previous frame. On the 084 the duration follows the table and
-  // repeating it only multiplies the time.
-  if (rc == 0 && drive == EPD_FAST && s_driver_b) {
-    // Each pull overwrites s_last_panel_ms. Sum them so the reported panel
-    // time covers the whole refresh.
-    uint32_t total = s_last_panel_ms;
-    for (unsigned pull = 1; rc == 0 && pull < s_fast_pulls; pull++) {
-      rc = retrigger(EPD_IDLE_WAIT_MS);
-      total += s_last_panel_ms;
-    }
-    s_last_panel_ms = total;
-  }
-
-  s_latched_mode = drive;
-  s_lut_latched = (rc == 0) && (drive == EPD_FAST);
-  s_prev_has_red = draw_red;
-  s_session_images++;
-
-  const bool keep = s_keep_awake && s_lut_latched && (rc == 0) &&
-                    (s_session_images < (uint32_t)EPD_SESSION_IMAGES);
-  if (!keep) {
-    s_session_open = false;
-    s_lut_latched = false;
-    if (rc == 0) cog_close();
-    else         cog_stop();
-  }
-  bod_restore();
-
-  s_last_frame_ms = now_ms() - t_frame;
-  // The planes are already out. A missing panel that never releases BUSY is
-  // not a failed picture: the waveform was requested and the wait was capped.
-  const bool headless_gave_up = s_headless && rc != 0;
-  LOGF("%s refresh %s, panel %u ms, send %u ms, frame %u ms, red %s%s",
-       (drive == mode) ? (drive == EPD_FAST ? "fast" : "slow")
-                       : "slow (promoted)",
-       rc == 0 ? "done" : (headless_gave_up ? "no panel" : "FAILED"),
-       (unsigned)s_last_panel_ms, (unsigned)s_last_send_ms,
-       (unsigned)s_last_frame_ms,
-       draw_red ? "drawn" : (have_red ? "as ink" : "none"),
-       keep ? ", COG kept up" : "");
-  s_refreshing = false;
-  return rc == 0 || headless_gave_up;
 }
 
 static void tone_close(bool cut);
 
+bool refresh_display(epd_refresh_t mode)
+{
+  (void)mode;   // EPD_SLOW is the only refresh
+  if (!s_ready) {
+    LOGF("refresh_display() before a successful epd_begin()");
+    return false;
+  }
+  // A tone session holds its own table latched. Close it so this refresh
+  // opens a session on the panel's own waveform.
+  if (s_tone_open) {
+    LOGF("closing the open tone session for the refresh");
+    tone_close(EPD_KEEP_SUPPLY == 0);
+  }
+  s_refreshing = true;
+  const uint32_t t_frame = now_ms();
+
+  bus_bitbang();
+  s_quick = false;
+  if (cog_initial() != 0) {
+    LOGF("cog_initial failed");
+    cog_stop();
+    s_refreshing = false;
+    return false;
+  }
+
+  uint32_t send_ms = 0;
+  if (!send_planes(s_bw, s_red, &send_ms)) {
+    LOGF("plane send failed, refresh not started");
+    cog_stop();
+    s_refreshing = false;
+    return false;
+  }
+  LOGF("planes on SPI, %u bytes x2 in %u ms", (unsigned)EPD_PLANE_BYTES, (unsigned)send_ms);
+
+  bod_hold_off();
+  const int rc = do_refresh();
+  if (rc == 0) cog_close();
+  else         cog_stop();
+  bod_restore();
+
+  // A missing panel that never releases BUSY is not a failed picture. The
+  // planes are out, the waveform was requested and the wait was capped.
+  const bool headless_gave_up = s_headless && rc != 0;
+  LOGF("slow refresh %s, panel %u ms, send %u ms, frame %u ms",
+       rc == 0 ? "done" : (headless_gave_up ? "no panel" : "FAILED"),
+       (unsigned)s_last_panel_ms, (unsigned)send_ms, (unsigned)(now_ms() - t_frame));
+  s_refreshing = false;
+  return rc == 0 || headless_gave_up;
+}
+
 void epd_sleep(void)
 {
   tone_close(true);
-  if (s_session_open) {
-    s_session_open = false;
-    s_lut_latched = false;
-    cog_stop();
-  }
   supply_cut();
-}
-
-bool epd_clear_screen(void)
-{
-  if (s_tone_open) {
-    LOGF("closing the open tone session for the clear");
-    epd_tone_close();
-  }
-  LOGF("clearing the panel");
-  epd_clear();
-  return refresh_display(EPD_SLOW);
 }
 
 void epd_deep_sleep_prepare(void)
@@ -1376,116 +1081,36 @@ void epd_deep_sleep_prepare(void)
   LOGF("supply latched off, panel ready for deep sleep");
 }
 
-void epd_set_keep_awake(bool on) { s_keep_awake = on; }
-bool epd_keep_awake(void)        { return s_keep_awake; }
-
-void epd_set_run_refresh(bool on) { s_run_refresh = on; }
-bool epd_run_refresh(void)        { return s_run_refresh; }
-void epd_set_allow_fast_red(bool on) { s_allow_fast_red = on; }
-
-esp_err_t epd_set_fast_lut(const uint8_t* table, size_t len)
-{
-  if (s_refreshing) return ESP_ERR_INVALID_STATE;
-  if (table == NULL) {
-    epd_build_lutb(s_lutb);
-    s_lutb_custom = false;
-  } else {
-    if (len != LUTB_BYTES) return ESP_ERR_INVALID_SIZE;
-    const int zero = epd_lutb_zero_count_at(table);
-    if (zero >= 0) {
-      LOGF("fast table rejected, zero count byte at offset %d (table %d group %d byte %d)",
-           zero, zero / 80, (zero / 8) % 10, zero % 8);
-      return ESP_ERR_INVALID_ARG;
-    }
-    memcpy(s_lutb, table, LUTB_BYTES);
-    s_lutb_custom = true;
-  }
-  // A latched session keeps the table it latched. Rewriting 0xB0 inside it
-  // drops the panel back onto its own waveform, so the next fast refresh
-  // reopens the session instead.
-  s_lutb_dirty = true;
-  return ESP_OK;
-}
-
-void epd_set_fast_pulls(unsigned n)
-{
-  if (n == 0u) n = (unsigned)EPD_B_REFRESH_PULLS;
-  if (n > (unsigned)EPD_B_PULLS_MAX) n = (unsigned)EPD_B_PULLS_MAX;
-  s_fast_pulls = n;
-}
-unsigned epd_fast_pulls(void) { return s_fast_pulls; }
-
 // -----------------------------------------------------------------------------
-// Tone pass
+// Tone session
 // -----------------------------------------------------------------------------
-// A pass that sent red plane bits may have moved red pigment, so the panel is
-// then treated as holding red.
 static void tone_close(bool cut)
 {
   if (!s_tone_open) return;
   bod_hold_off();
   cog_stop_ex(cut);
   bod_restore();
-  if (s_tone_red) s_prev_has_red = true;
   s_tone_open = false;
   s_tone_unit = 0;
-  s_tone_red = false;
-  s_tone_table = EPD_TONE_TABLE_CAL;
-  s_session_open = false;
-  s_lut_latched = false;
+  s_tone_table = EPD_TONE_TABLE_NONE;
   LOGF("tone session closed%s", s_supply_on ? ", supply kept on" : "");
-}
-
-void epd_tone_close(void) { tone_close(EPD_KEEP_SUPPLY == 0); }
-
-esp_err_t epd_tone_open(uint8_t unit_frames, uint8_t vcom_level)
-{
-  return epd_tone_open_table(unit_frames, vcom_level, EPD_TONE_TABLE_CAL);
 }
 
 esp_err_t epd_tone_open_table(uint8_t unit_frames, uint8_t vcom_level,
                               epd_tone_table_t table)
 {
-  return epd_tone_open_ex(unit_frames, vcom_level, table, false);
-}
-
-// Preconditions every tone open shares.
-static esp_err_t tone_check(uint8_t unit_frames)
-{
   if (!s_ready || s_headless || s_refreshing) return ESP_ERR_INVALID_STATE;
-  if (!s_driver_b || s_otp_standin) return ESP_ERR_NOT_SUPPORTED;
-  if (unit_frames == 0u || unit_frames > EPD_TONE_UNIT_MAX) return ESP_ERR_INVALID_ARG;
-  return ESP_OK;
-}
-
-static const char* tone_table_name(epd_tone_table_t table)
-{
-  switch (table) {
-    case EPD_TONE_TABLE_SEQ:    return "seq";
-    case EPD_TONE_TABLE_PHASE1: return "phase1";
-    default:                    return "cal";
-  }
-}
-
-esp_err_t epd_tone_open_ex(uint8_t unit_frames, uint8_t vcom_level,
-                           epd_tone_table_t table, bool with_planes)
-{
-  const esp_err_t pre = tone_check(unit_frames);
-  if (pre != ESP_OK) return pre;
+  if (!s_driver_b) return ESP_ERR_NOT_SUPPORTED;
   if (vcom_level > 3u) return ESP_ERR_INVALID_ARG;
-  if (table != EPD_TONE_TABLE_CAL && table != EPD_TONE_TABLE_SEQ &&
-      table != EPD_TONE_TABLE_PHASE1) {
-    return ESP_ERR_INVALID_ARG;
-  }
 
   uint32_t frames;
+  const char* name;
   if (table == EPD_TONE_TABLE_SEQ) {
-    vcom_level = 0;
-    if (unit_frames > EPD_SEQ_UNIT_MAX) return ESP_ERR_INVALID_ARG;
+    if (unit_frames == 0u || unit_frames > EPD_SEQ_UNIT_MAX) return ESP_ERR_INVALID_ARG;
     epd_build_lutb_seq(s_tone_lut, unit_frames);
     frames = epd_lutb_seq_frames(s_tone_lut);
+    name = "seq";
   } else if (table == EPD_TONE_TABLE_PHASE1) {
-    vcom_level = 0;
     unit_frames = EPD_PHASE1_DRIVE;
     epd_build_lutb_phase1(s_tone_lut);
     frames = epd_lutb_phase1_frames(s_tone_lut);
@@ -1494,27 +1119,20 @@ esp_err_t epd_tone_open_ex(uint8_t unit_frames, uint8_t vcom_level,
            (unsigned)EPD_PHASE1_PULL_FRAMES);
       return ESP_ERR_INVALID_STATE;
     }
+    name = "phase1";
   } else {
-    epd_build_lutb_cal(s_tone_lut, unit_frames, vcom_level);
-    frames = epd_lutb_cal_frames(s_tone_lut);
+    return ESP_ERR_INVALID_ARG;
   }
   if (frames == 0u) {
     LOGF("tone table has a zero or uneven count, not sent");
     return ESP_ERR_INVALID_STATE;
   }
 
-  // The panel latches one table per session, so any open session ends here.
+  // The panel latches one table per session, so an open session ends here.
   if (s_tone_open) {
     LOGF("closing the open tone session to latch unit %u", (unsigned)unit_frames);
-    epd_tone_close();
-  } else if (s_session_open) {
-    LOGF("closing the open %s session for the tone table",
-         s_planes_only ? "planes-only" : "refresh");
-    cog_close();
-    s_session_open = false;
-    s_lut_latched = false;
+    tone_close(EPD_KEEP_SUPPLY == 0);
   }
-  s_planes_only = false;
 
   s_refreshing = true;
   const uint32_t t0 = now_ms();
@@ -1527,13 +1145,16 @@ esp_err_t epd_tone_open_ex(uint8_t unit_frames, uint8_t vcom_level,
     return ESP_FAIL;
   }
 
-  // Both planes zero select code 0 for every pixel. That is hold on the cal
-  // and seq sets and S on the phase 1 set, and nothing is driven before the
-  // first pull. write_plane() sends the window registers ahead of the bw plane.
-  // with_planes sends the caller's planes here instead, before the latch.
-  write_plane(0x10, with_planes ? s_bw : NULL, NULL);
-  write_plane(0x13, with_planes ? s_red : NULL, NULL);
-  send_upd(UPD_STEPS);
+  // Both planes zero select code 0 for every pixel, and nothing is driven
+  // before the first pull. write_plane() sends the window registers ahead of
+  // the bw plane.
+  if (!send_planes(NULL, NULL, NULL)) {
+    LOGF("tone open: plane send failed");
+    cog_stop();
+    s_refreshing = false;
+    return ESP_FAIL;
+  }
+  send_upd();
   // The update registers overwrite 0xB0, and nothing after this touches it.
   send_index(0xB0, s_tone_lut, (uint16_t)LUTB_BYTES);
 
@@ -1549,40 +1170,15 @@ esp_err_t epd_tone_open_ex(uint8_t unit_frames, uint8_t vcom_level,
   }
   bod_restore();
 
-  s_session_open = true;
-  s_lut_latched = true;
-  s_session_images = 0;
   s_tone_open = true;
   s_tone_unit = unit_frames;
-  s_tone_red = with_planes && frame_has_red();
   s_tone_table = table;
   s_refreshing = false;
   LOGF("%s session open, unit %u frames, pull %u frames = %u ms at %u.%u ms per frame, open %u ms",
-       tone_table_name(table),
-       (unsigned)unit_frames, (unsigned)frames,
+       name, (unsigned)unit_frames, (unsigned)frames,
        (unsigned)((frames * EPD_B_FRAME_US) / 1000u),
        (unsigned)(EPD_B_FRAME_US / 1000u), (unsigned)((EPD_B_FRAME_US % 1000u) / 100u),
        (unsigned)(now_ms() - t0));
-  if (table == EPD_TONE_TABLE_SEQ) {
-    LOGF("seq tables: 0 hold, 1 paper VDL, 2 ink VDH, %u driven of %u frames. "
-         "3 w: %u VDHR then ground. One frame a group, phase C only",
-         (unsigned)unit_frames, (unsigned)EPD_SEQ_PULL_FRAMES, (unsigned)EPD_SEQ_W_FRAMES);
-    return ESP_OK;
-  }
-  if (table == EPD_TONE_TABLE_PHASE1) {
-    LOGF("phase 1 tables: 0 S shake 6 VDH 6 VDL, 1 I %u VDH, 2 P %u VDL, 3 M 8 VDL 4 VDH, "
-         "no hold, slotted, %u frames a pull",
-         (unsigned)EPD_PHASE1_DRIVE, (unsigned)EPD_PHASE1_DRIVE, (unsigned)EPD_PHASE1_PULL_FRAMES);
-    return ESP_OK;
-  }
-  // Net field per code, source minus VCOM, as epd_build_lutb_cal() sets it.
-  static const char* const k_rail[4] = { "GND", "VDH", "VDL", "VDHR" };
-  const char* vc = k_rail[vcom_level];
-  if (vcom_level == 0u) {
-    LOGF("vcom GND: hold 0, push VDH, pull VDL, red step VDHR");
-  } else {
-    LOGF("vcom %s: hold 0, push VDH-%s, pull VDL-%s, weak pull -%s", vc, vc, vc, vc);
-  }
   return ESP_OK;
 }
 
@@ -1600,17 +1196,16 @@ esp_err_t epd_tone_pull(unsigned pulls, bool resend, uint32_t *panel_ms_total)
   s_refreshing = true;
   const uint32_t t_frame = now_ms();
   bus_bitbang();
-  if (resend) {
-    if (frame_has_red()) s_tone_red = true;
-    // Both planes go out unmerged: draw_red sends the red plane as it is.
-    send_planes(false, true);
-  } else {
-    s_last_send_ms = 0;
+  uint32_t send_ms = 0;
+  if (resend && !send_planes(s_bw, s_red, &send_ms)) {
+    LOGF("tone plane send failed, closing the session");
+    tone_close(true);
+    s_refreshing = false;
+    return ESP_FAIL;
   }
 
-  // Triggers only, as a kept session does after its first image. 0xB0 is not
-  // written again: a rewrite inside a session drops the panel onto its own
-  // waveform.
+  // Triggers only. 0xB0 is not written again, because a rewrite inside a
+  // session drops the panel back onto its own waveform.
   bod_hold_off();
   uint32_t total = 0;
   unsigned done = 0;
@@ -1621,9 +1216,7 @@ esp_err_t epd_tone_pull(unsigned pulls, bool resend, uint32_t *panel_ms_total)
     total += s_last_panel_ms;
     done++;
   }
-  s_last_panel_ms = total;
   if (panel_ms_total) *panel_ms_total = total;
-  s_session_images++;
 
   if (rc != 0) {
     LOGF("tone pull %u of %u did not finish, closing the session",
@@ -1632,115 +1225,20 @@ esp_err_t epd_tone_pull(unsigned pulls, bool resend, uint32_t *panel_ms_total)
   }
   bod_restore();
 
-  s_last_frame_ms = now_ms() - t_frame;
   s_refreshing = false;
   LOGF("tone pass %u of %u pulls, panel %u ms, send %u ms, frame %u ms",
-       done, pulls, (unsigned)total, (unsigned)s_last_send_ms,
-       (unsigned)s_last_frame_ms);
+       done, pulls, (unsigned)total, (unsigned)send_ms,
+       (unsigned)(now_ms() - t_frame));
   return rc == 0 ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
 bool    epd_tone_is_open(void) { return s_tone_open; }
 uint8_t epd_tone_unit(void)    { return s_tone_unit; }
-epd_tone_table_t epd_tone_table(void) { return s_tone_open ? s_tone_table : EPD_TONE_TABLE_CAL; }
+epd_tone_table_t epd_tone_table(void) { return s_tone_open ? s_tone_table : EPD_TONE_TABLE_NONE; }
 
-// The variant's own read. Driver 8 gets its unlock and address writes on both
-// COGs here, where the probe sends them to the left COG only.
-size_t epd_otp_dump(uint8_t* dst, size_t cap)
-{
-  epd_otp_probe_t p = { 0 };
-  if (s_driver_b) {
-    p.opener = 0xB9;
-  } else {
-    p.set_addr = true;
-    p.addr = 0x0040;
-    p.opener = 0xA8;
-    p.skip_0x70 = true;
-  }
-  return epd_otp_dump_ex(&p, dst, cap);
-}
-
-size_t epd_otp_dump_ex(const epd_otp_probe_t* probe, uint8_t* dst, size_t cap)
-{
-  if (!s_ready || s_headless || s_refreshing || !s_otp_valid || s_otp_standin) return 0;
-  if (probe == NULL || dst == NULL || cap == 0u) return 0;
-  if (cap > (size_t)EPD_OTP_DUMP_MAX) cap = (size_t)EPD_OTP_DUMP_MAX;
-
-  // The read needs a fresh power-up and reset, so an open session ends here.
-  tone_close(true);
-  if (s_session_open) {
-    s_session_open = false;
-    s_lut_latched = false;
-    cog_stop();
-  }
-  supply_cut();
-  bus_bitbang();
-  otp_read_probe(probe, dst, cap);
-  cog_stop();
-  LOGF("OTP dump, %u bytes from the left COG, opener 0x%02X",
-       (unsigned)cap, (unsigned)probe->opener);
-  return cap;
-}
-
-// Same power-up, reset and read as otp_read_probe(), with the register index
-// as the opener. Never sends 0x15 and never ramps the booster.
-size_t epd_reg_read(const epd_reg_probe_t* probe, uint8_t* dst, size_t cap)
-{
-  if (!s_ready || s_headless || s_refreshing || !s_otp_valid || s_otp_standin) return 0;
-  if (probe == NULL || dst == NULL || cap == 0u) return 0;
-  if (cap > (size_t)EPD_OTP_DUMP_MAX) cap = (size_t)EPD_OTP_DUMP_MAX;
-
-  tone_close(true);
-  if (s_session_open) {
-    s_session_open = false;
-    s_lut_latched = false;
-    cog_stop();
-  }
-  supply_cut();
-  bus_bitbang();
-  cog_select(COG_M);
-  cog_reset();
-
-  cog_select(COG_BOTH);
-  if (!probe->skip_0x70) send_u8x2(0x70, 0x71, 0x36);
-  // The guard above requires the cached block, so this sends nothing.
-  if (otp_read() != 0) {
-    cog_stop();
-    return 0;
-  }
-  cog_select(COG_BOTH);
-  if (probe->after_update) {
-    send_upd(UPD_PRE_GEOM);
-    // The fast refresh's 0xB0 write from do_refresh(), to both COGs.
-    if (probe->write_lut) send_index(0xB0, s_lutb, (uint16_t)LUTB_BYTES);
-  } else if (probe->pre_44_06) {
-    send_u8(0x44, 0x06);
-  }
-
-  cog_select(COG_M);
-  dc_set(0);
-  cs_lo();
-  bb_out_slow(probe->index);
-  otp_read_tail(dst, cap, !probe->no_dummy);
-  cog_stop();
-  LOGF("register 0x%02X read, %u bytes from the left COG%s%s",
-       (unsigned)probe->index, (unsigned)cap,
-       probe->after_update ? " after the update registers" : "",
-       (probe->after_update && probe->write_lut) ? " and 0xB0" : "");
-  return cap;
-}
-
-const uint8_t* epd_otp_block(size_t* len)
-{
-  const bool have = s_otp_valid && !s_otp_standin;
-  if (len) *len = have ? (size_t)EPD_OTP_LEN : 0u;
-  return have ? s_otp : NULL;
-}
-
-bool epd_headless(void)           { return s_headless; }
-bool epd_refreshing(void)         { return s_refreshing; }
-
-epd_panel_t epd_panel(void)      { return s_panel; }
+// -----------------------------------------------------------------------------
+// Panel and framebuffer
+// -----------------------------------------------------------------------------
 const char* epd_panel_name(void)
 {
   switch (s_panel) {
@@ -1749,10 +1247,12 @@ const char* epd_panel_name(void)
     default:            return "unknown";
   }
 }
-uint32_t epd_last_panel_ms(void) { return s_last_panel_ms; }
-uint32_t epd_last_frame_ms(void) { return s_last_frame_ms; }
-uint32_t epd_last_send_ms(void)  { return s_last_send_ms; }
-int64_t  epd_last_send_end_us(void) { return s_last_send_end_us; }
 
 uint8_t* epd_plane_bw(void)  { return s_bw; }
 uint8_t* epd_plane_red(void) { return s_red; }
+
+void epd_clear(void)
+{
+  memset(s_bw, 0, EPD_PLANE_BYTES);
+  memset(s_red, 0, EPD_PLANE_BYTES);
+}

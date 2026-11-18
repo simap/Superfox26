@@ -1,3 +1,8 @@
+// Keeps a small amount of state that survives a reset or deep sleep, so a wake can tell a first
+// boot from a later one and can tell whether a draw was cut short by a reset.
+// rtcstate_commit stores the magic last, behind a full memory fence, so rtcstate_begin reports the
+// state as valid only after every earlier write to it is in place.
+
 #include "rtcstate.h"
 
 #include <atomic>
@@ -6,19 +11,15 @@
 
 namespace
 {
-// "RTS" in the upper 3 bytes, the layout version in the low byte. Units: main/sizecache.cpp, main/wifi.c,
-// main/browser.cpp.
-const uint32_t RTCSTATE_MAGIC = 0x52545306;
+const uint32_t RTCSTATE_MAGIC = 0x52545307;
 
 RTC_NOINIT_ATTR uint32_t s_magic;
 
-// The draw word. It does not depend on s_magic: only DRAW_RUNNING means a draw was cut short, and
-// memory after power on holds that value by chance once in 2^32.
-const uint32_t DRAW_RUNNING = 0x44524157; // "DRAW"
-const uint32_t DRAW_DONE    = 0x646f6e65; // "done"
+const uint32_t DRAW_RUNNING = 0x44524157;
+const uint32_t DRAW_DONE    = 0x646f6e65;
 
 RTC_NOINIT_ATTR volatile uint32_t s_draw;
-} // namespace
+}
 
 void rtcstate_draw_begin()
 {
@@ -42,7 +43,6 @@ bool rtcstate_begin()
 
 void rtcstate_commit()
 {
-    // The clears of the units reach memory before the magic word.
     std::atomic_thread_fence(std::memory_order_seq_cst);
     s_magic = RTCSTATE_MAGIC;
 }

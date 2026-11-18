@@ -179,7 +179,7 @@
       <div class="page heads">
         <span></span><span></span><span>URL</span>
         <span title="The first row of the page that shows, in pixels">Scroll</span>
-        <span title="Time on the panel. Empty: the default">Minutes</span><span></span>
+        <span title="Time from the start of this page to the start of the next. Empty: the default">Minutes</span><span></span>
       </div>
       <div id="pages"></div>
       <form id="add" class="page">
@@ -207,6 +207,8 @@
       </form>
     </details>
   </section>
+
+  <footer class="dim">Superfox26 is not affiliated with Hackaday.</footer>
 </main>
 
 <script type="module">
@@ -516,6 +518,7 @@ async function status(silent = false) {
 const STATES = {
   wait: "showing a page", render: "loading a page", refresh: "drawing the panel",
   nowifi: "waiting for WiFi", nourls: "waiting for a page list", sleep: "going to sleep", lowbatt: "battery low",
+  welcome: "showing the welcome notice", hold: "holding a page", boot: "starting",
 };
 
 // Reads the status into badge and shows it. Null when no firmware answers.
@@ -530,7 +533,7 @@ async function refresh(silent = false) {
   const fw = await firmware.catch(() => null);
   st.same = !!fw && fw.sha === st.sha;
   badge = st;
-  $("fwstate").textContent = (st.built ? `Firmware built ${st.built}.` : "Firmware from before build dates were reported.")
+  $("fwstate").textContent = (st.built ? `Firmware built ${st.built}.` : "Build date unknown.")
     + (st.same ? " It is the build this page installs." : fw ? ` This page installs the build of ${fw.built}.` : "");
   if (!$("ssid").value) $("ssid").value = st.ssid;
   paint();
@@ -829,7 +832,7 @@ $("wifi").onsubmit = e => {
     for (let i = 0; i < 50 && badge && !badge.connected; i++) await sleep(500);
     const st = await refresh();
     if (st && st.connected) say(`Connected to ${ssid}.`);
-    else say("Not connected. Check the password. The radio is off during a page draw.", true);
+    else say("Not connected. Check the password. On battery the radio is off during a page draw.", true);
   });
 };
 
