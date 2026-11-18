@@ -62,23 +62,35 @@ After setup the badge fetches each page in the list in turn, draws it, and holds
 time before the next. A page with no time set holds for the default, one hour
 (`B26_CYCLE_SECONDS`).
 
-Buttons with an action:
+The buttons:
 
-- User A draws the previous page.
-- User B draws the next page.
-- Menu + and Menu - have no action while a page is shown.
+- User A chooses the previous page.
+- User B chooses the next page.
+- Menu + and Menu - hold the page on the panel and stop the timer. Press either again to resume.
 
-On battery, User B and Menu - also wake the badge from deep sleep. After a button wake the LEDs open
-a short selection window. Each press of User A or User B steps the chosen page. The badge draws the
-chosen page once the buttons have been quiet for about one and a half seconds.
+Each press of User A or User B moves the choice by one page. The LED bar shows the choice as an
+offset from the page on the panel. The badge loads the chosen page once the buttons are quiet for
+about one and a half seconds. A panel draw already running finishes first. A page the choice moves
+past before its draw is abandoned.
+
+On battery, User B and Menu - wake the badge from deep sleep. User B wakes to the next page. Menu -
+wakes to the page on the panel. A wake opens the same selection window. A held page keeps the badge
+asleep until a button, with no timer wake.
 
 The LED bar shows the current activity:
 
-- Amber, a growing bar, while a page is fetched and laid out. A short amber flash marks a failed
-  WiFi connection.
-- Violet marks the chosen page during the selection window.
-- Teal, a draining bar, counts down to the next page on USB power.
-- Red, flashing, means the firmware is halted after a cut draw.
+| The LED bar shows | Meaning |
+|---|---|
+| Amber, a growing bar | A page is fetched and laid out. |
+| A short amber flash | A WiFi connection failed. |
+| Teal, a draining bar | The countdown to the next page, on USB power. |
+| Teal on the last LED, or a full teal bar | The page is held. Press Menu to resume. |
+| A violet, white, blue or green run | The chosen page during the selection window. The run grows from the left end for a forward choice and from the right end for a back choice, one LED per page of offset. Past seven it starts again in the next colour. |
+| The two middle LEDs violet | The choice is the page on the panel, so it stays. |
+| The chosen run blinking | The badge is loading or drawing the chosen page. |
+| The first LED red, a short flash | A press with no page list. |
+| The first LED red, flashing about once a second | The badge is halted after a cut draw. Switch it off and on. |
+| Dark | Waiting for WiFi, an empty list, or between pages. |
 
 On USB power the badge stays awake, keeps the radio on, and runs the serial console. On battery the
 radio is off during the panel draw, and the badge deep sleeps between pages to save the cell. It
@@ -128,7 +140,7 @@ filters on these three prefixes.
 | Command | Arguments | What it does |
 |---|---|---|
 | `help` | | List the commands. |
-| `status` | | Print WiFi, power, the page list source, the page index, the build and free heap. |
+| `status` | | Print WiFi, power, the page list source, the page index and state, the build and free heap. |
 | `wifi` | | Print the stored network name and whether it is connected. |
 | `wifi` | `SSID [PASSWORD]` | Store the network and connect. |
 | `wifi clear` | | Remove the stored network. |
@@ -157,7 +169,9 @@ States:
 
 | State | Meaning |
 |---|---|
+| `boot` | Starting up, before the first page. |
 | `wait` | A page is shown, waiting for the next. |
+| `hold` | A page is held, the timer is stopped. |
 | `render` | Fetching and laying out a page. |
 | `refresh` | Drawing the panel. |
 | `sleep` | Going into deep sleep. |
@@ -187,8 +201,8 @@ Superfox26 draws one page as a pipeline:
    connection open for the next request. A page is read up to 700 KB (`PAGE_HTML_MAX`), an image up
    to 300 KB.
 2. Parse and layout. The litehtml fork parses the HTML and lays it out at the 960 px panel width.
-   The top 38 px of the panel is a tab bar. It shows up to 8 tabs around the current page and a
-   count of the pages hidden on each side. The rest is the page window.
+   The top 38 px of the panel is a tab bar. It shows a window of up to eight tabs around the
+   current page, with a count box for the pages hidden on each side. The rest is the page window.
 3. Images. `main/image.cpp` decodes PNG, JPEG, GIF (first frame), BMP and WebP. A collect pass finds
    the images in the window, fetches them, and scales them down.
 4. Dither. `main/render.cpp` composites the page into a 24-bit RGB band buffer, 64 rows at a time.
@@ -257,6 +271,7 @@ Host tests:
 |---|---|
 | `host_tests/power/` | The power decisions in `main/power_logic.h`. |
 | `host_tests/browser_power/` | The wake, sleep and low battery decisions in `main/browser_logic.h`. |
+| `host_tests/leds/` | The LED bar signals in `main/leds_logic.h`. |
 | `host_tests/sizecache/` | The image size cache in `main/sizecache.cpp`. |
 | `host_tests/tone_fx/` | The fixed-point shade kernels, one subdirectory each. |
 | `host_tests/tone_tables/` | Generates and checks `main/tone_tables.inc` from `main/tonemap.h`. |

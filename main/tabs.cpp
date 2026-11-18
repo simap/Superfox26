@@ -246,6 +246,28 @@ std::string html_escape(const std::string& s)
     return out;
 }
 
+namespace
+{
+// A <wbr> between the characters of the first word lets a long first word break between glyphs.
+// Without it the word moves whole to the hidden second line and the tab shows no title. Each <wbr> is
+// an element, so only the first 32 characters get one.
+std::string title_html(const std::string& title)
+{
+    size_t      word = std::min(title.find(' '), title.size()), i = 0;
+    std::string out;
+    for(int n = 0; i < word && n < 32; i++)
+    {
+        if(i && (title[i] & 0xc0) != 0x80)
+        {
+            out += "<wbr>";
+            n++;
+        }
+        out += html_escape(title.substr(i, 1));
+    }
+    return out + html_escape(title.substr(i));
+}
+}
+
 bool tabs_load(const std::string& url, tab_info& out)
 {
     out = tab_info();
@@ -370,6 +392,8 @@ std::string tabs_html(const std::vector<page_entry>& pages, size_t current, cons
     int  inner = tab_h - 1;
     int  row = tones_solid_gray(174), fill = tones_solid_gray(200);
     char css[1200];
+    // The litehtml fork has no text-overflow. A title wraps and only its first line shows, so a cut
+    // never splits a glyph.
     snprintf(css, sizeof(css),
              "body{margin:0;padding:0;background:#%02x%02x%02x}"
              ".bar{display:flex;height:%dpx;padding:0 6px;border-bottom:1px solid #000;box-sizing:border-box}"
@@ -378,8 +402,8 @@ std::string tabs_html(const std::vector<page_entry>& pages, size_t current, cons
              "border-radius:9px 9px 0 0;box-sizing:border-box;background:#%02x%02x%02x}"
              ".in{height:%dpx;border:1px solid #fff;border-right-color:#%02x%02x%02x;border-bottom:none;"
              "border-radius:8px 8px 0 0;padding:0 6px;box-sizing:border-box;font-family:Arial;font-weight:bold;"
-             "font-size:17px;line-height:%dpx;white-space:nowrap;overflow:hidden;color:#000}"
-             ".cur{background:#fff}"
+             "font-size:17px;line-height:%dpx;overflow:hidden;color:#000}"
+             ".cur{background:#fff;min-width:264px}"
              ".in img{width:%dpx;height:%dpx;vertical-align:middle;margin-right:6px;position:relative;top:-1px}"
              ".more{flex:none;width:30px;height:24px;margin:%dpx 4px 0 0;border-radius:4px;background:#000;color:#fff;"
              "font-family:Arial;font-weight:bold;font-size:17px;line-height:24px;text-align:center}",
@@ -400,7 +424,9 @@ std::string tabs_html(const std::vector<page_entry>& pages, size_t current, cons
         const tab_info* t = i < infos.size() ? &infos[i] : nullptr;
         html += i == current ? "<div class=\"tab cur\"><div class=\"in\">" : "<div class=\"tab\"><div class=\"in\">";
         if(t && !t->icon_bmp.empty()) html += "<img src=\"data:image/bmp;base64," + base64_encode(t->icon_bmp) + "\">";
-        html += html_escape(t && !t->title.empty() ? t->title : tabs_host(pages[i].url));
+        // A full row leaves the other tabs room for two or three letters only, so they show the icon alone.
+        if(i == current || pages.size() < TAB_WINDOW)
+            html += title_html(t && !t->title.empty() ? t->title : tabs_host(pages[i].url));
         html += "</div></div>";
     }
     more(span.hidden_right);

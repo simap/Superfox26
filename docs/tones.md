@@ -27,8 +27,8 @@ data.
 
 The driver runs two drive tables in turn. Phase 1 uses one table, phase 2 the other. At each pull a
 pixel plays the code its shade holds for that pull. A code is a two-bit value in the two plane
-buffers. The pattern notation and the two tables are documented in `main/tonemap.h` and
-`main/tone_plan.h`.
+buffers. The two drive tables are documented in `components/epd97/epd97_lut.h`. The pattern notation
+is documented in `host_tests/tone_tables/tone_plan_expand.cpp`.
 
 The drive tables for the firmware are generated from `main/tonemap.h` into `main/tone_tables.inc`
 on the host. After a change to the shade table, regenerate that file with `make generate` in

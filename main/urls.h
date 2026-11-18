@@ -26,7 +26,7 @@ static const page_entry PAGE_URLS[] = {
     {"http://app.bhencke.com/had26/red-carnation-petal.jpg", 0, 0},
     {"http://app.bhencke.com/had26/sunflower-petals-sky.jpg", 0, 0},
     {"http://app.bhencke.com/had26/magenta-viola.jpg", 0, 0},
-    {"http://app.bhencke.com/had26/peach-rose-dewdrops.jpg", 0, 0},
+    // {"http://app.bhencke.com/had26/peach-rose-dewdrops.jpg", 0, 0},
     {"http://app.bhencke.com/had26/pink-white-carnation.jpg", 0, 0},
     {"http://app.bhencke.com/had26/pink-ranunculus.jpg", 0, 0},
     {"http://app.bhencke.com/had26/pink-oxalis.jpg", 0, 0},
@@ -34,7 +34,7 @@ static const page_entry PAGE_URLS[] = {
     {"http://app.bhencke.com/had26/hanging-begonia-basket.jpg", 0, 0},
     {"http://app.bhencke.com/had26/pink-tea-tree-flower.jpg", 0, 0},
     {"http://app.bhencke.com/had26/pink-rockrose.jpg", 0, 0},
-    {"http://app.bhencke.com/had26/red-sunflower.jpg", 0, 0},
+    // {"http://app.bhencke.com/had26/red-sunflower.jpg", 0, 0},
     {"http://app.bhencke.com/had26/red-rose-buds.jpg", 0, 0},
     {"http://app.bhencke.com/had26/african-daisy-macro.jpg", 0, 0},
 
@@ -46,8 +46,8 @@ static const page_entry PAGE_URLS[] = {
     {"http://app.bhencke.com/had26/striped-jellyfish.jpg", 0, 0},
 
     // Sunsets and night sky
-    {"http://app.bhencke.com/had26/golden-ocean-sunset.jpg", 0, 0},
-    {"http://app.bhencke.com/had26/sepia-ocean-sunset.jpg", 0, 0},
+    // {"http://app.bhencke.com/had26/golden-ocean-sunset.jpg", 0, 0},
+    // {"http://app.bhencke.com/had26/sepia-ocean-sunset.jpg", 0, 0},
     {"http://app.bhencke.com/had26/natural-bridges-sunset.jpg", 0, 0},
     {"http://app.bhencke.com/had26/aurora.jpg", 0, 0},
     {"http://app.bhencke.com/had26/milky-way.jpg", 0, 0},
