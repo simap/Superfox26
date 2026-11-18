@@ -1,54 +1,36 @@
 # Superfox26
 
+
 ![Superfox26](logo/superfox26.png)
 
-Superfox26 is a web browser for the Supercon X badge. The badge is the Hackaday Supercon 2026
-conference badge. It has an ESP32-S3 and a 960 by 672 e-paper panel with black, white and red
-pigment. Superfox26 fetches web pages over WiFi, lays each one out with a fork of the litehtml
-engine, dithers it to 103 shades the author measured on the panel, and draws it. It steps through a
-list of pages. A page in `webinstall/` installs and configures the firmware over Web Serial.
+What better way to put the Supercon X ('26) badge to use than a web browser?
 
-This README covers Superfox26 only. For the badge hardware, the stock firmware and how to restore
-it, see the official badge repository,
-[Hack-a-Day/2026-Billboard_Badge](https://github.com/Hack-a-Day/2026-Billboard_Badge).
+Superfox26 supports a decent subset of HTML5/CSS3 and runs on the ESP32 S3 on the Supercon X badge. 
 
-Superfox26 is not affiliated with Hackaday.
+It renders pages and images using a tone system using custom waveforms to nudge the black, white, and red ink particles into tones and shades instead of solid BWR colors. Dithering on top of that, using DOM rendering aware dithering that leaves text readable and photos smooth. 
 
-## Name
+Easy WebSerial installer and config UI at https://superfox26.hencke.net
 
-The ESP-IDF project and its top directory are named `browser26`. Build options use the prefix
-`B26_`.
+This is the more polished version of my submission to Hackaday Supercon X ('26) badge hack contest.
 
-## Warnings
+First, I started experimenting with generating tones with what is effectively intentionally ghosting effects. Waveforms that nudge the ink in short bursts that don't push the ink particles all the way. Then I hacked litehtml to use a LOT less RAM, so that rendering can fit in the 8MB PSRAM. I loaded it up with some macro photos (including the strawberry), some XKCD, Hackaday website, etc.
 
-A full install overwrites the badge. It erases the `nvs` partition, which holds the WiFi
-credentials, and rewrites the `data` partition, which holds the fonts and the page list (see
-`partitions.csv`). It replaces the stock firmware and its file system. To return to the stock
-firmware, flash it from the official badge repository above.
+After the con, I polished it up, got the tone system DC balanced so it won't burn your e-ink panel, and make it easier to install and set up.
 
-A reset or a power loss during a panel draw stops the firmware at the next boot. A draw cut part way
-leaves the panel with a net DC voltage, and repeated cut draws can damage it. At the next boot the
-firmware detects the cut draw, keeps the panel supply off, and holds there. The first LED flashes
-red about once a second. Switch the badge off and on to clear it. The mechanism is in
-`main/rtcstate.cpp` and `main/main.cpp`.
+## Warnings, etc.
 
 HTTPS server certificates are not verified. `sdkconfig.defaults` sets `CONFIG_ESP_TLS_INSECURE` and
 `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY`. Any page the badge fetches is treated as public.
 
+This is mostly hacked together, there could be bugs. Bugs around DC balance could cause burn in, which I've done plenty of times during development, and fortunately has seemed to fix itself over a few hours.
+
+In theory a bug could crash part way through a draw and restart, re-draw, crash again, and cause lots of DC imbalance, destorying the display. I try to detect that during boot and stop the badge. If that happens, it flashes 1 red LED until it is power cycled.
+
 ## Install with the web installer
 
 The web installer is the page in `webinstall/`. It installs the firmware and sets WiFi and the page
-list over Web Serial. Web Serial needs a Chromium-based browser, such as Chrome or Edge, and a
-secure context, so HTTPS or localhost.
-
-`webinstall/firmware.bin` is a build output and is not in the repository. Build and serve the page:
-
-1. Build the merged image: `tools/build_webinstall.sh`. It writes `webinstall/firmware.bin`.
-2. Serve the `webinstall/` directory over HTTPS or from localhost, for example
-   `python3 -m http.server` run inside `webinstall/`.
-3. Open the page, connect the badge with a USB cable, and install.
-
-The page lets the user:
+list over Web Serial. Web Serial needs a Chromium-based browser, such as Chrome, Brave, Edge, etc., and a
+secure context for browsers to trust WebSerial, so HTTPS.
 
 - Install the firmware, full or as an update that keeps the WiFi credentials and the page list.
 - Set the WiFi network name and password, scan for networks, and forget the stored network.
@@ -58,9 +40,8 @@ The page lets the user:
 
 ## Use
 
-After setup the badge fetches each page in the list in turn, draws it, and holds it for the page's
-time before the next. A page with no time set holds for the default, one hour
-(`B26_CYCLE_SECONDS`).
+After install and wifi config, the badge fetches each page in the list, draws it, and sleeps for the page's
+time (default 1 hour) before the next. 
 
 The buttons:
 
@@ -68,23 +49,15 @@ The buttons:
 - User B chooses the next page.
 - Menu + and Menu - hold the page on the panel and stop the timer. Press either again to resume.
 
-Each press of User A or User B moves the choice by one page. The LED bar shows the choice as an
-offset from the page on the panel. The badge loads the chosen page once the buttons are quiet for
-about one and a half seconds. A panel draw already running finishes first. A page the choice moves
-past before its draw is abandoned.
-
-On battery, User B and Menu - wake the badge from deep sleep. User B wakes to the next page. Menu -
-wakes to the page on the panel. A wake opens the same selection window. A held page keeps the badge
-asleep until a button, with no timer wake.
+On battery, only User B and Menu wake the badge from deep sleep. 
 
 The LED bar shows the current activity:
 
 | The LED bar shows | Meaning |
 |---|---|
-| Amber, a growing bar | A page is fetched and laid out. |
+| Amber, a growing bar | A page is fetched and rendered. |
 | A short amber flash | A WiFi connection failed. |
-| Teal, a draining bar | The countdown to the next page, on USB power. |
-| Teal on the last LED, or a full teal bar | The page is held. Press Menu to resume. |
+| Teal, a draining bar | The countdown to the next page, only on USB power. |
 | A violet, white, blue or green run | The chosen page during the selection window. The run grows from the left end for a forward choice and from the right end for a back choice, one LED per page of offset. Past seven it starts again in the next colour. |
 | The two middle LEDs violet | The choice is the page on the panel, so it stays. |
 | The chosen run blinking | The badge is loading or drawing the chosen page. |
