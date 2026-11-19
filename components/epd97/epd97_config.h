@@ -97,7 +97,7 @@
 // Minimum time the panel supply stays off between two controller cycles. The booster
 // rails have to bleed down, and a cycle started on top of them stalls the
 // update. 1500 ms is reliable. At 800 ms cog_initial fails and the OTP reads
-// corrupt.
+// corrupt. A deep sleep counts as off time.
 #ifndef EPD_T_OFF_MIN
 #define EPD_T_OFF_MIN   1500u
 #endif
@@ -107,8 +107,8 @@
 // With 1, a session close keeps the panel supply on, as the stock MicroPython
 // firmware and yigitabi5444/supercon26-badge-os do. The close is the DC/DC
 // soft shutdown, a bounded wait for BUSY, then the controller held in reset. The
-// next open skips the EPD_T_OFF_MIN floor and the EPD_T_RST_PWR settle and
-// starts at the reset. Error paths, epd_sleep() and epd_deep_sleep_prepare()
+// next open skips the EPD_T_OFF_MIN floor and starts at the reset once
+// EPD_T_RST_PWR has passed since the supply came on. Error paths, epd_sleep() and epd_deep_sleep_prepare()
 // still cut the supply. With 0, every close cuts the supply. The browser26
 // build sets 1 in the top level CMakeLists.txt.
 #ifndef EPD_KEEP_SUPPLY

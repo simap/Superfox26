@@ -10,6 +10,7 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
@@ -42,6 +43,8 @@ static adc_oneshot_unit_handle_t s_adc;
 static adc_cali_handle_t         s_cali;
 static int64_t                   s_init_us;
 static SemaphoreHandle_t         s_adc_lock;
+// Kept across deep sleep, cleared by any other reset.
+RTC_DATA_ATTR static bool s_critical;
 
 static void usj_settle()
 {
@@ -146,10 +149,15 @@ power_reading power_read(bool was_low)
     if(s_adc_lock) xSemaphoreTake(s_adc_lock, portMAX_DELAY);
     const int mv = rail_mv();
     if(s_adc_lock) xSemaphoreGive(s_adc_lock);
-    power_reading r = power_judge(host, mv, was_low);
+    power_reading r = power_judge(host, mv, was_low, s_critical);
     ESP_LOGI(TAG, "rail %d mV, %s, battery %s", r.rail_mv, host ? "USB host" : r.usb ? "USB" : "battery",
-             r.low ? "low" : "ok");
+             r.critical ? "critical" : r.low ? "low" : "ok");
     return r;
+}
+
+void power_keep_critical(bool critical)
+{
+    s_critical = critical;
 }
 
 void power_sleep(int seconds, uint64_t released)

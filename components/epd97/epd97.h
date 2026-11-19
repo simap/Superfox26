@@ -70,11 +70,18 @@ typedef enum {
 // -----------------------------------------------------------------------------
 
 // Claim the pins, allocate both planes, power the panel up once and read its
-// OTP to find out which variant is attached. Leaves the panel powered down.
+// OTP to find out which variant is attached. Leaves the panel powered down,
+// or powered with the controller in reset after epd_supply_on().
 // Returns false if the planes could not be allocated or the SPI bus could not
 // be set up. With no panel attached it returns true. The driver then runs
 // headless, sends the planes on every refresh and caps its BUSY waits.
 bool epd_begin(void);
+
+// Switch the panel supply on with the controller held in reset, before or
+// after epd_begin(). It waits out the EPD_T_OFF_MIN floor since the last cut,
+// counted through deep sleep. The first controller use after it waits out
+// the rest of EPD_T_RST_PWR. epd_sleep() cuts the supply again.
+void epd_supply_on(void);
 
 // Draw the framebuffer on the panel's own waveform. Closes an open tone
 // session first. Returns false if the controller did not come up, the plane send

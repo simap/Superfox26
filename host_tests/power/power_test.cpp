@@ -1,5 +1,6 @@
-// Host test of main/power_logic.h: the wake cause decode, the USB threshold, the low battery
-// hysteresis, a reading from one rail read and the wake sources of a sleep. Usage: power_test. Exit status 0 when every check passes.
+// Host test of main/power_logic.h: the wake cause decode, the USB threshold, the low and critical
+// battery hysteresis, a reading from one rail read, the early panel supply on a button wake and the
+// wake sources of a sleep. Usage: power_test. Exit status 0 when every check passes.
 
 #include <cstdint>
 #include <cstdio>
@@ -206,6 +207,136 @@ int main()
                  c.was_low ? "low" : "ok", c.usb ? "USB" : "battery", c.low ? "low" : "ok", got.rail_mv,
                  got.usb ? "USB" : "battery", got.low ? "low" : "ok");
         check(got.rail_mv == c.mv && got.usb == c.usb && got.low == c.low, what);
+    }
+
+    struct critical_case
+    {
+        bool was_critical, usb;
+        int  mv;
+        bool want;
+    };
+    const critical_case CRITICAL_CASES[] = {
+        // Battery, not critical before: the cutoff at 3300.
+        {false, false, 0, true},     {false, false, 3299, true},  {false, false, 3300, false},
+        {false, false, 3399, false}, {false, false, 4200, false},
+        // Battery, critical before: stays critical up to 3400.
+        {true, false, 3300, true},   {true, false, 3399, true},   {true, false, 3400, false},
+        {true, false, 4200, false},
+        // USB and a failed read are never critical.
+        {false, true, 3000, false},  {true, true, 3000, false},   {false, false, -1, false},
+        {true, false, -1, false},
+    };
+    for(const critical_case& c : CRITICAL_CASES)
+    {
+        bool got = power_critical_next(c.was_critical, c.usb, c.mv);
+        snprintf(what, sizeof what, "critical: was %s, %s, rail %d mV: %s (got %s)", c.was_critical ? "critical" : "ok",
+                 c.usb ? "USB" : "battery", c.mv, c.want ? "critical" : "ok", got ? "critical" : "ok");
+        check(got == c.want, what);
+    }
+
+    struct judge2_case
+    {
+        int  mv;
+        bool was_low, was_critical, low, critical;
+    };
+    const judge2_case JUDGE2_CASES[] = {
+        {3250, false, false, true, true},
+        {3350, false, false, true, false},
+        {3350, false, true, true, true},
+        // Out of critical, the low state holds up to 3600 even when low was not kept.
+        {3450, false, true, true, false},
+        {3599, false, true, true, false},
+        {3600, false, true, false, false},
+        {3700, true, false, false, false},
+    };
+    for(const judge2_case& c : JUDGE2_CASES)
+    {
+        power_reading got = power_judge(false, c.mv, c.was_low, c.was_critical);
+        snprintf(what, sizeof what, "judge: rail %d mV, was low %d critical %d: low %d critical %d (got %d, %d)", c.mv,
+                 c.was_low, c.was_critical, c.low, c.critical, got.low, got.critical);
+        check(!got.usb && got.low == c.low && got.critical == c.critical, what);
+    }
+
+    // A critical reading is low too, and USB is neither.
+    {
+        unsigned bad = 0;
+        for(int host = 0; host < 2; host++)
+            for(int was = 0; was < 4; was++)
+                for(int mv = -100; mv <= 6000; mv++)
+                {
+                    power_reading r = power_judge(host != 0, mv, (was & 1) != 0, (was & 2) != 0);
+                    bad += (r.critical && !r.low) || (r.usb && (r.low || r.critical));
+                }
+        check(bad == 0, "judge: no rail from -100 to 6000 mV gives critical without low, or USB with either");
+    }
+
+    // A badge that sleeps critical and charges on the bench, one reading per wake.
+    {
+        bool       critical = false, low = false;
+        const int  rails[]  = {3350, 3290, 3320, 3390, 3420, 3550, 3650};
+        const char want[]   = {'L', 'C', 'C', 'C', 'L', 'L', 'O'};
+        int        right    = 0;
+        for(int i = 0; i < 7; i++)
+        {
+            power_reading r = power_judge(false, rails[i], low, critical);
+            critical        = r.critical;
+            low             = r.low;
+            right += (r.critical ? 'C' : r.low ? 'L' : 'O') == want[i];
+        }
+        check(right == 7, "critical then charging: 3350 low, 3290 to 3390 critical, 3420 and 3550 low, 3650 ok");
+    }
+
+    struct early_case
+    {
+        power_wake wake;
+        int        mv;
+        bool       host, was_low, was_critical, want;
+    };
+    const early_case EARLY_CASES[] = {
+        {POWER_WAKE_USER_B, 3800, false, false, false, true},
+        {POWER_WAKE_MENU_MINUS, 3800, false, false, false, true},
+        {POWER_WAKE_USER_B, 3399, false, false, false, false},
+        {POWER_WAKE_USER_B, 3400, false, false, false, true},
+        // Low kept from the last boot: the supply waits for 3600.
+        {POWER_WAKE_USER_B, 3500, false, true, false, false},
+        {POWER_WAKE_USER_B, 3600, false, true, false, true},
+        {POWER_WAKE_USER_B, 3250, false, false, false, false},
+        {POWER_WAKE_USER_B, 3450, false, false, true, false},
+        // USB never blocks it.
+        {POWER_WAKE_USER_B, 3000, true, true, true, true},
+        {POWER_WAKE_USER_B, 4600, false, true, false, true},
+        {POWER_WAKE_USER_B, -1, false, true, true, true},
+        // Only a button wake.
+        {POWER_WAKE_TIMER, 4000, false, false, false, false},
+        {POWER_WAKE_RESET, 4000, false, false, false, false},
+        {POWER_WAKE_RESET, 4600, true, false, false, false},
+    };
+    for(const early_case& c : EARLY_CASES)
+    {
+        bool got = power_early_supply(c.wake, power_judge(c.host, c.mv, c.was_low, c.was_critical));
+        snprintf(what, sizeof what, "early supply, wake %s, rail %d mV, host %d, was low %d critical %d: %s (got %s)",
+                 wake_name(c.wake), c.mv, c.host, c.was_low, c.was_critical, c.want ? "on" : "off", got ? "on" : "off");
+        check(got == c.want, what);
+    }
+
+    struct after_case
+    {
+        int                mv;
+        bool               host, was_low;
+        power_supply_after want;
+    };
+    const after_case AFTER_CASES[] = {
+        {3800, false, false, POWER_SUPPLY_KEEP},     {3400, false, false, POWER_SUPPLY_KEEP},
+        {3399, false, false, POWER_SUPPLY_LOW},      {3300, false, false, POWER_SUPPLY_LOW},
+        {3299, false, false, POWER_SUPPLY_CRITICAL}, {3599, false, true, POWER_SUPPLY_LOW},
+        {3200, true, false, POWER_SUPPLY_KEEP},      {-1, false, false, POWER_SUPPLY_KEEP},
+    };
+    for(const after_case& c : AFTER_CASES)
+    {
+        power_supply_after got = power_supply_check(power_judge(c.host, c.mv, c.was_low));
+        snprintf(what, sizeof what, "after the supply, rail %d mV, host %d, was low %d: %d (got %d)", c.mv, c.host,
+                 c.was_low, c.want, got);
+        check(got == c.want, what);
     }
 
     // One read gives both results, so USB and low never hold together.

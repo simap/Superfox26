@@ -194,7 +194,7 @@ bool render_cancel()
     return sel_check(s_loading) == BROWSER_SEL_LOAD;
 }
 
-power_reading s_power = {-1, true, false, false};
+power_reading s_power = {-1, true, false, false, false};
 int64_t       s_power_us;
 
 void read_power()
@@ -314,10 +314,16 @@ bool draw_notice(int panel, const char* html)
 
 void low_battery_step()
 {
-    browser_low_step step = browser_low_next(s_power.low, s_panel == PANEL_LOWBATT);
+    browser_low_step step = browser_low_next(s_power.low, s_panel == PANEL_LOWBATT, s_power.critical);
     s_low                 = step.low ? 1 : 0;
+    power_keep_critical(s_power.critical);
     if(step.action == BROWSER_RUN) return;
     wifi_stop();
+    if(step.action == BROWSER_CRITICAL_SLEEP)
+    {
+        ESP_LOGE(TAG, "battery critical, sleeping without a draw");
+        sleep_now(POWER_CRITICAL_CHECK_S);
+    }
     if(step.action == BROWSER_LOW_DRAW)
     {
         set_state("lowbatt");
@@ -561,7 +567,12 @@ void browser_task(void*)
 }
 } // namespace
 
-power_reading browser_init(bool kept)
+bool browser_was_low(bool kept)
+{
+    return kept && s_low != 0;
+}
+
+power_reading browser_init(bool kept, bool low)
 {
     s_sel_lock = xSemaphoreCreateMutex();
     if(!kept)
@@ -571,6 +582,7 @@ power_reading browser_init(bool kept)
         s_low   = 0;
         s_hold  = 0;
     }
+    if(low) s_low = 1;
     read_power();
     return s_power;
 }

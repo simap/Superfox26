@@ -1,6 +1,5 @@
 // Each command prints its reply to stdout as one or more lines.
-// A reply line leads with OK when the command ran or ERR when it was rejected or could not run,
-// except the get command prints up to 200 bytes of the fetched body as a line with no prefix.
+// A reply line leads with OK when the command ran or ERR when it was rejected or could not run.
 
 #include "console.h"
 
@@ -23,7 +22,6 @@
 
 #include "browser.h"
 #include "config.h"
-#include "fetch.h"
 #include "power.h"
 #include "wifi.h"
 
@@ -71,7 +69,6 @@ void cmd_help()
            "OK   status\n"
            "OK   wifi [SSID [PASSWORD]] | wifi clear\n"
            "OK   scan\n"
-           "OK   get URL\n"
            "OK   urls\n"
            "OK   url add URL [OFFSET [SECONDS]] | url put N URL [OFFSET [SECONDS]] | url set N OFFSET [SECONDS]\n"
            "OK   url move FROM TO | url del N | url clear\n"
@@ -148,40 +145,6 @@ void cmd_scan()
     for(int i = 0; i < n; i++)
         printf("OK ch %2d %4d dBm %-10s %s\n", found[i].channel, found[i].rssi, found[i].auth,
                found[i].ssid[0] ? found[i].ssid : "(hidden)");
-}
-
-void cmd_get(const std::vector<std::string>& a)
-{
-    if(a.size() < 2)
-    {
-        printf("ERR get URL\n");
-        return;
-    }
-    if(wifi_is_stopped())
-    {
-        printf("ERR the radio is off during a panel draw, try again in a few seconds\n");
-        return;
-    }
-    if(!wifi_is_connected())
-    {
-        printf("ERR not connected to WiFi, status shows the state\n");
-        return;
-    }
-    std::string  body;
-    fetch_result r;
-    bool         ok = fetch_url(a[1], body, 64 * 1024, &r);
-    printf("%s status %d, %u bytes%s, final url %s\n", ok || r.truncated ? "OK" : "ERR", r.status,
-           (unsigned)body.size(), r.truncated ? " (more not read)" : "", r.final_url.c_str());
-    if(!body.empty())
-    {
-        size_t n = std::min<size_t>(body.size(), 200);
-        for(size_t i = 0; i < n; i++)
-        {
-            unsigned char c = body[i];
-            putchar(c == '\n' || c == '\r' || c == '\t' ? ' ' : (c < 0x20 || c > 0x7e ? '.' : c));
-        }
-        putchar('\n');
-    }
 }
 
 void cmd_urls()
@@ -311,7 +274,6 @@ void run_line(const char* line)
     else if(c == "status") cmd_status();
     else if(c == "wifi") cmd_wifi(a);
     else if(c == "scan") cmd_scan();
-    else if(c == "get") cmd_get(a);
     else if(c == "urls") cmd_urls();
     else if(c == "url") cmd_url(a);
     else if(c == "next" || c == "prev" || c == "load") cmd_page(a);

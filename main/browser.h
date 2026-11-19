@@ -6,7 +6,11 @@
 
 #include "power.h"
 
-power_reading browser_init(bool kept);
+// The low state the last boot left, false when kept is false.
+bool browser_was_low(bool kept);
+
+// low true starts the browser in the low state, as a low reading would.
+power_reading browser_init(bool kept, bool low);
 
 bool browser_start();
 

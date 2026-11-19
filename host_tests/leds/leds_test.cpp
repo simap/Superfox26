@@ -113,7 +113,7 @@ int main()
         {"selection over a load, blink off", {LEDS_AMBER, 8, false, false, true, -1, true, false}, "aaaaaaaa"},
         {"selection over a held load, blink off", {LEDS_AMBER, 4, false, true, true, 3, true, false}, "aaaa...t"},
         {"selection, stay", {LEDS_AMBER, 2, false, false, true, 0, false, false}, "...vv..."},
-        {"flash over all", {LEDS_AMBER, 8, false, true, true, 3, false, true}, "r......."},
+        {"flash over all", {LEDS_AMBER, 8, false, true, true, 3, false, true}, "w......w"},
     };
     for(const compose_case& c : COMPOSE_CASES) check_frame(leds_compose(c.l), c.want, c.name);
 

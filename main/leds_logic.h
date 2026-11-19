@@ -92,7 +92,8 @@ inline constexpr leds_frame leds_compose(const leds_layers& l)
     leds_frame f{};
     if(l.flash)
     {
-        f.px[0] = LEDS_RED;
+        // Red is kept for faults. Both end LEDs white is no run of a selection, which starts at one end.
+        f.px[0] = f.px[LEDS_N - 1] = LEDS_WHITE;
         return f;
     }
     if(l.select && !l.select_off) return leds_offset_frame(l.offset);

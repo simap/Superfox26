@@ -71,7 +71,8 @@ enum browser_low_action
 {
     BROWSER_RUN,
     BROWSER_LOW_DRAW,
-    BROWSER_LOW_SLEEP
+    BROWSER_LOW_SLEEP,
+    BROWSER_CRITICAL_SLEEP, // no draw, sleep with the POWER_CRITICAL_CHECK_S timer
 };
 
 struct browser_low_step
@@ -81,8 +82,9 @@ struct browser_low_step
     bool               shown;
 };
 
-inline constexpr browser_low_step browser_low_next(bool low, bool shown)
+inline constexpr browser_low_step browser_low_next(bool low, bool shown, bool critical = false)
 {
+    if(critical) return {BROWSER_CRITICAL_SLEEP, true, shown};
     if(!low) return {BROWSER_RUN, false, false};
     return {shown ? BROWSER_LOW_SLEEP : BROWSER_LOW_DRAW, true, true};
 }

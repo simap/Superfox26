@@ -36,6 +36,7 @@ const char* action_name(browser_low_action a)
     case BROWSER_RUN: return "run";
     case BROWSER_LOW_DRAW: return "draw";
     case BROWSER_LOW_SLEEP: return "sleep";
+    case BROWSER_CRITICAL_SLEEP: return "critical sleep";
     }
     return "?";
 }
@@ -109,16 +110,19 @@ const sleep_case SLEEP_CASES[] = {
 
 struct low_case
 {
-    bool               low, shown;
+    bool               low, shown, critical;
     browser_low_action want;
     bool               want_low, want_shown;
 };
 
 const low_case LOW_CASES[] = {
-    {false, false, BROWSER_RUN, false, false},
-    {false, true, BROWSER_RUN, false, false},
-    {true, false, BROWSER_LOW_DRAW, true, true},
-    {true, true, BROWSER_LOW_SLEEP, true, true},
+    {false, false, false, BROWSER_RUN, false, false},
+    {false, true, false, BROWSER_RUN, false, false},
+    {true, false, false, BROWSER_LOW_DRAW, true, true},
+    {true, true, false, BROWSER_LOW_SLEEP, true, true},
+    // Critical: no draw, the notice flag stays as it was.
+    {true, false, true, BROWSER_CRITICAL_SLEEP, true, false},
+    {true, true, true, BROWSER_CRITICAL_SLEEP, true, true},
 };
 } // namespace
 
@@ -144,8 +148,9 @@ int main()
 
     for(const low_case& c : LOW_CASES)
     {
-        browser_low_step got = browser_low_next(c.low, c.shown);
-        snprintf(what, sizeof what, "reading %s, notice %s: %s, low %d, shown %d (got %s, %d, %d)", c.low ? "low" : "ok",
+        browser_low_step got = browser_low_next(c.low, c.shown, c.critical);
+        snprintf(what, sizeof what, "reading %s, notice %s: %s, low %d, shown %d (got %s, %d, %d)",
+                 c.critical ? "critical" : c.low ? "low" : "ok",
                  c.shown ? "shown" : "not shown", action_name(c.want), c.want_low, c.want_shown, action_name(got.action),
                  got.low, got.shown);
         check(got.action == c.want && got.low == c.want_low && got.shown == c.want_shown, what);
@@ -226,6 +231,22 @@ int main()
         browser_low_step s = browser_low_next(false, shown);
         check(draws == 1 && sleeps == 4 && s.action == BROWSER_RUN && !s.shown,
               "four low wakes then an ok one: one draw, four sleeps, then run with the flags cleared");
+    }
+
+    // A badge that goes critical before its first low draw never draws, and draws once when it climbs
+    // back to low.
+    {
+        bool shown = false;
+        int  draws = 0;
+        for(int wake = 0; wake < 3; wake++)
+        {
+            browser_low_step s = browser_low_next(true, shown, true);
+            draws += s.action == BROWSER_LOW_DRAW;
+            shown = s.shown;
+        }
+        browser_low_step s = browser_low_next(true, shown, false);
+        check(draws == 0 && s.action == BROWSER_LOW_DRAW,
+              "three critical wakes then a low one: no draw while critical, then the notice once");
     }
 
     printf("%s, %u failed\n", s_fails ? "FAIL" : "pass", s_fails);

@@ -2,7 +2,7 @@
 // This module drives the strip, lighting a run of LEDs in one color to stand for the current state.
 // Call leds_init once before any other function.
 // The rest do nothing until it succeeds.
-// The browser task sets the base bar. A tab selection, the hold mark and the red flash show over it,
+// The browser task sets the base bar. A tab selection, the hold mark and the no-list flash show over it,
 // and come from the button task too, so every call takes one lock (leds_logic.h).
 #pragma once
 

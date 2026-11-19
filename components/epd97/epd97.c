@@ -46,6 +46,7 @@
 #include "esp_heap_caps.h"
 #include "esp_rom_gpio.h"
 #include "esp_rom_sys.h"
+#include "esp_rtc_time.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
@@ -163,8 +164,15 @@ static epd_tone_table_t s_tone_table = EPD_TONE_TABLE_NONE;
 static uint32_t  s_power_off_ms;
 static bool      s_power_off_valid;
 // The panel supply switch is on. With EPD_KEEP_SUPPLY it stays on between
-// sessions, with the controller held in reset.
+// sessions, with the controller held in reset. epd_supply_on() puts it in the
+// same state before the first session.
 static bool      s_supply_on;
+static uint32_t  s_power_on_ms;
+static bool      s_pins_ready;
+// The last supply cut on the RTC clock, which keeps counting through deep
+// sleep. A wake can then tell how long the rails have had to bleed down.
+RTC_DATA_ATTR static uint64_t s_rtc_off_us;
+RTC_DATA_ATTR static bool     s_rtc_off_valid;
 static uint32_t  s_last_panel_ms;
 static bool      s_quick;
 
@@ -330,6 +338,7 @@ static void power_on(void)
     s_power_off_valid = false;
   }
   gpio_set_level((gpio_num_t)EPD_PIN_PWR, EPD_PWR_ACTIVE_HIGH ? 1 : 0);
+  if (!s_supply_on) s_power_on_ms = now_ms();
   s_supply_on = true;
 }
 
@@ -339,6 +348,20 @@ static void power_off(void)
   s_power_off_ms = now_ms();
   s_power_off_valid = true;
   s_supply_on = false;
+  s_rtc_off_us = esp_rtc_get_time_us();
+  s_rtc_off_valid = true;
+}
+
+// The rails need EPD_T_RST_PWR after the supply comes on before the reset
+// sequence. Waits whatever part of it has not passed yet.
+static void power_settle(void)
+{
+  const uint32_t on_for = now_ms() - s_power_on_ms;
+  if (on_for < EPD_T_RST_PWR) {
+    LOGF("supply on for %u ms, waiting %u ms more to settle",
+         (unsigned)on_for, (unsigned)(EPD_T_RST_PWR - on_for));
+    delay_ms(EPD_T_RST_PWR - on_for);
+  }
 }
 
 static void cog_reset(void)
@@ -502,14 +525,21 @@ static int cog_initial(void)
 {
   // With the OTP cached, otp_read() returns without ever reaching cog_reset(),
   // so the power-up and the rail settle have to happen here instead. A supply
-  // kept on by cog_close() needs neither.
+  // that is already on has the controller held in reset with RST low, kept on
+  // by cog_close() or switched on by epd_supply_on(). It needs no off floor,
+  // only the rest of the settle.
   const bool cached = s_otp_valid;
-  const bool warm = EPD_KEEP_SUPPLY && s_supply_on;
+  const bool warm = s_supply_on;
   if (cached && !warm) {
     power_on();
     delay_ms(EPD_T_RST_PWR);
   }
-  if (warm) LOGF("supply kept on, off floor and %u ms settle skipped", (unsigned)EPD_T_RST_PWR);
+  if (warm) {
+    if (now_ms() - s_power_on_ms >= EPD_T_RST_PWR)
+      LOGF("supply kept on, off floor and %u ms settle skipped", (unsigned)EPD_T_RST_PWR);
+    else
+      power_settle();
+  }
   int rc = otp_read();
   if (rc != 0) {
     LOGF("OTP failed (%d), aborting so the booster is not left on", rc);
@@ -900,9 +930,75 @@ static void otp_standin(void)
   s_otp_valid = true;
 }
 
+// The control pins, once per boot, with the supply off. After a deep sleep
+// wake the supply has been off since the cut stamped in s_rtc_off_us, and the
+// off floor counts from there. After any other reset there is nothing to
+// bleed down.
+static void pins_init(void)
+{
+  if (s_pins_ready) return;
+  const bool from_sleep = esp_reset_reason() == ESP_RST_DEEPSLEEP && s_rtc_off_valid;
+  uint32_t off_ms = 0;
+  if (from_sleep) {
+    const uint64_t off_us = esp_rtc_get_time_us() - s_rtc_off_us;
+    off_ms = off_us >= (uint64_t)EPD_T_OFF_MIN * 1000u ? EPD_T_OFF_MIN : (uint32_t)(off_us / 1000u);
+  }
+
+  // Park the supply switch before the pin becomes an output. The OUT register
+  // is written while it is still high-Z, so the first level the gate ever sees
+  // driven is the off one. Without this the pin leaves gpio_config at 0, and
+  // on a P-channel high-side switch 0 is on.
+  gpio_set_level((gpio_num_t)EPD_PIN_PWR, EPD_PWR_ACTIVE_HIGH ? 0 : 1);
+
+  const uint64_t out_mask =
+      (1ULL << EPD_PIN_DC) | (1ULL << EPD_PIN_RST) | (1ULL << EPD_PIN_PWR) |
+      (1ULL << EPD_PIN_CS_L) | (1ULL << EPD_PIN_CS_R);
+  gpio_config_t oc = { .pin_bit_mask = out_mask, .mode = GPIO_MODE_OUTPUT };
+  gpio_config(&oc);
+
+  // Release the deep-sleep latch only now, with the pad already configured and
+  // the OUT register already holding the off level, so the level never lapses
+  // between the latch letting go and this driving it.
+  gpio_hold_dis((gpio_num_t)EPD_PIN_PWR);
+  gpio_deep_sleep_hold_dis();
+
+  uint64_t in_mask = (1ULL << EPD_PIN_BUSY_L);
+#if EPD_PIN_BUSY_R >= 0
+  in_mask |= (1ULL << EPD_PIN_BUSY_R);
+#endif
+  gpio_config_t ic = {
+    .pin_bit_mask = in_mask,
+    .mode = GPIO_MODE_INPUT,
+    .pull_up_en = GPIO_PULLUP_ENABLE,
+  };
+  gpio_config(&ic);
+
+  power_off();
+  s_power_off_valid = from_sleep;
+  if (from_sleep) s_power_off_ms = now_ms() - off_ms;
+  rst_set(1);
+  cs_hi();
+  dc_set(1);
+  s_pins_ready = true;
+}
+
 // -----------------------------------------------------------------------------
 // Public
 // -----------------------------------------------------------------------------
+void epd_supply_on(void)
+{
+  if (s_supply_on) return;
+  pins_init();
+  // The controller is held in reset while its supply comes up, the state
+  // cog_close() leaves on a kept supply. The bus pins are driven low, not left
+  // floating into a powered controller.
+  rst_set(0);
+  dc_set(0);
+  bus_bitbang();
+  power_on();
+  LOGF("panel supply on, controller held in reset");
+}
+
 bool epd_begin(void)
 {
   ESP_LOGI(TAG, "9.7\" iTC, %ux%u, planes %u bytes each",
@@ -936,40 +1032,7 @@ bool epd_begin(void)
   }
   if (!s_stage[1]) LOGF("one SPI staging buffer, halves not overlapped");
 
-  // Park the supply switch before the pin becomes an output. The OUT register
-  // is written while it is still high-Z, so the first level the gate ever sees
-  // driven is the off one. Without this the pin leaves gpio_config at 0, and
-  // on a P-channel high-side switch 0 is on.
-  gpio_set_level((gpio_num_t)EPD_PIN_PWR, EPD_PWR_ACTIVE_HIGH ? 0 : 1);
-
-  const uint64_t out_mask =
-      (1ULL << EPD_PIN_DC) | (1ULL << EPD_PIN_RST) | (1ULL << EPD_PIN_PWR) |
-      (1ULL << EPD_PIN_CS_L) | (1ULL << EPD_PIN_CS_R);
-  gpio_config_t oc = { .pin_bit_mask = out_mask, .mode = GPIO_MODE_OUTPUT };
-  gpio_config(&oc);
-
-  // Release the deep-sleep latch only now, with the pad already configured and
-  // the OUT register already holding the off level, so the level never lapses
-  // between the latch letting go and this driving it.
-  gpio_hold_dis((gpio_num_t)EPD_PIN_PWR);
-  gpio_deep_sleep_hold_dis();
-
-  uint64_t in_mask = (1ULL << EPD_PIN_BUSY_L);
-#if EPD_PIN_BUSY_R >= 0
-  in_mask |= (1ULL << EPD_PIN_BUSY_R);
-#endif
-  gpio_config_t ic = {
-    .pin_bit_mask = in_mask,
-    .mode = GPIO_MODE_INPUT,
-    .pull_up_en = GPIO_PULLUP_ENABLE,
-  };
-  gpio_config(&ic);
-
-  power_off();
-  s_power_off_valid = false;   // nothing to bleed down on a cold start
-  rst_set(1);
-  cs_hi();
-  dc_set(1);
+  pins_init();
 
   // One transaction carries one controller's half of a plane.
   spi_bus_config_t bus = {
