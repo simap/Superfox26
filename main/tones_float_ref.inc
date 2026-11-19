@@ -21,8 +21,7 @@ struct dither_tap
 const dither_tap k_atkinson[6] = {{1, 0}, {2, 0}, {-1, 1}, {0, 1}, {1, 1}, {0, 2}};
 const float      ATKINSON_W    = 1 / 8.0f;
 
-const float    NOISE_REL_STEP = NOISE_REL / 64.0f;
-const unsigned CACHE_SLOTS    = 1u << CACHE_BITS;
+const unsigned CACHE_SLOTS = 1u << CACHE_BITS;
 
 struct target
 {
@@ -231,10 +230,9 @@ void tone_dither_float::release()
 
 void tone_dither_float::row(const uint8_t* c, int y, uint8_t* out)
 {
-    float*        rp[3] = {rows[0].data(), rows[1].data(), rows[2].data()};
-    float*        cur   = rp[0];
-    const int8_t* noise = s_noise[y & (NOISE_N - 1)].data();
-    int           d     = (y & 1) ? -1 : 1;
+    float* rp[3] = {rows[0].data(), rows[1].data(), rows[2].data()};
+    float* cur   = rp[0];
+    int    d     = (y & 1) ? -1 : 1;
     for(int i = 0; i < w; i++)
     {
         const int     x = d > 0 ? i : w - 1 - i;
@@ -252,8 +250,7 @@ void tone_dither_float::row(const uint8_t* c, int y, uint8_t* out)
             out[x] = TONE_PAPER;
             continue;
         }
-        const target& t  = target_at(r, g, b);
-        const int     nz = noise[x & (NOISE_N - 1)];
+        const target& t = target_at(r, g, b);
         unsigned      best;
         float         res[3];
         if(t.neutral)
@@ -266,7 +263,7 @@ void tone_dither_float::row(const uint8_t* c, int y, uint8_t* out)
             const float lo = s_lin[t.lo][0], hi = s_lin[t.hi][0];
             const float v  = clampf(t.lin[0] + LUMA[0] * ec[0] + LUMA[1] * ec[1] + LUMA[2] * ec[2], lo, hi);
             const float llo = s_lab[t.lo][0], lhi = s_lab[t.hi][0];
-            const float m   = 0.5f * (llo + lhi - NOISE_REL_STEP * nz * (lhi - llo));
+            const float m   = 0.5f * (llo + lhi);
             best            = v > m * m * m ? t.hi : t.lo;
             res[0] = res[1] = res[2] = v - s_lin[best][0];
         }
@@ -276,22 +273,13 @@ void tone_dither_float::row(const uint8_t* c, int y, uint8_t* out)
             for(int k = 0; k < 3; k++) v[k] = clampf(t.lin[k] + ec[k], 0.0f, 1.0f);
             lin_to_oklab(v, p);
             const uint8_t* cand = s_nb[t.lo];
-            unsigned       next = cand[0];
-            float          bd = 1e9f, nd = 1e9f;
+            float          bd   = 1e9f;
             best                = cand[0];
             for(int k = 0; k < NB; k++)
             {
                 unsigned f  = cand[k];
                 float    dd = dist(p, s_lab[f]);
-                if(dd < bd) nd = bd, next = best, bd = dd, best = f;
-                else if(dd < nd) nd = dd, next = f;
-            }
-            if(nz && next != best)
-            {
-                unsigned lo = best, hi = next;
-                float    dlo = bd, dhi = nd;
-                if(s_lab[lo][0] > s_lab[hi][0]) std::swap(lo, hi), std::swap(dlo, dhi);
-                best = dlo - dhi + NOISE_REL_STEP * nz * dist(s_lab[lo], s_lab[hi]) > 0 ? hi : lo;
+                if(dd < bd) bd = dd, best = f;
             }
             for(int k = 0; k < 3; k++) res[k] = v[k] - s_lin[best][k];
         }

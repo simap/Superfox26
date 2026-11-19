@@ -26,6 +26,8 @@
 #include "fetch.h"
 #include "fonts.h"
 #include "image.h"
+#include "image_class.h"
+#include "image_webp.h"
 #include "leds.h"
 #include "sizecache.h"
 #include "tabs.h"
@@ -122,6 +124,7 @@ class page_container : public document_container
     };
     std::vector<icon_cand> icons;
     std::vector<uint8_t> fb;
+    std::vector<uint8_t> mk;
     std::vector<rect_i>  clips;
     std::string          page_url;
     std::string          base_url;
@@ -137,6 +140,7 @@ class page_container : public document_container
     {
         int         kind = IMG_NONE;
         int         nat_w = 0, nat_h = 0;
+        int         photo    = -1;
         img_state   state    = IMG_FAILED;
         int64_t     total    = -1;
         int         last_row = 0;
@@ -158,12 +162,14 @@ class page_container : public document_container
     bool alloc_window(int band_rows)
     {
         fb.assign(static_cast<size_t>(W) * band_rows * 3 + 16, 255);
+        mk.assign(static_cast<size_t>(W) * band_rows, 0);
         q.alloc(W);
-        return fb.size() == static_cast<size_t>(W) * band_rows * 3 + 16;
+        return fb.size() == static_cast<size_t>(W) * band_rows * 3 + 16 && mk.size() == static_cast<size_t>(W) * band_rows;
     }
     void free_window()
     {
         std::vector<uint8_t>().swap(fb);
+        std::vector<uint8_t>().swap(mk);
         q.release();
     }
 
@@ -172,9 +178,16 @@ class page_container : public document_container
         H       = page_h;
         band_y0 = y0;
         band_y1 = y1;
-        if(!collect) std::fill(fb.begin(), fb.end(), 255);
+        if(!collect)
+        {
+            std::fill(fb.begin(), fb.end(), 255);
+            std::fill(mk.begin(), mk.end(), 0);
+        }
         clips.clear();
     }
+
+    const uint8_t* band_rgb(int y) const { return &fb[static_cast<size_t>(y - band_y0) * W * 3]; }
+    const uint8_t* band_mask(int y) const { return &mk[static_cast<size_t>(y - band_y0) * W]; }
 
     rect_i cur_clip() const
     {
@@ -183,10 +196,15 @@ class page_container : public document_container
         return r;
     }
 
-    void blend(int x, int y, const rgb& c, int a)
+    // Every write to the band comes here, and it sets the pixel's mask byte: photo for an opaque
+    // pixel of a photo image, else clear, so text or a fill drawn over a photo takes error
+    // diffusion again.
+    void blend(int x, int y, const rgb& c, int a, bool photo = false)
     {
         if(a <= 0 || collect) return;
-        uint8_t* d = &fb[(static_cast<size_t>(y - band_y0) * W + x) * 3];
+        const size_t p = static_cast<size_t>(y - band_y0) * W + x;
+        uint8_t*     d = &fb[p * 3];
+        mk[p]          = photo && a >= 255;
         if(a >= 255)
         {
             d[0] = c.r;
@@ -517,7 +535,7 @@ class page_container : public document_container
                     want(*s, r.y1);
                     return;
                 }
-                if(gimage* img = variant(*s, r.x1 - r.x0, r.y1 - r.y0, r.y1)) blit(*img, r, cur_clip());
+                if(gimage* img = variant(*s, m.image.c_str(), r.x1 - r.x0, r.y1 - r.y0, r.y1)) blit(*img, r, cur_clip());
                 return;
             }
         }
@@ -712,7 +730,16 @@ class page_container : public document_container
         sz.height = s.nat_h;
     }
 
-    gimage* variant(img_src& s, int tw, int th, int bottom)
+    void classify(img_src& s, const char* name, const gimage& v)
+    {
+        const image_class k = image_classify(s.kind, s.kind == IMG_WEBP && webp_lossy(s.data), s.nat_w, s.nat_h,
+                                             v.px.data(), v.alpha.empty() ? nullptr : v.alpha.data(), v.w, v.h);
+        s.photo = k.photo;
+        ESP_LOGI(TAG, "image %s: %s, %s", strncmp(name, "data:", 5) == 0 ? "data: URL" : name,
+                 k.photo ? "photo" : "graphic", k.why);
+    }
+
+    gimage* variant(img_src& s, const char* name, int tw, int th, int bottom)
     {
         if(tw <= 0 || th <= 0 || s.state != IMG_LOADED) return nullptr;
         img_tick++;
@@ -731,6 +758,7 @@ class page_container : public document_container
         int dw = std::min(tw, s.nat_w), dh = std::min(th, s.nat_h);
         if(!decode_image(s.kind, s.data, *v, dw, dh))
             ESP_LOGW(TAG, "decode failed, kind %d, %dx%d for %dx%d", s.kind, s.nat_w, s.nat_h, tw, th);
+        else if(s.photo < 0) classify(s, name, *v);
         note_psram();
         img_bytes += v->bytes();
         s.vars.push_back(std::move(v));
@@ -771,7 +799,7 @@ class page_container : public document_container
         }
     }
 
-    void blit(const gimage& img, const rect_i& dst, const rect_i& clip0)
+    void blit(const gimage& img, const rect_i& dst, const rect_i& clip0, bool photo = false)
     {
         rect_i clip = intersect(intersect(clip0, cur_clip()), dst);
         int    dw = dst.x1 - dst.x0, dh = dst.y1 - dst.y0;
@@ -784,7 +812,7 @@ class page_container : public document_container
                 int    sx = static_cast<int>(static_cast<long>(x - dst.x0) * img.w / dw);
                 size_t o  = static_cast<size_t>(sy) * img.w + sx;
                 int    a  = img.alpha_at(o);
-                if(a) blend(x, y, {img.px[3 * o], img.px[3 * o + 1], img.px[3 * o + 2]}, a);
+                if(a) blend(x, y, {img.px[3 * o], img.px[3 * o + 1], img.px[3 * o + 2]}, a, photo);
             }
         }
     }
@@ -809,14 +837,14 @@ class page_container : public document_container
             want(*s, bottom);
             return;
         }
-        gimage* img = variant(*s, tw, th, bottom);
+        gimage* img = variant(*s, url.c_str(), tw, th, bottom);
         if(!img) return;
         int x_start = o.x0, y_start = o.y0;
         if(rx) while(x_start > clip.x0) x_start -= tw;
         if(ry) while(y_start > clip.y0) y_start -= th;
         for(int ty = y_start; ty < (ry ? clip.y1 : y_start + 1); ty += th)
             for(int tx = x_start; tx < (rx ? clip.x1 : x_start + 1); tx += tw)
-                blit(*img, {tx, ty, tx + tw, ty + th}, clip);
+                blit(*img, {tx, ty, tx + tw, ty + th}, clip, s->photo > 0);
     }
 
     void draw_solid_fill(uint_ptr, const background_layer& layer, const web_color& color) override
@@ -1177,7 +1205,7 @@ static bool draw_local_html(const std::string& html, const char* key, int rows, 
                 doc->draw(0, 0, 0, &clip);
                 c.end_band(y1);
                 for(int y = y0; y < y1; y++)
-                    c.q.row(&c.fb[static_cast<size_t>(y - y0) * VIEW_W * 3], y, frame + static_cast<size_t>(y) * TONE_W);
+                    c.q.row(c.band_rgb(y), y, frame + static_cast<size_t>(y) * TONE_W, c.band_mask(y));
             }
             ok = true;
         }
@@ -1319,8 +1347,7 @@ bool render_page(const std::string& url, int offset, uint8_t* frame, render_stat
                 c.end_band(y1);
                 const uint32_t cd = esp_cpu_get_cycle_count();
                 for(int y = y0; y < y1; y++)
-                    c.q.row(&c.fb[static_cast<size_t>(y - y0) * VIEW_W * 3], TAB_H + y,
-                            frame + static_cast<size_t>(TAB_H + y) * TONE_W);
+                    c.q.row(c.band_rgb(y), TAB_H + y, frame + static_cast<size_t>(TAB_H + y) * TONE_W, c.band_mask(y));
                 dither_cycles += static_cast<uint32_t>(esp_cpu_get_cycle_count() - cd);
                 leds_load(5 + (y1 * 3 + PAGE_H - 1) / PAGE_H, 8);
             }

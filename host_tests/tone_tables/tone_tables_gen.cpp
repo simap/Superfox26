@@ -220,7 +220,7 @@ int main(int argc, char** argv)
         refuse("entry %u is not the paper pattern %s", PAPER, TONEMAP_PAPER_PATTERN);
     const int black = entry_of(TONEMAP_BLACK_PATTERN);
     if(black < 0) refuse("no entry has the black pattern %s", TONEMAP_BLACK_PATTERN);
-    static int16_t qL[TONEMAP_COUNT], q2a[TONEMAP_COUNT], q2b[TONEMAP_COUNT], qlin[TONEMAP_COUNT][3];
+    static int16_t qL[TONEMAP_COUNT], qlin[TONEMAP_COUNT][3];
     int            lin_min = 0, lin_max = 0;
     for(unsigned e = 0; e < N; e++)
     {
@@ -237,9 +237,7 @@ int main(int argc, char** argv)
                        static_cast<double>(t.b));
             lin[0] = lin[1] = lin[2] = t.L * t.L * t.L;
         }
-        qL[e]  = q15_from(t.L);
-        q2a[e] = q15_from(TONEMAP_CHROMA_WEIGHT * t.a);
-        q2b[e] = q15_from(TONEMAP_CHROMA_WEIGHT * t.b);
+        qL[e] = q15_from(t.L);
         for(int k = 0; k < 3; k++)
         {
             qlin[e][k] = q15_from(lin[k]);
@@ -292,6 +290,55 @@ int main(int argc, char** argv)
     }
     uint8_t solid[256];
     tone_solid_gray_table(gray, qL, solid);
+
+    // ---- the photo dither: the neutral entries and the coloured ones on the red side of the
+    // neutral axis, triangulated in the plane of tone_photo_yv()
+    static int16_t photo_yv[2 * TONEMAP_COUNT];
+    bool           photo_use[TONEMAP_COUNT];
+    for(unsigned e = 0; e < N; e++)
+    {
+        int y, v;
+        tone_photo_yv(qlin[e][0], qlin[e][1], qlin[e][2], &y, &v);
+        photo_yv[2 * e]     = static_cast<int16_t>(y);
+        photo_yv[2 * e + 1] = static_cast<int16_t>(v);
+        photo_use[e]   = !strpbrk(k_tonemap[e].pattern, "rR") || v > 0;
+    }
+    std::vector<tone_tri> photo_tri;
+    std::vector<uint8_t>  photo_top;
+    char                  photo_why[160];
+    if(!tone_photo_build(photo_yv, photo_use, static_cast<int>(N), photo_tri, photo_top, photo_why,
+                         sizeof(photo_why)))
+        refuse("the photo triangles do not build: %s", photo_why);
+    int photo_clamped = 0;
+    // The start grid from the coloured targets of sRGB colours on a step of 5 through pass A.
+    std::vector<tone_photo_sample> photo_s;
+    {
+        std::vector<uint8_t> all;
+        for(int r = 0; r < 256; r += 5)
+            for(int g = 0; g < 256; g += 5)
+                for(int b = 0; b < 256; b += 5) all.insert(all.end(), {uint8_t(r), uint8_t(g), uint8_t(b)});
+        for(size_t p0 = 0; p0 < all.size() / 3; p0 += CHUNK)
+        {
+            const int n = static_cast<int>(std::min<size_t>(CHUNK, all.size() / 3 - p0));
+            slot_a    s[CHUNK];
+            memset(px, 0, sizeof(px));
+            memcpy(px, &all[3 * p0], static_cast<size_t>(3 * n));
+            pass_a(px, tone_fx_pad8(n), n, s);
+            for(int i = 0; i < n; i++)
+            {
+                if(s[i].kind != K_COLOUR) continue;
+                int y, v;
+                tone_photo_yv(s[i].r, s[i].g, s[i].b, &y, &v);
+                const int vc = tone_photo_clamp(photo_top.data(), static_cast<int>(photo_top.size()), photo_yv, y, v);
+                photo_clamped += vc != v;
+                photo_s.push_back({y, vc, tone_photo_cell(s[i].L, s[i].C)});
+            }
+        }
+    }
+    static uint8_t photo_grid[TONE_PHOTO_GRID * TONE_PHOTO_GRID];
+    int            photo_out = 0;
+    if(!tone_photo_grid(photo_tri, photo_yv, photo_s, photo_grid, &photo_out) || photo_out)
+        refuse("%d coloured targets lie outside the photo triangles after the clamp", photo_out);
 
     // ---- the patterns
     static tone_seq  seq[TONEMAP_COUNT];
@@ -359,14 +406,9 @@ int main(int argc, char** argv)
     put("inline constexpr std::array<int, 3> search_max = {{%d, %d, %d}};\n\n", search_max[0], search_max[1],
         search_max[2]);
 
-    put("// Per entry, q15: L, 2a and 2b, and the linear light, L cubed on all three channels for a neutral\n"
-        "// entry.\n");
+    put("// Per entry, q15: L, and the linear light, L cubed on all three channels for a neutral entry.\n");
     put("inline constexpr std::array<int16_t, count> qL = {{\n");
     put_list(qL, static_cast<int>(N), 4);
-    put("}};\ninline constexpr std::array<int16_t, count> q2a = {{\n");
-    put_list(q2a, static_cast<int>(N), 4);
-    put("}};\ninline constexpr std::array<int16_t, count> q2b = {{\n");
-    put_list(q2b, static_cast<int>(N), 4);
     put("}};\ninline constexpr std::array<std::array<int16_t, 3>, count> qlin = {{\n");
     for(unsigned e = 0; e < N; e++) put("    {{%d, %d, %d}},\n", qlin[e][0], qlin[e][1], qlin[e][2]);
     put("}};\n\n");
@@ -385,6 +427,25 @@ int main(int argc, char** argv)
     put("inline constexpr tone_white_slot white = {%d, %d, %d, %d, %d, %d, %d, %u, %u, %u, %u, %u};\n\n", white.r,
         white.g, white.b, white.L, white.A, white.B, white.C, white.lo, white.hi, white.kind, white.ent,
         white.white_kind);
+
+    put("// The photo dither (tone_photo.h): per entry Y and V, the triangles (entries darkest first, the\n"
+        "// triangle across the edge opposite each, the orientation), and per cell of L and C the triangle a\n"
+        "// walk starts from.\n");
+    put("inline constexpr std::array<int16_t, 2 * count> photo_yv = {{\n");
+    for(unsigned e = 0; e < N; e++) put("    %d, %d,\n", photo_yv[2 * e], photo_yv[2 * e + 1]);
+    put("}};\n");
+    put("inline constexpr int photo_tri_count = %d;\n", static_cast<int>(photo_tri.size()));
+    put("inline constexpr std::array<tone_tri, photo_tri_count> photo_tri = {{\n");
+    for(const tone_tri& t : photo_tri)
+        put("    {{%u, %u, %u}, {%u, %u, %u}, %d, 0},\n", t.v[0], t.v[1], t.v[2], t.nb[0], t.nb[1], t.nb[2], t.sign);
+    put("}};\n");
+    put("inline constexpr int photo_top_count = %d;\n", static_cast<int>(photo_top.size()));
+    put("inline constexpr std::array<uint8_t, photo_top_count> photo_top = {{\n");
+    put_list(photo_top.data(), static_cast<int>(photo_top.size()), 4);
+    put("}};\n");
+    put("inline constexpr std::array<uint8_t, %d> photo_grid = {{\n", TONE_PHOTO_GRID * TONE_PHOTO_GRID);
+    put_list(photo_grid, TONE_PHOTO_GRID * TONE_PHOTO_GRID, 4);
+    put("}};\n\n");
 
     put("// tones_solid_gray() of each gray byte.\n");
     put("inline constexpr std::array<uint8_t, 256> solid_gray = {{\n");
@@ -418,8 +479,8 @@ int main(int argc, char** argv)
         return 1;
     }
     printf("tone_tables_gen: %u entries, %d neutral, %d bracket steps, squeeze fit image %.6f panel %.6f, "
-           "white kind %u entry %u, wrote %s\n",
+           "white kind %u entry %u, %zu photo triangles, %d of %zu coloured targets above the hull, wrote %s\n",
            N, n_neutral, steps, static_cast<double>(fit_img), static_cast<double>(fit_pan), white.kind, white.ent,
-           argv[1]);
+           photo_tri.size(), photo_clamped, photo_s.size(), argv[1]);
     return 0;
 }

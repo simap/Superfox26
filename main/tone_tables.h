@@ -14,6 +14,7 @@
 #include "tone_fx_bracket.h"
 #include "tone_fx_search_internal.h"
 #include "tone_fx_squeeze_internal.h"
+#include "tone_photo.h"
 #include "tone_plan.h"
 #include "tone_tables_source.h"
 #include "tonemap.h"

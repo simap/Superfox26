@@ -275,6 +275,7 @@ struct test_case
     int         crop_x = 0, crop_y = 0;
     int         dark_x = 0, dark_y = 0; // origin of the DARK_W x DARK_H crop
     bool        ramp   = false;
+    std::vector<uint8_t> mask; // W x h, not 0 for a photo pixel, or empty for none
 };
 
 struct texture
@@ -422,7 +423,9 @@ void run(const test_case& tc, const std::string& outdir, std::vector<summary_row
     tone_dither          q;
     const auto           t0 = std::chrono::steady_clock::now();
     q.alloc(W);
-    for(int y = 0; y < h; y++) q.row(&tc.im.rgb[static_cast<size_t>(y) * W * 3], y, &idx[static_cast<size_t>(y) * W]);
+    for(int y = 0; y < h; y++)
+        q.row(&tc.im.rgb[static_cast<size_t>(y) * W * 3], y, &idx[static_cast<size_t>(y) * W],
+              tc.mask.empty() ? nullptr : &tc.mask[static_cast<size_t>(y) * W]);
     q.release();
     summary_row s;
     s.name = tc.name;
@@ -849,6 +852,90 @@ test_case tri_show()
     return tc;
 }
 
+// The same image with every pixel a photo pixel.
+test_case as_photo(test_case tc, const char* name)
+{
+    tc.name = name;
+    tc.mask.assign(static_cast<size_t>(W) * tc.im.h, 1);
+    return tc;
+}
+
+uint32_t mix32(uint32_t x)
+{
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+// (e) 960x672, a made up photo: a sky from pale pink to deep red over a dark ground, a soft radial
+// vignette, a gray ball lit from the top left, a red cloth, a dark gray ramp along the bottom and
+// noise of up to 6 sRGB steps.
+test_case scene()
+{
+    test_case tc;
+    tc.name = "e_scene";
+    tc.im   = blank(TONE_H);
+    for(int y = 0; y < TONE_H; y++)
+        for(int x = 0; x < W; x++)
+        {
+            float c[3];
+            if(y < 400)
+            {
+                const float t = y / 400.0f;
+                c[0] = 250 - 50 * t, c[1] = 235 - 175 * t, c[2] = 230 - 180 * t;
+            }
+            else
+            {
+                const float t = (y - 400) / 272.0f;
+                c[0] = 60 - 50 * t, c[1] = 45 - 37 * t, c[2] = 40 - 32 * t;
+            }
+            const float bx = (x - 300) / 140.0f, by = (y - 300) / 140.0f;
+            if(bx * bx + by * by < 1)
+            {
+                const float bz = sqrtf(1 - bx * bx - by * by);
+                const float s  = std::max(0.0f, (-bx - by + bz) / 1.732f);
+                c[0] = c[1] = c[2] = 25 + 210 * s;
+            }
+            const float cx = (x - 700) / 180.0f, cy = (y - 470) / 90.0f;
+            if(cx * cx + cy * cy < 1)
+            {
+                const float s = 1 - 0.8f * (cx * cx + cy * cy);
+                c[0] = 60 + 180 * s, c[1] = c[2] = 15 + 30 * s;
+            }
+            if(y >= 610) c[0] = c[1] = c[2] = 80.0f * x / (W - 1);
+            const float dx = (x - W / 2.0f) / W, dy = (y - TONE_H / 2.0f) / TONE_H;
+            const float vg = 1 - 0.9f * (dx * dx + dy * dy);
+            const int   nz = static_cast<int>(mix32(static_cast<uint32_t>(y * W + x)) % 13) - 6;
+            int         v[3];
+            for(int k = 0; k < 3; k++) v[k] = std::max(0, std::min(255, static_cast<int>(lroundf(c[k] * vg)) + nz));
+            put(tc.im, x, y, v[0], v[1], v[2]);
+        }
+    tc.crop_x = 180;
+    tc.crop_y = 180;
+    tc.dark_x = 400;
+    tc.dark_y = 540;
+    return tc;
+}
+
+// (s) the dark gray ramp with photo pixels at x 320 to 639 and y 50 to 149, against Atkinson on
+// every side: the seams of both row directions. The crops sit on its left and right edges.
+test_case seam()
+{
+    test_case tc = dark_gray_ramp();
+    tc.name      = "s_seam";
+    tc.ramp      = false;
+    tc.mask.assign(static_cast<size_t>(W) * tc.im.h, 0);
+    for(int y = 50; y < 150; y++) memset(&tc.mask[static_cast<size_t>(y) * W + 320], 1, 320);
+    tc.crop_x = 200;
+    tc.crop_y = 20;
+    tc.dark_x = 560;
+    tc.dark_y = 40;
+    return tc;
+}
+
 #if HAVE_FREETYPE
 // Text as render.cpp draw_text() draws it: FreeType's default render, coverage into blend().
 struct ft_text
@@ -1117,6 +1204,15 @@ int main(int argc, char** argv)
     run(tri_axes(), outdir, sum);
     run(tri_show(), outdir, sum);
     run(text_block(), outdir, sum);
+    run(scene(), outdir, sum);
+    run(as_photo(gray_ramp(), "pa_gray_ramp"), outdir, sum);
+    run(as_photo(dark_gray_ramp(), "pa2_dark_gray_ramp"), outdir, sum);
+    run(as_photo(red_sat_ramp(), "pb1_red_sat_ramp"), outdir, sum);
+    run(as_photo(red_dark_ramp(), "pb2_red_dark_ramp"), outdir, sum);
+    run(as_photo(dark_red_ramp(), "pb3_dark_red_ramp"), outdir, sum);
+    run(as_photo(tri_show(), "pc2_tri_show"), outdir, sum);
+    run(as_photo(scene(), "pe_scene"), outdir, sum);
+    run(seam(), outdir, sum);
     for(int i = 2; i < argc; i++)
     {
         test_case tc;

@@ -638,11 +638,11 @@ void print_split(const char* stage, const split& sp, int px)
            static_cast<unsigned>(n.kernel_chunks), static_cast<unsigned>(n.colour_chunks),
            static_cast<unsigned>(n.neutral_chunks), static_cast<unsigned>(n.lanes));
     printf("BENCH %-15s px white_chunk %u entry_run %u (white %u) entry_carry %u neutral %u colour %u "
-           "(two_nearest %u, runs %u)\n",
+           "(runs %u) photo %u\n",
            stage, static_cast<unsigned>(n.white_chunk_px), static_cast<unsigned>(n.entry_run_px),
            static_cast<unsigned>(n.white_run_px), static_cast<unsigned>(n.entry_carry_px),
            static_cast<unsigned>(n.neutral_px), static_cast<unsigned>(n.colour_px),
-           static_cast<unsigned>(n.colour_two_px), static_cast<unsigned>(n.colour_runs));
+           static_cast<unsigned>(n.colour_runs), static_cast<unsigned>(n.photo_px));
 }
 
 void run_frame_fixed(int img, uint8_t* band)

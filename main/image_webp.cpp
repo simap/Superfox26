@@ -18,6 +18,13 @@ bool sniff_webp(const std::string& data, int& w, int& h)
     return true;
 }
 
+bool webp_lossy(const std::string& data)
+{
+    WebPBitstreamFeatures f;
+    return WebPGetFeatures(reinterpret_cast<const uint8_t*>(data.data()), data.size(), &f) == VP8_STATUS_OK &&
+           f.format == 1;
+}
+
 namespace
 {
 bool pack_rgba(gimage& img)

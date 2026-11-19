@@ -37,13 +37,10 @@ static const float STOCK_RED_C   = 0.09f;
 static const float STOCK_BLACK_L = 0.5f;
 
 static const int NOISE_N = 64;
-static constexpr float NOISE_REL = 0.25f;
 
 namespace
 {
 const unsigned N = static_cast<unsigned>(TONEMAP_COUNT);
-
-const int REL_Q = static_cast<int>(NOISE_REL * 4096.0f + 0.5f);
 
 static_assert(static_cast<size_t>(TONE_W) * TONE_H == static_cast<size_t>(EPD_PLANE_BYTES) * 8, "frame and planes differ");
 static_assert(TONE_W == EPD_W && TONE_H == EPD_H, "frame and panel differ");
@@ -104,21 +101,20 @@ constexpr bool lin_fits_error_rows()
 }
 static_assert(lin_fits_error_rows(), "an entry's linear light runs past the error range");
 
-struct pair_tables
+constexpr int cube_q15(int l)
 {
-    std::array<int32_t, TONEMAP_COUNT> mid, rel;
-};
+    return static_cast<int>((static_cast<int64_t>(l * l) * l + (1 << 29)) >> 30);
+}
 
-constexpr pair_tables make_pairs()
+// Per neutral pair, indexed by its lighter entry: the midpoint of the two L, in linear light.
+constexpr std::array<int32_t, TONEMAP_COUNT> make_cuts()
 {
-    pair_tables p{};
+    std::array<int32_t, TONEMAP_COUNT> p{};
     for(int k = 1; k < tone_tables::neutral_count; k++)
     {
-        const unsigned hi = tone_tables::neutral[k - 1], lo = tone_tables::neutral[k];
-        const double   lh = k_tonemap[hi].L, ll = k_tonemap[lo].L;
-        p.mid[hi]         = static_cast<int32_t>(0.5 * (ll + lh) * 16777216.0 + 0.5);
-        p.rel[hi] =
-            static_cast<int32_t>(static_cast<double>(NOISE_REL) / 128.0 * (lh - ll) * 16777216.0 + 0.5);
+        const unsigned hi  = tone_tables::neutral[k - 1], lo = tone_tables::neutral[k];
+        const int32_t  mid = static_cast<int32_t>(0.5 * (k_tonemap[lo].L + k_tonemap[hi].L) * 16777216.0 + 0.5);
+        p[hi]              = cube_q15((mid + (1 << 8)) >> 9);
     }
     return p;
 }
@@ -142,13 +138,13 @@ constexpr lab_table make_lab()
 TONE_FX_ALIGNED chunk s_ck;
 const uint8_t s_white_kind = tone_tables::white.white_kind;
 
-TONE_TABLES_RAM std::array<int16_t, TONEMAP_COUNT>                s_qL       = tone_tables::qL;
-TONE_TABLES_RAM std::array<int16_t, TONEMAP_COUNT>                s_q2a      = tone_tables::q2a;
-TONE_TABLES_RAM std::array<int16_t, TONEMAP_COUNT>                s_q2b      = tone_tables::q2b;
 TONE_TABLES_RAM std::array<std::array<int16_t, 3>, TONEMAP_COUNT> s_qlin     = tone_tables::qlin;
-TONE_TABLES_RAM std::array<int32_t, TONEMAP_COUNT>                s_pair_mid = make_pairs().mid;
-TONE_TABLES_RAM std::array<int32_t, TONEMAP_COUNT>                s_pair_rel = make_pairs().rel;
+TONE_TABLES_RAM std::array<int32_t, TONEMAP_COUNT>                s_pair_cut = make_cuts();
 TONE_TABLES_RAM noise_table s_noise = tone_tables::noise_blue;
+TONE_TABLES_RAM std::array<int16_t, 2 * TONEMAP_COUNT> s_photo_yv = tone_tables::photo_yv;
+TONE_TABLES_RAM std::array<tone_tri, tone_tables::photo_tri_count> s_photo_tri = tone_tables::photo_tri;
+TONE_TABLES_RAM std::array<uint8_t, tone_tables::photo_top_count> s_photo_top = tone_tables::photo_top;
+TONE_TABLES_RAM std::array<uint8_t, TONE_PHOTO_GRID * TONE_PHOTO_GRID> s_photo_grid = tone_tables::photo_grid;
 const lab_table s_lab   = make_lab();
 const uint8_t   s_black = static_cast<uint8_t>(entry_of(TONEMAP_BLACK_PATTERN));
 uint8_t*        s_frame     = nullptr;
@@ -171,7 +167,7 @@ struct bench_counts
     uint32_t white_run_px;
     uint32_t entry_carry_px;
     uint32_t neutral_px, colour_px;
-    uint32_t colour_two_px;
+    uint32_t photo_px;
     uint32_t colour_runs;
 };
 uint32_t     s_bench_cyc[PH_N];
@@ -196,19 +192,6 @@ bool         s_bench_count = false;
 inline int clampi(int v, int lo, int hi)
 {
     return v < lo ? lo : v > hi ? hi : v;
-}
-
-inline int cube_q15(int l)
-{
-    return static_cast<int>((static_cast<int64_t>(l * l) * l + (1 << 29)) >> 30);
-}
-
-inline uint32_t dist_q(int l, int a2, int b2, unsigned e)
-{
-    const uint32_t dl = static_cast<uint32_t>(l - s_qL[e]);
-    const uint32_t da = static_cast<uint32_t>(a2 - s_q2a[e]);
-    const uint32_t db = static_cast<uint32_t>(b2 - s_q2b[e]);
-    return dl * dl + da * da + db * db;
 }
 
 inline int share8(int res)
@@ -318,7 +301,7 @@ template <bool COUNT = false> void pass_a(int nu)
     BENCH_COUNT(neutral_chunks, neutral);
 }
 
-ALWAYS_INLINE unsigned decide_colour(int s, int nz, const int ec[3], int res[3])
+ALWAYS_INLINE unsigned decide_colour(int s, const int ec[3], int res[3])
 {
     const chunk& c = s_ck;
     TONE_FX_ALIGNED q15 in[8];
@@ -327,24 +310,28 @@ ALWAYS_INLINE unsigned decide_colour(int s, int nz, const int ec[3], int res[3])
     in[1] = static_cast<q15>(clampi(c.g[s] + ec[1], 0, Q15_ONE));
     in[2] = static_cast<q15>(clampi(c.b[s] + ec[2], 0, Q15_ONE));
     tone_fx_lin_to_oklab_1(in, q);
-    const int pl = q[0];
-    uint8_t   b8, n8;
-    tone_fx_search(static_cast<q15>(pl), q[1], q[2], &b8, &n8);
-    unsigned best = b8;
-    if(REL_Q > 0 && nz)
-    {
-        unsigned lo = b8, hi = n8;
-        uint32_t dlo = dist_q(pl, 2 * q[1], 2 * q[2], lo), dhi = dist_q(pl, 2 * q[1], 2 * q[2], hi);
-        if(s_qL[lo] > s_qL[hi]) std::swap(lo, hi), std::swap(dlo, dhi);
-        const uint32_t dp = dist_q(s_qL[lo], s_q2a[lo], s_q2b[lo], hi);
-        best = (static_cast<int64_t>(dlo) - static_cast<int64_t>(dhi)) * 262144 +
-                       static_cast<int64_t>(REL_Q * nz) * dp >
-                   0
-                   ? hi
-                   : lo;
-    }
+    uint8_t best, next;
+    tone_fx_search(q[0], q[1], q[2], &best, &next);
     for(int k = 0; k < 3; k++) res[k] = in[k] - s_qlin[best][k];
     return best;
+}
+
+// The entry of a photo pixel of slot s at threshold rank r, 0 to 255. It depends on the target and
+// the rank alone: a photo pixel takes no carried error and leaves none, so its mix averages to its
+// target over the noise table.
+unsigned photo_entry(int s, int r)
+{
+    const chunk& c    = s_ck;
+    const int    kind = c.kind[s] == K_WHITE ? s_white_kind : c.kind[s];
+    if(kind == K_ENTRY) return c.lo[s];
+    if(kind == K_NEUTRAL) return tone_photo_pair(c.lo[s], c.hi[s], s_qlin[c.lo[s]][0], s_qlin[c.hi[s]][0], c.r[s], r);
+    int     y, v;
+    int32_t w[3];
+    tone_photo_yv(c.r[s], c.g[s], c.b[s], &y, &v);
+    v = tone_photo_clamp(s_photo_top.data(), tone_tables::photo_top_count, s_photo_yv.data(), y, v);
+    const unsigned k = tone_photo_find(s_photo_tri.data(), s_photo_yv.data(),
+                                       s_photo_grid[static_cast<size_t>(tone_photo_cell(c.L[s], c.C[s]))], y, v, w);
+    return tone_photo_choose(s_photo_tri[k], w, r);
 }
 
 struct pass_b_rows
@@ -354,6 +341,7 @@ struct pass_b_rows
     int16_t*       row2;
     uint8_t*       out;
     const int8_t*  noise;
+    const uint8_t* mask;
 };
 
 struct pass_b_pos
@@ -371,14 +359,13 @@ template <int D> struct cells
     static const int OWN = D > 0 ? 6 : 0, A1 = 3, A2 = D > 0 ? 0 : 6;
 };
 
-inline int neutral_step(int s, int er, int eg, int eb, int nz, uint8_t* o)
+inline int neutral_step(int s, int er, int eg, int eb, uint8_t* o)
 {
     const chunk&   c    = s_ck;
     const unsigned lo   = c.lo[s], hi = c.hi[s];
     const int      lum  = (LUMA_Q[0] * er + LUMA_Q[1] * eg + LUMA_Q[2] * eb + (1 << 14)) >> 15;
     const int      v    = clampi(c.r[s] + lum, s_qlin[lo][0], s_qlin[hi][0]);
-    const int      m    = (s_pair_mid[hi] - s_pair_rel[hi] * nz + (1 << 8)) >> 9;
-    const unsigned best = v > cube_q15(m) ? hi : lo;
+    const unsigned best = v > s_pair_cut[hi] ? hi : lo;
     *o                  = static_cast<uint8_t>(best);
     return share8(v - s_qlin[best][0]);
 }
@@ -423,7 +410,7 @@ NOIPA void run_b(pass_b_pos& ps, const uint8_t* ent, const pass_b_rows& rw)
             const int      x  = static_cast<int>(op - rw.out);
             const int16_t* ep = rw.cur + (x + 2) * 3;
             h = neutral_step(s, clampi(ep[0] + sr, -ERR_MAX_Q, ERR_MAX_Q), clampi(ep[1] + sg, -ERR_MAX_Q, ERR_MAX_Q),
-                             clampi(ep[2] + sb, -ERR_MAX_Q, ERR_MAX_Q), rw.noise[x & (NOISE_N - 1)], op);
+                             clampi(ep[2] + sb, -ERR_MAX_Q, ERR_MAX_Q), op);
             BENCH_COUNT(neutral_px, 1);
         }
         else
@@ -470,23 +457,21 @@ template <bool COUNT, int D> ALWAYS_INLINE void step_c(pass_b_pos& ps, const pas
                           eb >= -ERR_ZERO_Q && eb <= ERR_ZERO_Q;
         kind = none ? -1 : s_white_kind;
     }
-    const int nz = rw.noise[x & (NOISE_N - 1)];
-    int       hr = 0, hg = 0, hb = 0;
+    int hr = 0, hg = 0, hb = 0;
     if(kind == K_NEUTRAL)
     {
-        hr = hg = hb = neutral_step(s, er, eg, eb, nz, op);
+        hr = hg = hb = neutral_step(s, er, eg, eb, op);
         BENCH_COUNT(neutral_px, 1);
     }
     else if(kind == K_COLOUR)
     {
         const int ec[3] = {er, eg, eb};
         int       res[3];
-        *op             = static_cast<uint8_t>(decide_colour(s, nz, ec, res));
+        *op             = static_cast<uint8_t>(decide_colour(s, ec, res));
         hr             = share8(res[0]);
         hg             = share8(res[1]);
         hb             = share8(res[2]);
         BENCH_COUNT(colour_px, 1);
-        BENCH_COUNT(colour_two_px, REL_Q > 0 && nz != 0);
     }
     else
     {
@@ -532,6 +517,52 @@ template <bool COUNT, int D> int pass_b_chunk(const pass_b_rows& rw, int x0, int
     }
 }
 
+// A photo pixel drops the error carried into it and leaves a share of 0. The error of the pixels
+// before it still reaches the cells their taps name, so the rows stay as Atkinson keeps them and
+// no error outlives its two rows.
+template <bool COUNT, int D> ALWAYS_INLINE void step_p(pass_b_pos& ps, const pass_b_rows& rw)
+{
+    typedef cells<D> C;
+    int16_t* const pa = ps.pa;
+    int16_t* const p1 = ps.p1;
+    const int      x  = static_cast<int>(ps.op - rw.out);
+    *ps.op            = static_cast<uint8_t>(photo_entry(*ps.sp, rw.noise[x & (NOISE_N - 1)] + 128));
+    for(int k = 0; k < 3; k++)
+    {
+        p1[k]          = static_cast<int16_t>(p1[k] + pa[C::A1 + k] + pa[C::A2 + k]);
+        pa[C::OWN + k] = 0;
+    }
+    ps.pend = std::max(ps.pend - 1, 0);
+    ps.sp += D;
+    ps.op += D;
+    ps.pa += 3 * D;
+    ps.p1 += 3 * D;
+    ps.k--;
+    BENCH_COUNT(photo_px, 1);
+}
+
+template <bool COUNT, int D> NOIPA int pass_m_chunk(const pass_b_rows& rw, int x0, int n, int pend)
+{
+    const int      i0 = D > 0 ? 0 : n - 1;
+    pass_b_pos     ps = {s_ck.slot + i0, rw.out + x0 + i0, rw.row2 + (x0 + i0 + (D > 0 ? 0 : 2)) * 3,
+                         rw.row1 + (x0 + i0 - D + 2) * 3, n, pend};
+    const uint8_t* m  = rw.mask + x0 + i0;
+    for(; ps.k > 0; m += D)
+    {
+        if(*m) step_p<COUNT, D>(ps, rw);
+        else step_c<COUNT, D>(ps, rw);
+    }
+    return ps.pend;
+}
+
+template <bool COUNT> NOIPA void photo_chunk(const pass_b_rows& rw, int x0, int n)
+{
+    const uint8_t* sl = s_ck.slot;
+    for(int i = 0; i < n; i++)
+        rw.out[x0 + i] = static_cast<uint8_t>(photo_entry(sl[i], rw.noise[(x0 + i) & (NOISE_N - 1)] + 128));
+    BENCH_COUNT(photo_px, n);
+}
+
 void flush(int16_t* row1, const int16_t* row2, int x, int d)
 {
     int16_t*       p1 = row1 + (x - d + 2) * 3;
@@ -539,7 +570,42 @@ void flush(int16_t* row1, const int16_t* row2, int x, int d)
     for(int k = 0; k < 3; k++) p1[k] = static_cast<int16_t>(p1[k] + p2[k - 3 * d] + p2[k - 6 * d]);
 }
 
-template <bool COUNT> void dither_row(tone_dither& dt, const uint8_t* rgb, int y, uint8_t* out)
+// The error rows over a chunk whose pixels all leave a share of 0. Returns pend.
+int quiet_chunk(int16_t* row1, int16_t* row2, int x0, int n, int d, int pend)
+{
+    const int xf = d > 0 ? x0 : x0 + n - 1;
+    memset(row2 + (x0 + 2) * 3, 0, static_cast<size_t>(n) * 3 * sizeof(int16_t));
+    flush(row1, row2, xf, d);
+    if(n > 1) flush(row1, row2, xf + d, d);
+    return n > 1 ? 0 : std::max(pend - 1, 0);
+}
+
+enum mask_state
+{
+    MASK_NONE,
+    MASK_SOME,
+    MASK_ALL,
+};
+
+mask_state mask_of(const uint8_t* m, int n)
+{
+    if((reinterpret_cast<uintptr_t>(m) & 3) == 0 && n % 4 == 0)
+    {
+        const word_alias* w   = reinterpret_cast<const word_alias*>(m);
+        uint32_t          any = 0, zero = 0;
+        for(int i = 0; i < n / 4; i++)
+        {
+            any |= w[i];
+            zero |= (w[i] - 0x01010101u) & ~w[i] & 0x80808080u;
+        }
+        return !any ? MASK_NONE : zero ? MASK_SOME : MASK_ALL;
+    }
+    int set = 0;
+    for(int i = 0; i < n; i++) set += m[i] != 0;
+    return set == 0 ? MASK_NONE : set < n ? MASK_SOME : MASK_ALL;
+}
+
+template <bool COUNT> void dither_row(tone_dither& dt, const uint8_t* rgb, int y, uint8_t* out, const uint8_t* mask)
 {
     const int      w     = dt.w;
     int16_t*       cur   = dt.rows[0];
@@ -550,7 +616,7 @@ template <bool COUNT> void dither_row(tone_dither& dt, const uint8_t* rgb, int y
     const int      nch   = (w + CHUNK - 1) / CHUNK;
     chunk&         c     = s_ck;
     int            pend  = 0;
-    const pass_b_rows rw = {cur, row1, row2, out, noise};
+    const pass_b_rows rw = {cur, row1, row2, out, noise, mask};
     memset(row2 + (d > 0 ? 0 : (w + 2) * 3), 0, 6 * sizeof(int16_t));
     for(int ci = 0; ci < nch; ci++)
     {
@@ -569,18 +635,25 @@ template <bool COUNT> void dither_row(tone_dither& dt, const uint8_t* rgb, int y
         if(!nu && c.kind[WHITE] == K_ENTRY)
         {
             memset(out + x0, c.lo[WHITE], static_cast<size_t>(n));
-            const int xf = d > 0 ? x0 : x0 + n - 1;
-            memset(row2 + (x0 + 2) * 3, 0, static_cast<size_t>(n) * 3 * sizeof(int16_t));
-            flush(row1, row2, xf, d);
-            if(n > 1) flush(row1, row2, xf + d, d);
-            pend = n > 1 ? 0 : std::max(pend - 1, 0);
+            pend = quiet_chunk(row1, row2, x0, n, d, pend);
             BENCH_COUNT(white_chunks, 1);
             BENCH_COUNT(white_chunk_px, n);
         }
         else
         {
             if(!nu) memset(c.slot, WHITE, static_cast<size_t>(n));
-            if(d > 0) pend = pass_b_chunk<COUNT, 1>(rw, x0, n, pend);
+            const mask_state ms = mask ? mask_of(mask + x0, n) : MASK_NONE;
+            if(ms == MASK_ALL)
+            {
+                photo_chunk<COUNT>(rw, x0, n);
+                pend = quiet_chunk(row1, row2, x0, n, d, pend);
+            }
+            else if(ms == MASK_SOME)
+            {
+                if(d > 0) pend = pass_m_chunk<COUNT, 1>(rw, x0, n, pend);
+                else pend = pass_m_chunk<COUNT, -1>(rw, x0, n, pend);
+            }
+            else if(d > 0) pend = pass_b_chunk<COUNT, 1>(rw, x0, n, pend);
             else pend = pass_b_chunk<COUNT, -1>(rw, x0, n, pend);
         }
         BENCH_NOW(t4);
@@ -768,7 +841,7 @@ void tone_dither::release()
     rows[0] = rows[1] = rows[2] = nullptr;
 }
 
-void tone_dither::row(const uint8_t* c, int y, uint8_t* out)
+void tone_dither::row(const uint8_t* c, int y, uint8_t* out, const uint8_t* mask)
 {
     if(!block)
     {
@@ -778,11 +851,11 @@ void tone_dither::row(const uint8_t* c, int y, uint8_t* out)
 #ifdef TONES_BENCH
     if(s_bench_count)
     {
-        dither_row<true>(*this, c, y, out);
+        dither_row<true>(*this, c, y, out, mask);
         return;
     }
 #endif
-    dither_row<false>(*this, c, y, out);
+    dither_row<false>(*this, c, y, out, mask);
 }
 
 bool tones_draw(const uint8_t* frame, tone_draw_stats* st)

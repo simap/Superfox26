@@ -8,7 +8,7 @@
 #                  Then it checks that the generator refuses a table whose patterns pass the push
 #                  limits (a build with every limit at 2 frames or less), and runs tone_tables_check, which
 #                  runs pass_a() of main/tones.cpp on the file's tables and compares the slot WHITE
-#                  and the solid gray table.
+#                  and the solid gray table, and checks the mean of the photo dither's picks.
 # The file is checked in, so the firmware build needs no host compiler.
 #
 # The flags are those of the host harness (host_tests/tones). The fit of the squeeze runs in float
@@ -29,12 +29,12 @@ TIGHT    := -DEPD_B_FRAME_US=1000000u
 
 FX       := srgb bracket squeeze search oklab
 MAIN_HDR := $(ROOT)/main/tonemap.h $(ROOT)/main/tonemap_entries.inc $(ROOT)/main/tonemap_squeeze.h \
-            $(ROOT)/main/tone_plan.h $(ROOT)/main/tone_fx.h $(ROOT)/main/tone_tables_source.h \
+            $(ROOT)/main/tone_plan.h $(ROOT)/main/tone_fx.h $(ROOT)/main/tone_tables_source.h $(ROOT)/main/tone_photo.h \
             $(foreach k,$(FX),$(ROOT)/main/tone_fx_$(k).h $(ROOT)/main/tone_fx_$(k)_internal.h) \
             $(wildcard $(ROOT)/components/epd97/*.h) $(MODEL)/tone_fx_model.h
 
 GEN_SRCS := tone_tables_gen.cpp tone_plan_expand.cpp tone_fx_squeeze_build.cpp tone_fx_bracket_build.cpp \
-            tone_fx_search_build.cpp $(foreach k,srgb oklab squeeze bracket,$(MODEL)/tone_fx_$(k)_model.cpp)
+            tone_fx_search_build.cpp tone_photo_build.cpp $(foreach k,srgb oklab squeeze bracket,$(MODEL)/tone_fx_$(k)_model.cpp)
 GEN_DEPS := $(GEN_SRCS) tone_plan_expand.h tone_tables_build.h $(MAIN_HDR)
 
 # The check builds tones.cpp as the host harness does, with its ESP-IDF stubs and driver model.

@@ -1,7 +1,8 @@
 // Renders a full page to the red, black and white EPD panel.
 // Each pixel is one tone-map entry index, and the panel's tone tables are driven over several
 // frames to reach more tones than a single frame shows.
-// tone_dither turns an sRGB row into such entry indices by error diffusion.
+// tone_dither turns an sRGB row into such entry indices: Atkinson error diffusion, and for the
+// pixels a mask row marks as photo an ordered dither by blue noise that carries no error.
 // A frame is TONE_W by TONE_H bytes, one tone-map entry per pixel, with TONE_PAPER as the
 // background.
 // Call tones_init once before tones_draw or any tone_dither::row.
@@ -41,7 +42,8 @@ struct tone_dither
     ~tone_dither() { release(); }
     void alloc(int w_);
     void release();
-    void row(const uint8_t* rgb, int y, uint8_t* out);
+    // mask holds one byte per pixel, not 0 for a photo pixel, or is null for none.
+    void row(const uint8_t* rgb, int y, uint8_t* out, const uint8_t* mask = nullptr);
 };
 
 #if TONES_HAVE_FLOAT_REF

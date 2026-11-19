@@ -1,10 +1,14 @@
 // Host probe: the fixed point dither (main/tones.cpp tone_dither) on an RGB image. Writes the result
-// as a PNG with every pixel in the colour of its tone entry, and prints the share of each entry.
-// Usage: out/image_dither IN.png OUT.png. IN is read as 24 bit RGB. Its alpha is dropped, so
-// composite a transparent image on its background first.
+// as a PNG with every pixel in the colour of its tone entry, and prints the share of each entry and
+// the dither time.
+// Usage: out/image_dither [--photo] IN.png OUT.png. IN is read as 24 bit RGB. Its alpha is dropped,
+// so composite a transparent image on its background first. --photo marks every pixel as a photo
+// pixel, so the image takes the blue noise ordered dither instead of error diffusion.
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 
 #include "lodepng.h"
@@ -34,40 +38,45 @@ static void entry_rgb(const tone_entry& e, uint8_t* o)
 
 int main(int argc, char** argv)
 {
-    if(argc != 3)
+    const bool photo = argc == 4 && strcmp(argv[1], "--photo") == 0;
+    if(argc != 3 && !photo)
     {
-        fprintf(stderr, "usage: %s IN.png OUT.png\n", argv[0]);
+        fprintf(stderr, "usage: %s [--photo] IN.png OUT.png\n", argv[0]);
         return 1;
     }
+    const char* in_path  = argv[argc - 2];
+    const char* out_path = argv[argc - 1];
     if(!tones_init()) return 1;
     unsigned char* in = nullptr;
     unsigned       w = 0, h = 0;
-    if(lodepng_decode24_file(&in, &w, &h, argv[1]))
+    if(lodepng_decode24_file(&in, &w, &h, in_path))
     {
-        fprintf(stderr, "%s: cannot read\n", argv[1]);
+        fprintf(stderr, "%s: cannot read\n", in_path);
         return 1;
     }
     tone_dither q;
     q.alloc(static_cast<int>(w));
-    std::vector<uint8_t> row(w), out(static_cast<size_t>(w) * h * 3);
+    std::vector<uint8_t> idx(static_cast<size_t>(w) * h), mask(w, photo ? 1 : 0), out(static_cast<size_t>(w) * h * 3);
     std::vector<int>     n(TONEMAP_COUNT, 0);
+    const auto           t0 = std::chrono::steady_clock::now();
     for(unsigned y = 0; y < h; y++)
+        q.row(in + static_cast<size_t>(y) * w * 3, static_cast<int>(y), &idx[static_cast<size_t>(y) * w],
+              photo ? mask.data() : nullptr);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    for(size_t p = 0; p < idx.size(); p++)
     {
-        q.row(in + static_cast<size_t>(y) * w * 3, static_cast<int>(y), row.data());
-        for(unsigned x = 0; x < w; x++)
-        {
-            n[row[x]]++;
-            entry_rgb(k_tonemap[row[x]], &out[(static_cast<size_t>(y) * w + x) * 3]);
-        }
+        n[idx[p]]++;
+        entry_rgb(k_tonemap[idx[p]], &out[p * 3]);
     }
     free(in);
+    printf("%s, %ux%u, dither %.1f ms\n", photo ? "photo" : "error diffusion", w, h, ms);
     for(unsigned e = 0; e < TONEMAP_COUNT; e++)
         if(n[e])
             printf("e%-3u %6.2f%%  L %.4f a %+.4f b %+.4f  %s\n", e, 100.0 * n[e] / (static_cast<double>(w) * h),
                    k_tonemap[e].L, k_tonemap[e].a, k_tonemap[e].b, k_tonemap[e].pattern);
-    if(lodepng_encode24_file(argv[2], out.data(), w, h))
+    if(lodepng_encode24_file(out_path, out.data(), w, h))
     {
-        fprintf(stderr, "%s: cannot write\n", argv[2]);
+        fprintf(stderr, "%s: cannot write\n", out_path);
         return 1;
     }
     return 0;
