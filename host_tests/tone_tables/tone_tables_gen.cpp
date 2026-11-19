@@ -452,13 +452,13 @@ int main(int argc, char** argv)
     put_list(solid, 256, 4);
     put("}};\n\n");
 
-    put("// The expanded patterns: p1a, p1b, p2, n1a, n1b, n2, net, prefix, nudge, residual.\n");
+    put("// The expanded patterns: p1a, p1b, p2, n1a, n1b, n2, net, prefix, nudge, residual, split.\n");
     put("inline constexpr std::array<tone_seq, count> seq = {{\n");
     for(unsigned e = 0; e < N; e++)
     {
         const tone_seq& s = seq[e];
-        put("    {\"%s\", \"%s\", \"%s\", %u, %u, %u, %d, %d, %d, %d}, // %u %s\n", s.p1a, s.p1b, s.p2, s.n1a, s.n1b,
-            s.n2, s.net, s.prefix, s.nudge, s.residual, e, k_tonemap[e].pattern);
+        put("    {\"%s\", \"%s\", \"%s\", %u, %u, %u, %d, %d, %d, %d, %d}, // %u %s\n", s.p1a, s.p1b, s.p2, s.n1a,
+            s.n1b, s.n2, s.net, s.prefix, s.nudge, s.residual, s.split, e, k_tonemap[e].pattern);
     }
     put("}};\n");
     put("// Their push figures (tone_push_of()): vdh, vdl, vdhr, pos, max_vdh, max_vdl, max_vdhr, max_pos.\n");

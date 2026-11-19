@@ -8,7 +8,10 @@
 #                  Then it checks that the generator refuses a table whose patterns pass the push
 #                  limits (a build with every limit at 2 frames or less), and runs tone_tables_check, which
 #                  runs pass_a() of main/tones.cpp on the file's tables and compares the slot WHITE
-#                  and the solid gray table, and checks the mean of the photo dither's picks.
+#                  and the solid gray table, and checks the mean of the photo dither's picks. It also
+#                  checks the phase 2 marks h and '|' in the expansion and the plans. Run
+#                  out/tone_tables_check CODES to compare the plan with a combo plan
+#                  codes file (tone_tables_check.cpp).
 # The file is checked in, so the firmware build needs no host compiler.
 #
 # The flags are those of the host harness (host_tests/tones). The fit of the squeeze runs in float
@@ -38,9 +41,9 @@ GEN_SRCS := tone_tables_gen.cpp tone_plan_expand.cpp tone_fx_squeeze_build.cpp t
 GEN_DEPS := $(GEN_SRCS) tone_plan_expand.h tone_tables_build.h $(MAIN_HDR)
 
 # The check builds tones.cpp as the host harness does, with its ESP-IDF stubs and driver model.
-CHECK_SRCS := tone_tables_check.cpp $(ROOT)/main/tone_plan.cpp ../tones/epd_stub.cpp \
+CHECK_SRCS := tone_tables_check.cpp tone_plan_expand.cpp $(ROOT)/main/tone_plan.cpp ../tones/epd_stub.cpp \
               $(foreach k,$(FX),$(ROOT)/main/tone_fx_$(k).cpp $(MODEL)/tone_fx_$(k)_model.cpp)
-CHECK_DEPS := $(CHECK_SRCS) tone_tables_build.h $(ROOT)/main/tones.cpp $(ROOT)/main/tones.h \
+CHECK_DEPS := $(CHECK_SRCS) tone_tables_build.h tone_plan_expand.h $(ROOT)/main/tones.cpp $(ROOT)/main/tones.h \
               $(ROOT)/main/tone_tables.h $(ROOT)/main/tone_tables.inc $(MAIN_HDR) ../tones/epd_stub.h \
               $(wildcard ../tones/stub/*.h)
 

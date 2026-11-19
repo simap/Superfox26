@@ -69,8 +69,10 @@ bool tone_plan_init(char* why, size_t why_len)
         const tone_push& u   = tone_tables::push[e];
         int              net = 0;
         if(!part_ok(s.p1a, s.n1a, "IP", tone_p1_net, &net) || !part_ok(s.p1b, s.n1b, "SM", tone_p1_net, &net) ||
-           !part_ok(s.p2, s.n2, "piw", tone_p2_net, &net))
+           !part_ok(s.p2, s.n2, "hpiw", tone_p2_net, &net))
             return fail(why, why_len, "entry %u: a part's length or letters do not match", e);
+        if(s.split < -1 || s.split > s.n2)
+            return fail(why, why_len, "entry %u: split %d is outside -1 to %u", e, s.split, s.n2);
         const tone_balance b = tone_balance_of(net);
         if(net != s.net || b.prefix != s.prefix || b.nudge != s.nudge || b.residual != s.residual)
             return fail(why, why_len, "entry %u: net %d prefix %d nudge %d residual %d, the letters give %d %d %d %d",
@@ -128,11 +130,25 @@ uint8_t tone_plan_code(const tone_plan& plan, unsigned e, tone_phase ph, unsigne
         if(k < len - b) return TONE_P1_S;
         return p1_part_code(s, a + k - (len - b));
     }
-    const unsigned own   = mag(s.nudge) + s.n2;
-    const unsigned start = plan.len[TONE_PHASE_2] - own;
-    if(k >= start + own || k < start) return TONE_P2_H;
-    const unsigned k2 = k - start;
-    const unsigned nd = mag(s.nudge);
-    if(k2 < nd) return s.nudge > 0 ? TONE_P2_I : TONE_P2_P;
-    return letter_code("hpiw", s.p2[k2 - nd]);
+    // j is the played letter at pull k: the nudge, then p2.
+    const unsigned nd  = mag(s.nudge);
+    const unsigned own = nd + s.n2;
+    const unsigned len = plan.len[TONE_PHASE_2];
+    unsigned       j;
+    if(s.split >= 0)
+    {
+        const unsigned head    = nd + static_cast<unsigned>(s.split);
+        const unsigned tail_at = len - (own - head);
+        if(k < head) j = k;
+        else if(k < tail_at) return TONE_P2_H;
+        else j = head + k - tail_at;
+    }
+    else
+    {
+        if(k < len - own) return TONE_P2_H;
+        j = k - (len - own);
+    }
+    if(j >= own) return TONE_P2_H;
+    if(j < nd) return s.nudge > 0 ? TONE_P2_I : TONE_P2_P;
+    return letter_code("hpiw", s.p2[j - nd]);
 }

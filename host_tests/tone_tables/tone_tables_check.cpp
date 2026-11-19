@@ -5,13 +5,223 @@
 // the stand ins of the kernels with the tables of main/tone_tables.inc, as the host harness does,
 // and compares. A change to pass_a() or its constants that the generator does not follow fails
 // here. It also runs the photo dither of tones.cpp on the photo tables and checks that its picks
-// average to their targets. Exit status 0 when both tables match and every photo mix holds.
+// average to their targets. It checks the phase 2 marks h and '|' in the expansion and in the plans
+// of tone_plan_code(). Exit status 0 when both tables match, every photo mix holds and every mark
+// check passes.
+//
+// usage: tone_tables_check [CODES]
+// CODES is a file of combo plan codes. Each line holds
+// "id", a region id, a pattern, then '|' and the phase 1 codes as SIPM, then '|' and the phase 2
+// codes as hpiw. With CODES the check also plans the entries whose patterns the file names and
+// compares every pull with the file.
 
 #include "tones.cpp"
 
 #include <cstdio>
+#include <string>
+#include <vector>
 
+#include "tone_plan_expand.h"
 #include "tone_tables_build.h"
+
+// The phase 2 codes of entry e in plan, as letters of hpiw.
+static std::string p2_codes(const tone_plan& plan, unsigned e)
+{
+    std::string out;
+    for(unsigned k = 0; k < plan.len[TONE_PHASE_2]; k++) out += "hpiw"[tone_plan_code(plan, e, TONE_PHASE_2, k)];
+    return out;
+}
+
+// The phase 2 that the notation gives s in len pulls. The nudge and p2 are right aligned. With a
+// '|', the nudge and the letters before it start at pull 0 instead, and the holds sit between.
+static std::string p2_want(const tone_seq& s, unsigned len)
+{
+    const size_t nd = static_cast<size_t>(s.nudge < 0 ? -s.nudge : s.nudge);
+    std::string  own(nd, s.nudge > 0 ? 'i' : 'p');
+    own += s.p2;
+    const size_t head = s.split < 0 ? 0 : nd + static_cast<size_t>(s.split);
+    return own.substr(0, head) + std::string(len - own.size(), 'h') + own.substr(head);
+}
+
+// The marks h and '|'. Expansions of fixed patterns and patterns the notation refuses. For every
+// entry, the pattern without its marks has the same net, balance and push, when the marks move no
+// phase 1 letter. For the plan of every entry and for the plan of the neutral entries, each entry's
+// phase 2 is that of p2_want() and the plan is as long as the longest nudge plus n2.
+static int check_marks()
+{
+    int  bad = 0;
+    char why[192];
+    struct expand_case
+    {
+        const char* src;
+        const char* p2;
+        int         split;
+    };
+    static const expand_case k_expand[] = {
+        {"M4i2p5h4i", "iippppphhhhi", -1}, {"M3i2p8hi", "iipppppppphi", -1},
+        {"M4i2p5ip|i", "iipppppipi", 9},   {"M3i2p5i5|ph", "iipppppiiiiiph", 12},
+        {"M3i2|", "ii", 2},                {"M3|I", "ii", 0},
+        {"M3|", "", 0},                    {"M4i2p5", "iippppp", -1},
+    };
+    for(const expand_case& c : k_expand)
+    {
+        tone_seq s;
+        if(!tone_pattern_expand(c.src, &s, why, sizeof(why)))
+        {
+            bad++;
+            printf("FAIL expand %s: %s\n", c.src, why);
+        }
+        else if(strcmp(s.p2, c.p2) != 0 || s.split != c.split || s.n2 != strlen(c.p2))
+        {
+            bad++;
+            printf("FAIL expand %s: p2 %s split %d, want %s split %d\n", c.src, s.p2, s.split, c.p2, c.split);
+        }
+    }
+    static const char* const k_refuse[] = {"M3i|p|i", "M3i|2p", "M3|S", "M3i|M", "M3hM", "M3x"};
+    for(const char* src : k_refuse)
+    {
+        tone_seq s;
+        if(tone_pattern_expand(src, &s, why, sizeof(why)))
+        {
+            bad++;
+            printf("FAIL expand %s: the notation refuses it, the expansion did not\n", src);
+        }
+    }
+
+    unsigned bare_n = 0;
+    for(unsigned e = 0; e < TONEMAP_COUNT; e++)
+    {
+        const char* src = k_tonemap[e].pattern;
+        std::string bare;
+        for(size_t k = 0; src[k] != '\0'; k++)
+        {
+            if(src[k] == 'h')
+                while(isdigit(static_cast<unsigned char>(src[k + 1]))) k++;
+            else if(src[k] != '|') bare += src[k];
+        }
+        if(bare == src) continue;
+        tone_seq  a, b;
+        tone_push ua, ub;
+        if(!tone_pattern_expand(src, &a, why, sizeof(why)) || !tone_pattern_expand(bare.c_str(), &b, why, sizeof(why)))
+        {
+            bad++;
+            printf("FAIL entry %u %s or %s: %s\n", e, src, bare.c_str(), why);
+            continue;
+        }
+        if(strcmp(a.p1a, b.p1a) != 0 || strcmp(a.p1b, b.p1b) != 0) continue;
+        tone_push_of(a, &ua);
+        tone_push_of(b, &ub);
+        if(a.net != b.net || a.prefix != b.prefix || a.nudge != b.nudge || a.residual != b.residual ||
+           memcmp(&ua, &ub, sizeof(ua)) != 0)
+        {
+            bad++;
+            printf("FAIL entry %u %s: its net, balance or push differs from that of %s\n", e, src, bare.c_str());
+        }
+        bare_n++;
+    }
+
+    if(!tone_plan_init(why, sizeof(why)))
+    {
+        printf("FAIL tone_plan_init: %s\n", why);
+        return bad + 1;
+    }
+    uint32_t all[TONEMAP_COUNT], neutral[TONEMAP_COUNT] = {};
+    for(uint32_t& c : all) c = 1;
+    for(int i = 0; i < tone_tables::neutral_count; i++) neutral[tone_tables::neutral[i]] = 1;
+    int plan_bad = 0;
+    for(const uint32_t* count : {all, neutral})
+    {
+        tone_plan plan;
+        tone_plan_build(count, &plan);
+        const unsigned len  = plan.len[TONE_PHASE_2];
+        unsigned       most = 0;
+        for(unsigned e = 0; e < TONEMAP_COUNT; e++)
+        {
+            if(!count[e]) continue;
+            const tone_seq& s   = tone_tables::seq[e];
+            const unsigned  own = static_cast<unsigned>(s.nudge < 0 ? -s.nudge : s.nudge) + s.n2;
+            most                = std::max(most, own);
+            if(own > len) continue;
+            const std::string got = p2_codes(plan, e), want = p2_want(s, len);
+            if(got != want)
+            {
+                plan_bad++;
+                printf("FAIL plan entry %u %s: phase 2 %s, want %s\n", e, k_tonemap[e].pattern, got.c_str(),
+                       want.c_str());
+            }
+        }
+        if(most != len)
+        {
+            plan_bad++;
+            printf("FAIL plan: phase 2 of %u pulls, the longest entry needs %u\n", len, most);
+        }
+    }
+    bad += plan_bad;
+    printf("tone_plan marks: %zu expansions, %zu refusals, %u marked entries match their bare patterns, plans of "
+           "every and of the neutral entries %d faults: %s\n",
+           sizeof(k_expand) / sizeof(k_expand[0]), sizeof(k_refuse) / sizeof(k_refuse[0]), bare_n, plan_bad,
+           bad ? "FAIL" : "PASS");
+    return bad;
+}
+
+// The plan of the entries whose patterns path names, against the codes path holds for them.
+static int check_codes(const char* path)
+{
+    FILE* f = fopen(path, "r");
+    if(!f)
+    {
+        printf("FAIL cannot read %s\n", path);
+        return 1;
+    }
+    struct row
+    {
+        unsigned    e;
+        std::string p1, p2;
+    };
+    std::vector<row> rows;
+    uint32_t         count[TONEMAP_COUNT] = {};
+    int              bad                  = 0;
+    char             line[512];
+    while(fgets(line, sizeof(line), f))
+    {
+        unsigned id;
+        char     pat[128], p1[128], p2[128];
+        if(sscanf(line, "id %u %127s |%127s |%127s", &id, pat, p1, p2) != 4) continue;
+        unsigned e = 0;
+        while(e < TONEMAP_COUNT && strcmp(k_tonemap[e].pattern, pat) != 0) e++;
+        if(e == TONEMAP_COUNT)
+        {
+            bad++;
+            printf("FAIL codes id %u: no entry has the pattern %s\n", id, pat);
+            continue;
+        }
+        count[e] = 1;
+        rows.push_back({e, p1, p2});
+    }
+    fclose(f);
+    tone_plan plan;
+    tone_plan_build(count, &plan);
+    int diff[TONE_PHASE_COUNT] = {};
+    for(const row& r : rows)
+    {
+        std::string p1;
+        for(unsigned k = 0; k < plan.len[TONE_PHASE_1]; k++) p1 += "SIPM"[tone_plan_code(plan, r.e, TONE_PHASE_1, k)];
+        const std::string p2 = p2_codes(plan, r.e);
+        diff[TONE_PHASE_1] += p1 != r.p1;
+        diff[TONE_PHASE_2] += p2 != r.p2;
+        if(p1 != r.p1 || p2 != r.p2)
+            printf("DIFF entry %u %s: plan %s | %s, file %s | %s\n", r.e, k_tonemap[r.e].pattern, p1.c_str(),
+                   p2.c_str(), r.p1.c_str(), r.p2.c_str());
+    }
+    int entries = 0;
+    for(uint32_t c : count) entries += c != 0;
+    bad += diff[TONE_PHASE_1] + diff[TONE_PHASE_2];
+    printf("tone_plan codes %s: %zu rows, %d entries, phase 1 %u pulls with %d entries that differ, phase 2 %u pulls "
+           "with %d: %s\n",
+           path, rows.size(), entries, plan.len[TONE_PHASE_1], diff[TONE_PHASE_1], plan.len[TONE_PHASE_2],
+           diff[TONE_PHASE_2], bad ? "FAIL" : "PASS");
+    return bad;
+}
 
 static bool same(const tone_white_slot& a, const tone_white_slot& b)
 {
@@ -19,9 +229,10 @@ static bool same(const tone_white_slot& a, const tone_white_slot& b)
            a.lo == b.lo && a.hi == b.hi && a.kind == b.kind && a.ent == b.ent && a.white_kind == b.white_kind;
 }
 
-int main()
+int main(int argc, char** argv)
 {
-    int bad = 0;
+    int bad = check_marks();
+    if(argc > 1) bad += check_codes(argv[1]);
 
     // The slot WHITE, as tones_init() built it from the kernels: 8 white pixels, slot 0 in use, the
     // chunk's arrays as they are before the first chunk.

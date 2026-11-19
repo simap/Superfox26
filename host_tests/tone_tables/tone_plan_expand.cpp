@@ -17,8 +17,10 @@ namespace
 const char P2_SHAPE_P[] = "LLLLGGGGGG";
 const char P2_SHAPE_I[] = "HHHHGGGGGG";
 const char P2_SHAPE_W[] = "RRRRRRRRRG";
+const char P2_SHAPE_H[] = "GGGGGGGGGG";
 
 static_assert(TONE_NUDGE_FRAMES >= 1 && TONE_NUDGE_FRAMES <= EPD_SEQ_UNIT_MAX, "nudge unit in range");
+static_assert(sizeof(P2_SHAPE_H) - 1 == EPD_SEQ_PULL_FRAMES, "h shape is the pull length");
 static_assert(sizeof(P2_SHAPE_P) - 1 == EPD_SEQ_PULL_FRAMES, "p shape is the pull length");
 static_assert(sizeof(P2_SHAPE_I) - 1 == EPD_SEQ_PULL_FRAMES, "i shape is the pull length");
 static_assert(sizeof(P2_SHAPE_W) - 1 == EPD_SEQ_PULL_FRAMES, "w shape is the pull length");
@@ -95,6 +97,7 @@ const char* p2_shape(char c)
     case 'p': return P2_SHAPE_P;
     case 'i': return P2_SHAPE_I;
     case 'w': return P2_SHAPE_W;
+    case 'h': return P2_SHAPE_H;
     default: return "";
     }
 }
@@ -127,17 +130,30 @@ bool append(char* dst, unsigned* n, char c, const char* part, char* why, size_t 
 }
 } // namespace
 
-// Letters I and P before any S or M go to p1a, S and M to p1b, p i and w to p2, r is p w and R is
-// p w w. An I or P after an S or M plays in phase 2 as i i or p p, the same net in nudges. A digit
-// run repeats the letter before it. '|' and 'h' are placement marks: they and their digit run add
-// no pull.
+// Letters I and P before any S or M go to p1a, S and M to p1b, h p i and w to p2, r is p w and R is
+// p w w. h is a phase 2 hold pull: ground, net 0, counted in the pattern's phase 2 pulls. An I or P
+// after an S or M plays in phase 2 as i i or p p, the same net in nudges. A digit run repeats the
+// letter before it. One '|' with no digit run after it splits phase 2. The nudge and the letters
+// before it play from the first pull of phase 2, and the letters after it end on the last pull.
+// Hold pulls fill the gap, and this pad is not counted in the pattern's pulls. Letters after the
+// '|' are phase 2 letters, so an I or P there plays as i i or p p.
 bool tone_pattern_expand(const char* src, tone_seq* s, char* why, size_t why_len)
 {
     unsigned n1a = 0, n1b = 0, n2 = 0;
-    *s = tone_seq();
+    *s       = tone_seq();
+    s->split = -1;
     for(size_t k = 0; src[k] != '\0';)
     {
-        const char c   = src[k++];
+        const char c = src[k++];
+        if(c == '|')
+        {
+            if(s->split >= 0) return fail(why, why_len, "more than one '|' in '%s'", src);
+            if(isdigit(static_cast<unsigned char>(src[k])))
+                return fail(why, why_len, "a repeat count after '|' in '%s'", src);
+            s->split = static_cast<int8_t>(n2);
+            continue;
+        }
+        const bool in2 = n2 > 0 || s->split >= 0;
         unsigned   rep = 1;
         if(isdigit(static_cast<unsigned char>(src[k])))
         {
@@ -150,8 +166,7 @@ bool tone_pattern_expand(const char* src, tone_seq* s, char* why, size_t why_len
             }
             if(rep == 0) return fail(why, why_len, "repeat count 0 in '%s'", src);
         }
-        if(c == '|' || c == 'h') continue;
-        const bool  first = n1b == 0 && n2 == 0;
+        const bool  first = n1b == 0 && !in2;
         const char* unit;
         unsigned    group; // 1 for p1a, 2 for p1b, 3 for p2
         switch(c)
@@ -172,6 +187,10 @@ bool tone_pattern_expand(const char* src, tone_seq* s, char* why, size_t why_len
             unit  = "M";
             group = 2u;
             break;
+        case 'h':
+            unit  = "h";
+            group = 3u;
+            break;
         case 'p':
             unit  = "p";
             group = 3u;
@@ -188,9 +207,9 @@ bool tone_pattern_expand(const char* src, tone_seq* s, char* why, size_t why_len
             unit  = "pww";
             group = 3u;
             break;
-        default: return fail(why, why_len, "'%c' in '%s' is not one of I P S M i p r R", c, src);
+        default: return fail(why, why_len, "'%c' in '%s' is not one of I P S M h i p r R |", c, src);
         }
-        if(group == 2u && n2 > 0) return fail(why, why_len, "'%c' after a phase 2 letter in '%s'", c, src);
+        if(group == 2u && in2) return fail(why, why_len, "'%c' after a phase 2 letter in '%s'", c, src);
         if(c == 'S' && n1b > 0 && s->p1b[n1b - 1] == 'M')
             return fail(why, why_len, "'S' after 'M' in '%s', nothing but M follows M", src);
         for(unsigned r = 0; r < rep; r++)
@@ -249,8 +268,9 @@ bool tone_pattern_expand(const char* src, tone_seq* s, char* why, size_t why_len
 
 // Two plays, both opened by an S pull: S, prefix, I P, S, S M, where S fill sits between the
 // parts, and S, prefix, I P, S M, where the S and M part fills to the end. Where an S pull sits
-// decides which runs it joins, so the count takes the larger of the two per rail. The h pad of
-// phase 2 is ground and ends nothing. The open runs at the end are the larger of the two plays too.
+// decides which runs it joins, so the count takes the larger of the two per rail. The h pulls and
+// the hold pads of phase 2 are ground and end nothing. So a '|' pad between two letters joins the
+// same runs as the play without it. The open runs at the end are the larger of the two plays too.
 void tone_push_of(const tone_seq& s, tone_push* u)
 {
     *u                         = tone_push();

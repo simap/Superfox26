@@ -944,111 +944,111 @@ inline constexpr std::array<uint8_t, 256> solid_gray = {{
     245, 245, 245, 245, 245, 245, 245, 245, 250, 250, 250, 251, 252, 252, 255, 255,
 }};
 
-// The expanded patterns: p1a, p1b, p2, n1a, n1b, n2, net, prefix, nudge, residual.
+// The expanded patterns: p1a, p1b, p2, n1a, n1b, n2, net, prefix, nudge, residual, split.
 inline constexpr std::array<tone_seq, count> seq = {{
-    {"", "SMMM", "ppppppppppppppp", 0, 4, 15, -72, 9, 0, 0}, // 0 SM3p15
-    {"", "MMMM", "iipppppppppppp", 0, 4, 14, -56, 7, 0, 0}, // 1 M4i2p12
-    {"", "MMM", "iippppppppp", 0, 3, 11, -40, 5, 0, 0}, // 2 M3i2p9
-    {"", "MMM", "iippppppp", 0, 3, 9, -32, 4, 0, 0}, // 3 M3i2p7
-    {"", "MMM", "iippppp", 0, 3, 7, -24, 3, 0, 0}, // 4 M3i2p5
-    {"", "MMMM", "iipppppipwpwwpwwpp", 0, 4, 18, -24, 3, 0, 0}, // 5 M4i2p5irR2p2
-    {"", "MMM", "iippppppwpwwppwpwwppwpwwp", 0, 3, 25, -24, 3, 0, 0}, // 6 M3i2p5rRprRprRp
-    {"", "MMMM", "iippppppwpwpwpwwpwwp", 0, 4, 20, -24, 3, 0, 0}, // 7 M4i2p5r3R2p
-    {"", "MMM", "iipppppipwpwpwwpwwp", 0, 3, 19, -16, 2, 0, 0}, // 8 M3i2p5ir2R2p
-    {"", "MMM", "iippppppwpwpwpwwpwwpwwp", 0, 3, 23, -16, 2, 0, 0}, // 9 M3i2p5r3R3p
-    {"", "MMM", "iipppppipwpwwpwwp", 0, 3, 17, -16, 2, 0, 0}, // 10 M3i2p5irR2p
-    {"", "MMM", "iipppppipip", 0, 3, 11, -24, 3, 0, 0}, // 11 M3i2p5ipip
-    {"", "MMMM", "iipppppipwpwpwpwwpwwpwwp", 0, 4, 24, -16, 2, 0, 0}, // 12 M4i2p5ir3R3p
-    {"", "MMM", "iippppppwwppw", 0, 3, 13, -24, 3, 0, 0}, // 13 M3i2p5Rpr
-    {"", "MMMM", "iippppppwpwpwpwwpwwppw", 0, 4, 22, -24, 3, 0, 0}, // 14 M4i2p5r3R2pr
-    {"", "MMM", "iipppppppww", 0, 3, 11, -24, 3, 0, 0}, // 15 M3i2p6R
-    {"", "MMMM", "iipppppiip", 0, 4, 10, -24, 3, 0, 0}, // 16 M4i2p5i2|p
-    {"", "MMMM", "iipppppipiip", 0, 4, 12, -24, 3, 0, 0}, // 17 M4i2p5ipi2|p
-    {"", "MMMM", "iippppppwwppww", 0, 4, 14, -24, 3, 0, 0}, // 18 M4i2p5RpR
-    {"", "MMMM", "iippppppwpwpwpwwpwwpppww", 0, 4, 24, -24, 3, 0, 0}, // 19 M4i2p5r3R2p2R
-    {"", "MMMM", "iippppppwpwwppww", 0, 4, 16, -24, 3, 0, 0}, // 20 M4i2p5rRpR
-    {"", "MMM", "iipppppppwpwpww", 0, 3, 15, -24, 3, 0, 0}, // 21 M3i2p6r2R
-    {"", "MMMM", "iippppppwpwpww", 0, 4, 14, -24, 3, 0, 0}, // 22 M4i2p5r2R
-    {"", "MMM", "iippppppwwpppwpwpww", 0, 3, 19, -24, 3, 0, 0}, // 23 M3i2p5Rp2r2R
-    {"", "MMMM", "iippppppwpwpwpwwpwwpppwpwpww", 0, 4, 28, -24, 3, 0, 0}, // 24 M4i2p5r3R2p2r2R
-    {"", "MMMM", "iippppppwpwwppwpwwppwpww", 0, 4, 24, -24, 3, 0, 0}, // 25 M4i2p5rRprRprR
-    {"", "MMMM", "iippppppwwppwpwpww", 0, 4, 18, -24, 3, 0, 0}, // 26 M4i2p5Rpr2R
-    {"", "MMM", "iippppppppi", 0, 3, 11, -32, 4, 0, 0}, // 27 M3i2p8|i
-    {"", "MMM", "iipppppiiip", 0, 3, 11, -16, 2, 0, 0}, // 28 M3i2p5i3|ph
-    {"", "MMMM", "iippppppwpwwppwpwpww", 0, 4, 20, -24, 3, 0, 0}, // 29 M4i2p5rRpr2R
-    {"", "MMM", "iippppppwpwpwpwwpwwppww", 0, 3, 23, -16, 2, 0, 0}, // 30 M3i2p5r3R2pR
-    {"", "MMM", "iipppppipwpww", 0, 3, 13, -16, 2, 0, 0}, // 31 M3i2p5irR
-    {"", "MMM", "iippppppppwpwwpww", 0, 3, 17, -24, 3, 0, 0}, // 32 M3i2p7rR2
-    {"", "MMMM", "iippppppwwpppwpwwpww", 0, 4, 20, -24, 3, 0, 0}, // 33 M4i2p5Rp2rR2
-    {"", "MMMM", "iipppppppwpwwpww", 0, 4, 16, -24, 3, 0, 0}, // 34 M4i2p6rR2
-    {"", "MMMM", "iipppppi", 0, 4, 8, -24, 3, 0, 0}, // 35 M4i2p5|i
-    {"", "MMM", "iippppppwpwpwwpww", 0, 3, 17, -16, 2, 0, 0}, // 36 M3i2p5r2R2
-    {"", "MMM", "iippppppwpwpwpwwpww", 0, 3, 19, -16, 2, 0, 0}, // 37 M3i2p5r3R2
-    {"", "MMM", "iippppppwpwwpww", 0, 3, 15, -16, 2, 0, 0}, // 38 M3i2p5rR2
-    {"", "MMM", "iippppppwwppwpwwpww", 0, 3, 19, -16, 2, 0, 0}, // 39 M3i2p5RprR2
-    {"", "MMMM", "iippppppwwpppwpwpwpwwpww", 0, 4, 24, -24, 3, 0, 0}, // 40 M4i2p5Rp2r3R2
-    {"", "MMM", "iippppppwpwwpipwpww", 0, 3, 19, -16, 2, 0, 0}, // 41 M3i2p5rRpirR
-    {"", "MMMM", "iippppppwpwpwwipwpwpww", 0, 4, 22, -16, 2, 0, 0}, // 42 M4i2p5r2Rir2R
-    {"", "MMM", "iipppppipwpwpwwpwwppwpwwpww", 0, 3, 27, -8, 1, 0, 0}, // 43 M3i2p5ir2R2prR2
-    {"", "MMMM", "iippppppwpwwpwwpipwpww", 0, 4, 22, -16, 2, 0, 0}, // 44 M4i2p5rR2pirR
-    {"", "MMMM", "iippppppwpwwpwwppwpwpwpwwpww", 0, 4, 28, -16, 2, 0, 0}, // 45 M4i2p5rR2pr3R2
-    {"", "MMM", "iipppppppwpwpwpwwpwwpww", 0, 3, 23, -16, 2, 0, 0}, // 46 M3i2p6r3R3
-    {"", "MMMM", "iipppppipwpwwpww", 0, 4, 16, -16, 2, 0, 0}, // 47 M4i2p5irR2
-    {"", "MMM", "iippppppwipww", 0, 3, 13, -16, 2, 0, 0}, // 48 M3i2p5riR
-    {"", "MMMM", "iippppppwipwpwpwwpww", 0, 4, 20, -16, 2, 0, 0}, // 49 M4i2p5rir2R2
-    {"", "MMMM", "iippppppwwpipwpwwpww", 0, 4, 20, -16, 2, 0, 0}, // 50 M4i2p5RpirR2
-    {"", "MMMM", "iippppppwpwpwwpwwpww", 0, 4, 20, -16, 2, 0, 0}, // 51 M4i2p5r2R3
-    {"", "MMMM", "iippppppwpwpwpwwpwwpww", 0, 4, 22, -16, 2, 0, 0}, // 52 M4i2p5r3R3
-    {"", "MMMM", "iipppppipwpwpwpwwpwwpwwpww", 0, 4, 26, -8, 1, 0, 0}, // 53 M4i2p5ir3R4
-    {"", "MMM", "iippppppwpwpwpwwpwwpwwipw", 0, 3, 25, -8, 1, 0, 0}, // 54 M3i2p5r3R3ir
-    {"", "MMM", "iipppppipwpwpwpwwpwwpww", 0, 3, 23, -8, 1, 0, 0}, // 55 M3i2p5ir3R3
-    {"", "SSSS", "ppwwiiipwwpwwpwwpwwpww", 0, 4, 22, 32, -4, 0, 0}, // 56 S4pRi3R5
-    {"", "MMMM", "iippppppwpwwpipwpwwpww", 0, 4, 22, -16, 2, 0, 0}, // 57 M4i2p5rRpirR2
-    {"", "SSSS", "piiipwwpwwpwwpwwpwwpww", 0, 4, 22, 32, -4, 0, 0}, // 58 S4pi3R6
-    {"", "SSSS", "ppwwpwwiipwwpwwpwwpwwpww", 0, 4, 24, 32, -4, 0, 0}, // 59 S4pR2i2R5
-    {"", "SSSS", "iiiipwwpwwpwwpwwpwwpww", 0, 4, 22, 40, -5, 0, 0}, // 60 S4i4R6
-    {"", "MMMM", "iippppppwpwpwpwwpwwipw", 0, 4, 22, -16, 2, 0, 0}, // 61 M4i2p5r3R2ir
-    {"", "SSSS", "ppwwpwwipwwpwwpwwpww", 0, 4, 20, 24, -3, 0, 0}, // 62 S4pR2iR4
-    {"", "MMM", "iippppppwpwpwwpwwpwwpww", 0, 3, 23, -8, 1, 0, 0}, // 63 M3i2p5r2R4
-    {"", "MMMM", "iipppppiiiip", 0, 4, 12, -16, 2, 0, 0}, // 64 M4i2p5i4p
-    {"", "MMMM", "iippppppwpwwpwwipwpwwpww", 0, 4, 24, -8, 1, 0, 0}, // 65 M4i2p5rR2irR2
-    {"", "MMMM", "iipppppiipwpww", 0, 4, 14, -16, 2, 0, 0}, // 66 M4i2p5i2rR
-    {"", "MMMM", "iippppppwpwwipwpwwipwpww", 0, 4, 24, -8, 1, 0, 0}, // 67 M4i2p5rRirRir|R
-    {"", "MMMM", "iippppppwwipwpww", 0, 4, 16, -16, 2, 0, 0}, // 68 M4i2p5RirR
-    {"", "SSSS", "pwwpwwipwwpwwpww", 0, 4, 16, 24, -3, 0, 0}, // 69 S4R2iR3
-    {"", "MMMM", "iippppppwpwwpwwpipww", 0, 4, 20, -16, 2, 0, 0}, // 70 M4i2p5rR2piR
-    {"", "MMM", "iippppppwwipwpwwpww", 0, 3, 19, -8, 1, 0, 0}, // 71 M3i2p5RirR2
-    {"", "MMMM", "iipppppipi", 0, 4, 10, -24, 3, 0, 0}, // 72 M4i2p5ip|i
-    {"", "MMMM", "iipppppiiipwpwpwwpww", 0, 4, 20, -8, 1, 0, 0}, // 73 M4i2p5i3r2R2
-    {"", "MMM", "iipppppiipwpwwpww", 0, 3, 17, -8, 1, 0, 0}, // 74 M3i2p5i2rR2
-    {"", "MMM", "iippppppwwi", 0, 3, 11, -16, 2, 0, 0}, // 75 M3i2p5Ri
-    {"", "MMM", "iipppppiiiiip", 0, 3, 13, -8, 1, 0, 0}, // 76 M3i2p5i5|ph
-    {"", "MMMM", "iippppppwwipwwipwwipwwipww", 0, 4, 26, 8, -1, 0, 0}, // 77 M4i2p5RiRiRiRi|R
-    {"", "MMMM", "iipppppipipi", 0, 4, 12, -24, 3, 0, 0}, // 78 M4i2p5ipipi
-    {"", "MMMM", "iipppppipwipww", 0, 4, 14, -16, 2, 0, 0}, // 79 M4i2p5iriR
-    {"", "MMM", "iippppppwpwpwpwwpwwipww", 0, 3, 23, -8, 1, 0, 0}, // 80 M3i2p5r3R2iR
-    {"", "MMM", "iippppppwpwpwwi", 0, 3, 15, -16, 2, 0, 0}, // 81 M3i2p5r2Ri
-    {"", "MMMM", "iipppppipwpwwpwwipww", 0, 4, 20, -8, 1, 0, 0}, // 82 M4i2p5irR2iR
-    {"", "MMMM", "iipppppiiipwpwwpww", 0, 4, 18, -8, 1, 0, 0}, // 83 M4i2p5i3rR2
-    {"", "MMMM", "iipppppiipww", 0, 4, 12, -16, 2, 0, 0}, // 84 M4i2p5i2R
-    {"", "MMMM", "iippppppwwipwwipwwipww", 0, 4, 22, 0, 0, 0, 0}, // 85 M4i2p5RiRiRiR
-    {"", "MMMM", "iippppppwpwpwpwwpwwi", 0, 4, 20, -16, 2, 0, 0}, // 86 M4i2p5r3R2i
-    {"", "MMMM", "iippppppwpwwpwwi", 0, 4, 16, -16, 2, 0, 0}, // 87 M4i2p5rR2i
-    {"", "MMM", "iippppppwpwpwpwwpwwpwwi", 0, 3, 23, -8, 1, 0, 0}, // 88 M3i2p5r3R3i
-    {"", "MMM", "iipppppii", 0, 3, 9, -16, 2, 0, 0}, // 89 M3i2p5i2
-    {"", "MMM", "iipppppipwpwwpwwi", 0, 3, 17, -8, 1, 0, 0}, // 90 M3i2p5irR2i
-    {"", "MMM", "iipppppipwpwpwwpwwi", 0, 3, 19, -8, 1, 0, 0}, // 91 M3i2p5ir2R2i
-    {"", "MMM", "iipppppipwipwipww", 0, 3, 17, -8, 1, 0, 0}, // 92 M3i2p5iririR
-    {"", "MMM", "iipppppipii", 0, 3, 11, -16, 2, 0, 0}, // 93 M3i2p5ipi2
-    {"", "MMM", "iippppppwpwpwpwwpwwii", 0, 3, 21, -8, 1, 0, 0}, // 94 M3i2p5r3R2i2
-    {"", "MMMM", "iipppppipwpwwpwwii", 0, 4, 18, -8, 1, 0, 0}, // 95 M4i2p5irR2i2
-    {"", "MMMM", "iipppppiii", 0, 4, 10, -16, 2, 0, 0}, // 96 M4i2p5i3
-    {"", "MMM", "iipppppipwpwwpwwiii", 0, 3, 19, 0, 0, 0, 0}, // 97 M3i2p5irR2i3
-    {"", "MMM", "iipppppiiii", 0, 3, 11, -8, 1, 0, 0}, // 98 M3i2p5i4
-    {"", "MMMM", "iipppppipwpwwpwwiiii", 0, 4, 20, 0, 0, 0, 0}, // 99 M4i2p5irR2i4
-    {"", "MMMM", "iipppppiipii", 0, 4, 12, -16, 2, 0, 0}, // 100 M4i2p5i2pi2
-    {"", "MMMM", "iipppppiiiii", 0, 4, 12, -8, 1, 0, 0}, // 101 M4i2p5i5
-    {"", "SMMM", "iiiiiiiiiiiiiii", 0, 4, 15, 48, -6, 0, 0}, // 102 SM3i15
+    {"", "SMMM", "ppppppppppppppp", 0, 4, 15, -72, 9, 0, 0, -1}, // 0 SM3p15
+    {"", "MMMM", "iipppppppppppp", 0, 4, 14, -56, 7, 0, 0, -1}, // 1 M4i2p12
+    {"", "MMM", "iippppppppp", 0, 3, 11, -40, 5, 0, 0, -1}, // 2 M3i2p9
+    {"", "MMM", "iippppppp", 0, 3, 9, -32, 4, 0, 0, -1}, // 3 M3i2p7
+    {"", "MMM", "iippppp", 0, 3, 7, -24, 3, 0, 0, -1}, // 4 M3i2p5
+    {"", "MMMM", "iipppppipwpwwpwwpp", 0, 4, 18, -24, 3, 0, 0, -1}, // 5 M4i2p5irR2p2
+    {"", "MMM", "iippppppwpwwppwpwwppwpwwp", 0, 3, 25, -24, 3, 0, 0, -1}, // 6 M3i2p5rRprRprRp
+    {"", "MMMM", "iippppppwpwpwpwwpwwp", 0, 4, 20, -24, 3, 0, 0, -1}, // 7 M4i2p5r3R2p
+    {"", "MMM", "iipppppipwpwpwwpwwp", 0, 3, 19, -16, 2, 0, 0, -1}, // 8 M3i2p5ir2R2p
+    {"", "MMM", "iippppppwpwpwpwwpwwpwwp", 0, 3, 23, -16, 2, 0, 0, -1}, // 9 M3i2p5r3R3p
+    {"", "MMM", "iipppppipwpwwpwwp", 0, 3, 17, -16, 2, 0, 0, -1}, // 10 M3i2p5irR2p
+    {"", "MMM", "iipppppipip", 0, 3, 11, -24, 3, 0, 0, -1}, // 11 M3i2p5ipip
+    {"", "MMMM", "iipppppipwpwpwpwwpwwpwwp", 0, 4, 24, -16, 2, 0, 0, -1}, // 12 M4i2p5ir3R3p
+    {"", "MMM", "iippppppwwppw", 0, 3, 13, -24, 3, 0, 0, -1}, // 13 M3i2p5Rpr
+    {"", "MMMM", "iippppppwpwpwpwwpwwppw", 0, 4, 22, -24, 3, 0, 0, -1}, // 14 M4i2p5r3R2pr
+    {"", "MMM", "iipppppppww", 0, 3, 11, -24, 3, 0, 0, -1}, // 15 M3i2p6R
+    {"", "MMMM", "iipppppiip", 0, 4, 10, -24, 3, 0, 0, 9}, // 16 M4i2p5i2|p
+    {"", "MMMM", "iipppppipiip", 0, 4, 12, -24, 3, 0, 0, 11}, // 17 M4i2p5ipi2|p
+    {"", "MMMM", "iippppppwwppww", 0, 4, 14, -24, 3, 0, 0, -1}, // 18 M4i2p5RpR
+    {"", "MMMM", "iippppppwpwpwpwwpwwpppww", 0, 4, 24, -24, 3, 0, 0, -1}, // 19 M4i2p5r3R2p2R
+    {"", "MMMM", "iippppppwpwwppww", 0, 4, 16, -24, 3, 0, 0, -1}, // 20 M4i2p5rRpR
+    {"", "MMM", "iipppppppwpwpww", 0, 3, 15, -24, 3, 0, 0, -1}, // 21 M3i2p6r2R
+    {"", "MMMM", "iippppppwpwpww", 0, 4, 14, -24, 3, 0, 0, -1}, // 22 M4i2p5r2R
+    {"", "MMM", "iippppppwwpppwpwpww", 0, 3, 19, -24, 3, 0, 0, -1}, // 23 M3i2p5Rp2r2R
+    {"", "MMMM", "iippppppwpwpwpwwpwwpppwpwpww", 0, 4, 28, -24, 3, 0, 0, -1}, // 24 M4i2p5r3R2p2r2R
+    {"", "MMMM", "iippppppwpwwppwpwwppwpww", 0, 4, 24, -24, 3, 0, 0, -1}, // 25 M4i2p5rRprRprR
+    {"", "MMMM", "iippppppwwppwpwpww", 0, 4, 18, -24, 3, 0, 0, -1}, // 26 M4i2p5Rpr2R
+    {"", "MMM", "iippppppppi", 0, 3, 11, -32, 4, 0, 0, 10}, // 27 M3i2p8|i
+    {"", "MMM", "iipppppiiiph", 0, 3, 12, -16, 2, 0, 0, 10}, // 28 M3i2p5i3|ph
+    {"", "MMMM", "iippppppwpwwppwpwpww", 0, 4, 20, -24, 3, 0, 0, -1}, // 29 M4i2p5rRpr2R
+    {"", "MMM", "iippppppwpwpwpwwpwwppww", 0, 3, 23, -16, 2, 0, 0, -1}, // 30 M3i2p5r3R2pR
+    {"", "MMM", "iipppppipwpww", 0, 3, 13, -16, 2, 0, 0, -1}, // 31 M3i2p5irR
+    {"", "MMM", "iippppppppwpwwpww", 0, 3, 17, -24, 3, 0, 0, -1}, // 32 M3i2p7rR2
+    {"", "MMMM", "iippppppwwpppwpwwpww", 0, 4, 20, -24, 3, 0, 0, -1}, // 33 M4i2p5Rp2rR2
+    {"", "MMMM", "iipppppppwpwwpww", 0, 4, 16, -24, 3, 0, 0, -1}, // 34 M4i2p6rR2
+    {"", "MMMM", "iipppppi", 0, 4, 8, -24, 3, 0, 0, 7}, // 35 M4i2p5|i
+    {"", "MMM", "iippppppwpwpwwpww", 0, 3, 17, -16, 2, 0, 0, -1}, // 36 M3i2p5r2R2
+    {"", "MMM", "iippppppwpwpwpwwpww", 0, 3, 19, -16, 2, 0, 0, -1}, // 37 M3i2p5r3R2
+    {"", "MMM", "iippppppwpwwpww", 0, 3, 15, -16, 2, 0, 0, -1}, // 38 M3i2p5rR2
+    {"", "MMM", "iippppppwwppwpwwpww", 0, 3, 19, -16, 2, 0, 0, -1}, // 39 M3i2p5RprR2
+    {"", "MMMM", "iippppppwwpppwpwpwpwwpww", 0, 4, 24, -24, 3, 0, 0, -1}, // 40 M4i2p5Rp2r3R2
+    {"", "MMM", "iippppppwpwwpipwpww", 0, 3, 19, -16, 2, 0, 0, -1}, // 41 M3i2p5rRpirR
+    {"", "MMMM", "iippppppwpwpwwipwpwpww", 0, 4, 22, -16, 2, 0, 0, -1}, // 42 M4i2p5r2Rir2R
+    {"", "MMM", "iipppppipwpwpwwpwwppwpwwpww", 0, 3, 27, -8, 1, 0, 0, -1}, // 43 M3i2p5ir2R2prR2
+    {"", "MMMM", "iippppppwpwwpwwpipwpww", 0, 4, 22, -16, 2, 0, 0, -1}, // 44 M4i2p5rR2pirR
+    {"", "MMMM", "iippppppwpwwpwwppwpwpwpwwpww", 0, 4, 28, -16, 2, 0, 0, -1}, // 45 M4i2p5rR2pr3R2
+    {"", "MMM", "iipppppppwpwpwpwwpwwpww", 0, 3, 23, -16, 2, 0, 0, -1}, // 46 M3i2p6r3R3
+    {"", "MMMM", "iipppppipwpwwpww", 0, 4, 16, -16, 2, 0, 0, -1}, // 47 M4i2p5irR2
+    {"", "MMM", "iippppppwipww", 0, 3, 13, -16, 2, 0, 0, -1}, // 48 M3i2p5riR
+    {"", "MMMM", "iippppppwipwpwpwwpww", 0, 4, 20, -16, 2, 0, 0, -1}, // 49 M4i2p5rir2R2
+    {"", "MMMM", "iippppppwwpipwpwwpww", 0, 4, 20, -16, 2, 0, 0, -1}, // 50 M4i2p5RpirR2
+    {"", "MMMM", "iippppppwpwpwwpwwpww", 0, 4, 20, -16, 2, 0, 0, -1}, // 51 M4i2p5r2R3
+    {"", "MMMM", "iippppppwpwpwpwwpwwpww", 0, 4, 22, -16, 2, 0, 0, -1}, // 52 M4i2p5r3R3
+    {"", "MMMM", "iipppppipwpwpwpwwpwwpwwpww", 0, 4, 26, -8, 1, 0, 0, -1}, // 53 M4i2p5ir3R4
+    {"", "MMM", "iippppppwpwpwpwwpwwpwwipw", 0, 3, 25, -8, 1, 0, 0, -1}, // 54 M3i2p5r3R3ir
+    {"", "MMM", "iipppppipwpwpwpwwpwwpww", 0, 3, 23, -8, 1, 0, 0, -1}, // 55 M3i2p5ir3R3
+    {"", "SSSS", "ppwwiiipwwpwwpwwpwwpww", 0, 4, 22, 32, -4, 0, 0, -1}, // 56 S4pRi3R5
+    {"", "MMMM", "iippppppwpwwpipwpwwpww", 0, 4, 22, -16, 2, 0, 0, -1}, // 57 M4i2p5rRpirR2
+    {"", "SSSS", "piiipwwpwwpwwpwwpwwpww", 0, 4, 22, 32, -4, 0, 0, -1}, // 58 S4pi3R6
+    {"", "SSSS", "ppwwpwwiipwwpwwpwwpwwpww", 0, 4, 24, 32, -4, 0, 0, -1}, // 59 S4pR2i2R5
+    {"", "SSSS", "iiiipwwpwwpwwpwwpwwpww", 0, 4, 22, 40, -5, 0, 0, -1}, // 60 S4i4R6
+    {"", "MMMM", "iippppppwpwpwpwwpwwipw", 0, 4, 22, -16, 2, 0, 0, -1}, // 61 M4i2p5r3R2ir
+    {"", "SSSS", "ppwwpwwipwwpwwpwwpww", 0, 4, 20, 24, -3, 0, 0, -1}, // 62 S4pR2iR4
+    {"", "MMM", "iippppppwpwpwwpwwpwwpww", 0, 3, 23, -8, 1, 0, 0, -1}, // 63 M3i2p5r2R4
+    {"", "MMMM", "iipppppiiiip", 0, 4, 12, -16, 2, 0, 0, -1}, // 64 M4i2p5i4p
+    {"", "MMMM", "iippppppwpwwpwwipwpwwpww", 0, 4, 24, -8, 1, 0, 0, -1}, // 65 M4i2p5rR2irR2
+    {"", "MMMM", "iipppppiipwpww", 0, 4, 14, -16, 2, 0, 0, -1}, // 66 M4i2p5i2rR
+    {"", "MMMM", "iippppppwpwwipwpwwipwpww", 0, 4, 24, -8, 1, 0, 0, 21}, // 67 M4i2p5rRirRir|R
+    {"", "MMMM", "iippppppwwipwpww", 0, 4, 16, -16, 2, 0, 0, -1}, // 68 M4i2p5RirR
+    {"", "SSSS", "pwwpwwipwwpwwpww", 0, 4, 16, 24, -3, 0, 0, -1}, // 69 S4R2iR3
+    {"", "MMMM", "iippppppwpwwpwwpipww", 0, 4, 20, -16, 2, 0, 0, -1}, // 70 M4i2p5rR2piR
+    {"", "MMM", "iippppppwwipwpwwpww", 0, 3, 19, -8, 1, 0, 0, -1}, // 71 M3i2p5RirR2
+    {"", "MMMM", "iipppppipi", 0, 4, 10, -24, 3, 0, 0, 9}, // 72 M4i2p5ip|i
+    {"", "MMMM", "iipppppiiipwpwpwwpww", 0, 4, 20, -8, 1, 0, 0, -1}, // 73 M4i2p5i3r2R2
+    {"", "MMM", "iipppppiipwpwwpww", 0, 3, 17, -8, 1, 0, 0, -1}, // 74 M3i2p5i2rR2
+    {"", "MMM", "iippppppwwi", 0, 3, 11, -16, 2, 0, 0, -1}, // 75 M3i2p5Ri
+    {"", "MMM", "iipppppiiiiiph", 0, 3, 14, -8, 1, 0, 0, 12}, // 76 M3i2p5i5|ph
+    {"", "MMMM", "iippppppwwipwwipwwipwwipww", 0, 4, 26, 8, -1, 0, 0, 23}, // 77 M4i2p5RiRiRiRi|R
+    {"", "MMMM", "iipppppipipi", 0, 4, 12, -24, 3, 0, 0, -1}, // 78 M4i2p5ipipi
+    {"", "MMMM", "iipppppipwipww", 0, 4, 14, -16, 2, 0, 0, -1}, // 79 M4i2p5iriR
+    {"", "MMM", "iippppppwpwpwpwwpwwipww", 0, 3, 23, -8, 1, 0, 0, -1}, // 80 M3i2p5r3R2iR
+    {"", "MMM", "iippppppwpwpwwi", 0, 3, 15, -16, 2, 0, 0, -1}, // 81 M3i2p5r2Ri
+    {"", "MMMM", "iipppppipwpwwpwwipww", 0, 4, 20, -8, 1, 0, 0, -1}, // 82 M4i2p5irR2iR
+    {"", "MMMM", "iipppppiiipwpwwpww", 0, 4, 18, -8, 1, 0, 0, -1}, // 83 M4i2p5i3rR2
+    {"", "MMMM", "iipppppiipww", 0, 4, 12, -16, 2, 0, 0, -1}, // 84 M4i2p5i2R
+    {"", "MMMM", "iippppppwwipwwipwwipww", 0, 4, 22, 0, 0, 0, 0, -1}, // 85 M4i2p5RiRiRiR
+    {"", "MMMM", "iippppppwpwpwpwwpwwi", 0, 4, 20, -16, 2, 0, 0, -1}, // 86 M4i2p5r3R2i
+    {"", "MMMM", "iippppppwpwwpwwi", 0, 4, 16, -16, 2, 0, 0, -1}, // 87 M4i2p5rR2i
+    {"", "MMM", "iippppppwpwpwpwwpwwpwwi", 0, 3, 23, -8, 1, 0, 0, -1}, // 88 M3i2p5r3R3i
+    {"", "MMM", "iipppppii", 0, 3, 9, -16, 2, 0, 0, -1}, // 89 M3i2p5i2
+    {"", "MMM", "iipppppipwpwwpwwi", 0, 3, 17, -8, 1, 0, 0, -1}, // 90 M3i2p5irR2i
+    {"", "MMM", "iipppppipwpwpwwpwwi", 0, 3, 19, -8, 1, 0, 0, -1}, // 91 M3i2p5ir2R2i
+    {"", "MMM", "iipppppipwipwipww", 0, 3, 17, -8, 1, 0, 0, -1}, // 92 M3i2p5iririR
+    {"", "MMM", "iipppppipii", 0, 3, 11, -16, 2, 0, 0, -1}, // 93 M3i2p5ipi2
+    {"", "MMM", "iippppppwpwpwpwwpwwii", 0, 3, 21, -8, 1, 0, 0, -1}, // 94 M3i2p5r3R2i2
+    {"", "MMMM", "iipppppipwpwwpwwii", 0, 4, 18, -8, 1, 0, 0, -1}, // 95 M4i2p5irR2i2
+    {"", "MMMM", "iipppppiii", 0, 4, 10, -16, 2, 0, 0, -1}, // 96 M4i2p5i3
+    {"", "MMM", "iipppppipwpwwpwwiii", 0, 3, 19, 0, 0, 0, 0, -1}, // 97 M3i2p5irR2i3
+    {"", "MMM", "iipppppiiii", 0, 3, 11, -8, 1, 0, 0, -1}, // 98 M3i2p5i4
+    {"", "MMMM", "iipppppipwpwwpwwiiii", 0, 4, 20, 0, 0, 0, 0, -1}, // 99 M4i2p5irR2i4
+    {"", "MMMM", "iipppppiipii", 0, 4, 12, -16, 2, 0, 0, -1}, // 100 M4i2p5i2pi2
+    {"", "MMMM", "iipppppiiiii", 0, 4, 12, -8, 1, 0, 0, -1}, // 101 M4i2p5i5
+    {"", "SMMM", "iiiiiiiiiiiiiii", 0, 4, 15, 48, -6, 0, 0, -1}, // 102 SM3i15
 }};
 // Their push figures (tone_push_of()): vdh, vdl, vdhr, pos, max_vdh, max_vdl, max_vdhr, max_pos.
 inline constexpr std::array<tone_push, count> push = {{

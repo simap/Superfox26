@@ -43,6 +43,9 @@ enum
     TONE_P2_W = 3
 };
 
+// An expanded pattern. p2 holds the phase 2 letters h p i w, where h is a hold pull of net 0 that
+// counts in n2. split is the count of p2 letters before the pattern's '|', or -1 when it has none.
+// tone_plan_code() places phase 2 by it.
 struct tone_seq
 {
     char    p1a[TONE_SEQ_MAX + 1];
@@ -53,6 +56,7 @@ struct tone_seq
     int8_t  prefix;
     int8_t  nudge;
     int8_t  residual;
+    int8_t  split;
 };
 
 struct tone_push
@@ -129,6 +133,12 @@ constexpr bool tone_push_over(const tone_push& u)
 // tone_plan_init() checks the push figures it wrote at boot.
 bool tone_plan_init(char* why, size_t why_len);
 
+// The phase 2 length is the longest nudge plus n2 of the entries in use. The hold pad of a split
+// pattern is not counted.
 bool tone_plan_build(const uint32_t count[TONEMAP_COUNT], tone_plan* plan);
 
+// The code entry e plays at pull k of phase ph. In phase 2 a pattern without a '|' plays its nudge
+// and p2 right aligned, so its last letter is on the last pull. A pattern with a '|' plays its nudge
+// and the p2 letters before the '|' from pull 0. The letters after the '|' end on the last pull, and
+// hold pulls fill the gap between.
 uint8_t tone_plan_code(const tone_plan& plan, unsigned e, tone_phase ph, unsigned k);
