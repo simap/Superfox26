@@ -1,12 +1,10 @@
 // Host test of the sRGB decode, main/tone_fx_srgb.h. Run from this directory: make test.
 //
-// 1. The exact table of ../model (tone_fx_srgb_table) against the decode in long double, rounded to
-//    nearest and held to 32767.
-// 2. tone_fx_srgb_byte, the arithmetic of every lane of the kernel, against that table at all 256
-//    bytes: the worst error, the count at each error size, and that the output never decreases.
-// 3. tone_fx_srgb_to_lin, as its stand in, and tone_fx_srgb_to_lin_lut on interleaved pixels against
-//    the per byte values.
-// 4. The instruction sequence of main/tone_fx_srgb.cpp on a model of the vector instructions
+// 1. tone_fx_srgb_byte, the arithmetic of every lane of the kernel, against the decode in long
+//    double, rounded to nearest and held to 32767, at all 256 bytes. It prints the worst error and
+//    the count at each error size, and checks that the output never decreases.
+// 2. tone_fx_srgb_to_lin, as its stand in, on interleaved pixels against the per byte values.
+// 3. The instruction sequence of main/tone_fx_srgb.cpp on a model of the vector instructions
 //    (pie_emu.h) against the stand in, at every source alignment 0 to 15 and at pixel counts with
 //    and without an 8 pixel tail. The bytes after the last pixel hold guard values. The sequence
 //    must load no block past the one that holds byte 3 n + 15, none before the one that holds byte
@@ -28,10 +26,13 @@ namespace
 {
 using namespace tone_fx_srgb_internal;
 
-long double curve(int v)
+// The decode of byte v in long double, rounded to nearest and held to 32767.
+int exact(int v)
 {
-    const long double c = v / 255.0L;
-    return c <= 0.04045L ? c / 12.92L : powl((c + 0.055L) / 1.055L, 2.4L);
+    const long double c  = v / 255.0L;
+    const long double l  = c <= 0.04045L ? c / 12.92L : powl((c + 0.055L) / 1.055L, 2.4L);
+    const long double fl = floorl(l * 32768.0L + 0.5L);
+    return fl > 32767.0L ? 32767 : static_cast<int>(fl);
 }
 
 alignas(16) const uint8_t x80[16] = {0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
@@ -228,33 +229,12 @@ int main()
 {
     int fail = 0;
 
-    // 1. The table.
-    const q15*  table       = tone_fx_srgb_table();
-    int         bad_table   = 0;
-    long double nearest_tie = 1;
-    for(int v = 0; v < 256; v++)
-    {
-        const long double s   = curve(v) * 32768.0L;
-        const long double fl  = floorl(s + 0.5L);
-        const int         ref = fl > 32767.0L ? 32767 : static_cast<int>(fl);
-        const long double tie = fabsl(s - floorl(s) - 0.5L);
-        if(tie < nearest_tie) nearest_tie = tie;
-        if(table[v] != ref)
-        {
-            printf("table: byte %d holds %d, decode rounds to %d\n", v, table[v], ref);
-            bad_table++;
-        }
-    }
-    printf("table: %d of 256 entries differ from the rounded decode, closest fraction to a half %.6Lf\n",
-           bad_table, nearest_tie);
-    fail |= bad_table != 0;
-
-    // 2. The calculated curve.
+    // 1. The calculated curve.
     int worst = 0, hist[8] = {0}, decreasing = 0, prev = -1;
     for(int v = 0; v < 256; v++)
     {
         const int o = tone_fx_srgb_byte(static_cast<uint8_t>(v));
-        const int e = abs(o - table[v]);
+        const int e = abs(o - exact(v));
         if(e > worst) worst = e;
         hist[e < 7 ? e : 7]++;
         if(o < prev)
@@ -267,19 +247,19 @@ int main()
     printf("curve: worst error %d counts of q15 over 256 bytes, %d decreasing steps\n", worst, decreasing);
     printf("curve: bytes at error 0: %d, 1: %d, 2: %d, 3 to 6: %d, 7 or more: %d\n", hist[0], hist[1], hist[2],
            hist[3] + hist[4] + hist[5] + hist[6], hist[7]);
-    printf("curve: dark end, byte: table / calculated:");
-    for(int v = 0; v <= 12; v++) printf(" %d: %d / %d", v, table[v], tone_fx_srgb_byte(static_cast<uint8_t>(v)));
+    printf("curve: dark end, byte: exact / calculated:");
+    for(int v = 0; v <= 12; v++) printf(" %d: %d / %d", v, exact(v), tone_fx_srgb_byte(static_cast<uint8_t>(v)));
     printf("\n");
     printf("curve: byte 0 gives %d, byte 255 gives %d\n", tone_fx_srgb_byte(0), tone_fx_srgb_byte(255));
     fail |= worst > 2 || decreasing != 0 || tone_fx_srgb_byte(0) != 0 || tone_fx_srgb_byte(255) != Q15_ONE;
 
-    // 3 and 4. The array forms. Pixel i holds bytes i, i + 85, i + 170 mod 256. The bytes after the
+    // 2 and 3. The array forms. Pixel i holds bytes i, i + 85, i + 170 mod 256. The bytes after the
     // last pixel are guard values from a hash, other ones per call.
     const int              NP = 256;
     alignas(16) uint8_t    src[3 * NP + 48];
-    alignas(16) static q15 out_c[3][NP], out_l[3][NP], out_e[3][NP];
+    alignas(16) static q15 out_c[3][NP], out_e[3][NP];
     static const int       counts[] = {NP, NP - 8, 8, 16, 24, 40, 48};
-    int                    differ_c = 0, differ_l = 0, differ_e = 0, written_e = 0, reads_out = 0;
+    int                    differ_c = 0, differ_e = 0, written_e = 0, reads_out = 0;
     uint32_t               h        = 1;
     for(int off = 0; off < 16; off++)
     {
@@ -298,10 +278,8 @@ int main()
                 *p = static_cast<uint8_t>(h >> 16);
             }
             memset(out_c, 0x55, sizeof(out_c));
-            memset(out_l, 0x55, sizeof(out_l));
             memset(out_e, 0x55, sizeof(out_e));
             tone_fx_srgb_to_lin(rgb, n, out_c[0], out_c[1], out_c[2]);
-            tone_fx_srgb_to_lin_lut(rgb, n, out_l[0], out_l[1], out_l[2]);
             pie e;
             e.win_lo = reinterpret_cast<uintptr_t>(src);
             e.win_hi = reinterpret_cast<uintptr_t>(src + sizeof(src));
@@ -323,20 +301,18 @@ int main()
                     const int  v  = in ? rgb[3 * i + ch] : 0;
                     differ_c += in ? out_c[ch][i] != tone_fx_srgb_byte(static_cast<uint8_t>(v))
                                    : out_c[ch][i] != 0x5555;
-                    differ_l += in ? out_l[ch][i] != table[v] : out_l[ch][i] != 0x5555;
                     differ_e += in && out_e[ch][i] != out_c[ch][i];
                     written_e += !in && out_e[ch][i] != 0x5555;
                 }
         }
     }
     printf("arrays, 16 source alignments by %d pixel counts: the stand in differs from the per byte value at "
-           "%d values, _lut from the table at %d, the vector sequence on the instruction model from the stand "
-           "in at %d\n",
-           static_cast<int>(sizeof(counts) / sizeof(counts[0])), differ_c, differ_l, differ_e);
+           "%d values, the vector sequence on the instruction model from the stand in at %d\n",
+           static_cast<int>(sizeof(counts) / sizeof(counts[0])), differ_c, differ_e);
     printf("vector sequence bounds: %d calls load a block outside rgb & ~15 to rgb + 3 n, %d outputs past n "
            "written\n",
            reads_out, written_e);
-    fail |= differ_c != 0 || differ_l != 0 || differ_e != 0 || reads_out != 0 || written_e != 0;
+    fail |= differ_c != 0 || differ_e != 0 || reads_out != 0 || written_e != 0;
 
     printf("%s\n", fail ? "FAIL" : "PASS");
     return fail;

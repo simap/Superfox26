@@ -148,7 +148,8 @@ outlines and the Hackaday Supercon graphic described under Artwork.
 ### LodePNG
 
 - Version: 20230410
-- Where: `host_tests/tones/lodepng.c` and `lodepng.h`, used by the host tests to write PNG files
+- Where: `host_tests/tones/lodepng.c` and `lodepng.h`, used by the host probe `probes/image_dither`
+  to read and write PNG files
 - Licence: zlib License
 - Upstream: https://github.com/lvandeve/lodepng
 - Notice: the copyright notice and licence at the top of `host_tests/tones/lodepng.h`

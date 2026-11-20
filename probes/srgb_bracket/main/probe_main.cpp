@@ -4,10 +4,11 @@
 //         assume, per lane, then a count of lanes that differ.
 //   SELFTEST srgb: the outputs where the kernel differs from its stand in, and the outputs past n it
 //         wrote, with guard bytes after the input.
-//   ACCURACY srgb: the kernel against the exact table at all 256 bytes.
+//   ACCURACY srgb: the kernel against the exact decode at all 256 bytes.
 //   SELFTEST bracket: the outputs where the kernel differs from its stand in.
 //   PROBE DONE, last.
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -118,6 +119,15 @@ int srgb_selftest(int* written)
     return differ;
 }
 
+// The decode of byte v in double, rounded to nearest and held to 32767.
+int exact(int v)
+{
+    const double c  = v / 255.0;
+    const double l  = c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+    const double fl = floor(l * 32768.0 + 0.5);
+    return fl > 32767.0 ? 32767 : static_cast<int>(fl);
+}
+
 void srgb_accuracy()
 {
     // 256 pixels, pixel i all three bytes i, and the 16 bytes the kernel may read after them.
@@ -125,16 +135,15 @@ void srgb_accuracy()
     alignas(16) static q15     r[256], g[256], b[256];
     for(int i = 0; i < 256; i++) rgb[3 * i] = rgb[3 * i + 1] = rgb[3 * i + 2] = static_cast<uint8_t>(i);
     tone_fx_srgb_to_lin(rgb, 256, r, g, b);
-    const q15* table = tone_fx_srgb_table();
-    int        worst = 0, at[3] = {0};
+    int worst = 0, at[3] = {0};
     for(int i = 0; i < 256; i++)
         for(const q15* c : {r, g, b})
         {
-            const int e = abs(c[i] - table[i]);
+            const int e = abs(c[i] - exact(i));
             if(e > worst) worst = e;
             at[e < 2 ? e : 2]++;
         }
-    printf("ACCURACY srgb: the kernel against the exact table, worst %d counts, values at 0: %d, 1: %d, 2 or more: "
+    printf("ACCURACY srgb: the kernel against the exact decode, worst %d counts, values at 0: %d, 1: %d, 2 or more: "
            "%d, byte 0 -> %d, byte 255 -> %d\n",
            worst, at[0], at[1], at[2], r[0], r[255]);
 }

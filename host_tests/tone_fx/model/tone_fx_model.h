@@ -14,12 +14,6 @@
 // The decode of main/tone_fx_srgb.h for one byte, as the stand in computes it.
 q15 tone_fx_srgb_byte(uint8_t v);
 
-// The decode of every byte rounded to nearest and held to Q15_ONE, 256 entries: the exact reference.
-const q15* tone_fx_srgb_table();
-
-// tone_fx_srgb_to_lin() by a read of that table per byte. Exact.
-void tone_fx_srgb_to_lin_lut(const uint8_t* rgb, int n, q15* r, q15* g, q15* b);
-
 // The stand ins under the names a probe build gives them.
 void tone_fx_srgb_to_lin_model(const uint8_t* rgb, int n, q15* r, q15* g, q15* b);
 void tone_fx_bracket_model(const q15* L, int n, uint8_t* lo, uint8_t* hi);

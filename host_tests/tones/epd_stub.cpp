@@ -62,17 +62,14 @@ uint8_t* epd_plane_red(void)
     return s_red;
 }
 
-bool refresh_display(epd_refresh_t mode)
+bool refresh_display(epd_refresh_t)
 {
     s_open = false;
-    g_stub.refreshes++;
-    g_stub.refresh_mode = mode;
     return true;
 }
 
 esp_err_t epd_tone_open_table(uint8_t unit_frames, uint8_t vcom_level, epd_tone_table_t table)
 {
-    if(g_stub.no_tables) return ESP_ERR_NOT_SUPPORTED;
     epd_stub_log& g = g_stub;
     g.opens++;
     // Phase 1 opens EPD_TONE_TABLE_PHASE1 before any phase 2 pull, phase 2 EPD_TONE_TABLE_SEQ at
@@ -136,5 +133,4 @@ void epd_clear(void)
 {
     memset(s_bw, 0, sizeof(s_bw));
     memset(s_red, 0, sizeof(s_red));
-    g_stub.clears++;
 }
