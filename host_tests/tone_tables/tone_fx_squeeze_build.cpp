@@ -1,5 +1,6 @@
-// The parameters of the squeeze kernel (main/tone_fx_squeeze.cpp), fitted in float to the edge
-// tables of main/tonemap_squeeze.h. The kernel's file describes the curves and their parameters.
+// The parameters of the squeeze kernel (main/tone_fx_squeeze.cpp), fitted in float to the image
+// edge table and the panel hull of main/tonemap_squeeze.h. The kernel's file describes the curves
+// and their parameters.
 //
 // In the generator's link this file stands in for main/tone_fx_squeeze.cpp: it defines
 // tone_fx_squeeze_params(), so the stand in of the kernel reads the parameters built here.
@@ -120,7 +121,7 @@ struct pan_line
     float m, b;
 };
 
-// Largest amount by which the minimum of n lines misses the panel table, over 1024 steps of L.
+// Largest amount by which the minimum of n lines misses the panel edge, over 1024 steps of L.
 float pan_miss(const pan_line* ln, int n)
 {
     float mx = 0.0f;
@@ -129,35 +130,31 @@ float pan_miss(const pan_line* ln, int n)
         const float L = static_cast<float>(i) / 1024.0f;
         float       v = 1e9f;
         for(int j = 0; j < n; j++) v = fminf(v, ln[j].m * L + ln[j].b);
-        mx = fmaxf(mx, fabsf(v - squeeze_at(s_squeeze_pan, L)));
+        mx = fmaxf(mx, fabsf(v - squeeze_pan_at(L)));
     }
     return mx;
 }
 
-// The panel table as PANEL_LINES lines, line 0 through black. False when that does not fit.
+// The panel edge as PANEL_LINES lines, line 0 through black. False when that does not fit. The
+// edge is concave, so the minimum of the lines of its sides is the edge.
 bool fit_panel(pan_line out[PANEL_LINES])
 {
-    pan_line ln[SQUEEZE_STEPS];
+    pan_line ln[TONEMAP_COUNT];
     int      n = 0;
-    for(int i = 0; i < SQUEEZE_STEPS; i++)
+    for(int i = 0; i + 1 < s_squeeze_hull_n; i++)
     {
-        const float l0 = static_cast<float>(i) / SQUEEZE_STEPS, l1 = static_cast<float>(i + 1) / SQUEEZE_STEPS;
-        const float p0 = s_squeeze_pan[i], p1 = s_squeeze_pan[i + 1];
-        // A step whose ends lie on the last line, within the float rounding of the table, is on it.
-        if(n > 0 && fabsf(ln[n - 1].m * l0 + ln[n - 1].b - p0) < 2e-6f &&
-           fabsf(ln[n - 1].m * l1 + ln[n - 1].b - p1) < 2e-6f)
-            continue;
-        const float m = (p1 - p0) * SQUEEZE_STEPS;
-        ln[n++]       = {m, p0 - m * l0};
+        const float l0 = s_squeeze_hull_l[i], c0 = s_squeeze_hull_c[i];
+        const float m = (s_squeeze_hull_c[i + 1] - c0) / (s_squeeze_hull_l[i + 1] - l0);
+        ln[n++]       = {m, c0 - m * l0};
     }
-    // Drop the line whose loss misses the table least until PANEL_LINES remain.
+    // Drop the line whose loss misses the edge least until PANEL_LINES remain.
     while(n > PANEL_LINES)
     {
         int   drop = 0;
         float best = 1e9f;
         for(int j = 0; j < n; j++)
         {
-            pan_line rest[SQUEEZE_STEPS];
+            pan_line rest[TONEMAP_COUNT];
             int      r = 0;
             for(int i = 0; i < n; i++)
                 if(i != j) rest[r++] = ln[i];
@@ -253,7 +250,7 @@ bool tone_fx_squeeze_build(int16_t k[], float* err_img, float* err_pan)
         const float   x = q15_to(L);
         if(pan_edge(s_k, L) < 0) return false;
         e_img = fmaxf(e_img, fabsf(q15_to(img_edge(s_k, L)) - squeeze_at(s_squeeze_img, x)));
-        e_pan = fmaxf(e_pan, fabsf(q15_to(pan_edge(s_k, L)) - squeeze_at(s_squeeze_pan, x)));
+        e_pan = fmaxf(e_pan, fabsf(q15_to(pan_edge(s_k, L)) - squeeze_pan_at(x)));
     }
     if(e_img > FIT_MAX || e_pan > FIT_MAX) return false;
     memcpy(k, s_k, sizeof(s_k));

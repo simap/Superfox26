@@ -231,9 +231,9 @@ extern "C" void app_main(void)
 {
     printf("SEARCH PROBE start, %d entries\n", static_cast<int>(TONEMAP_COUNT));
     check_ops();
-    // A few points: the paper entry, the point between the two entries at L 0.9875 and 0.9870,
-    // the red reference, and a point far from every entry.
-    static const q15 pts[][3] = {{32767, 0, 0}, {32350, 0, 0}, {15516, 5220, 2736}, {16384, -8192, -9830}};
+    // A few points: the paper entry, the point between the two entries at L 0.8525, the red
+    // reference, and a point far from every entry.
+    static const q15 pts[][3] = {{32767, 0, 0}, {27935, 213, -16}, {19694, 5784, 3736}, {16384, -8192, -9830}};
     for(const auto& p : pts)
     {
         uint8_t cb, cn, pb, pn;

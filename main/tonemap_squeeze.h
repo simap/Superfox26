@@ -1,7 +1,7 @@
 // The panel renders only black, white and one red chromatic axis, so a full colour source must be
 // reduced to that axis before it can show.
 // Call tonemap_squeeze_begin once before tonemap_squeeze: it finds the red hue and cusp and fills
-// the chroma tables that tonemap_squeeze reads.
+// the chroma edges that tonemap_squeeze reads.
 #pragma once
 
 #include <math.h>
@@ -11,7 +11,10 @@
 #define SQUEEZE_STEPS 64
 
 static float s_squeeze_img[SQUEEZE_STEPS + 1];
-static float s_squeeze_pan[SQUEEZE_STEPS + 1];
+// The panel edge, the upper hull of the entries over L as its corners, lightest last. A table in
+// steps of L cuts every corner that falls between two steps.
+static float s_squeeze_hull_l[TONEMAP_COUNT], s_squeeze_hull_c[TONEMAP_COUNT];
+static int s_squeeze_hull_n;
 static float s_squeeze_red_l, s_squeeze_red_c;
 static float s_squeeze_hue[2];
 static float s_squeeze_cusp_l;
@@ -23,6 +26,19 @@ static float squeeze_at(const float *edge, float L)
   if (x >= (float)SQUEEZE_STEPS) return edge[SQUEEZE_STEPS];
   const int i = (int)x;
   return edge[i] + (x - (float)i) * (edge[i + 1] - edge[i]);
+}
+
+// The most chroma the panel has at L, from the hull.
+static float squeeze_pan_at(float L)
+{
+  if (L <= s_squeeze_hull_l[0]) return s_squeeze_hull_c[0];
+  for (int i = 1; i < s_squeeze_hull_n; i++) {
+    if (L <= s_squeeze_hull_l[i]) {
+      const float l0 = s_squeeze_hull_l[i - 1], c0 = s_squeeze_hull_c[i - 1];
+      return c0 + (L - l0) * (s_squeeze_hull_c[i] - c0) / (s_squeeze_hull_l[i] - l0);
+    }
+  }
+  return s_squeeze_hull_c[s_squeeze_hull_n - 1];
 }
 
 static void tonemap_squeeze_begin(void (*oklab)(uint8_t, uint8_t, uint8_t, float[3]))
@@ -62,20 +78,31 @@ static void tonemap_squeeze_begin(void (*oklab)(uint8_t, uint8_t, uint8_t, float
       s_squeeze_cusp_l = k_tonemap[e].L;
     }
   }
-  for (int i = 0; i <= SQUEEZE_STEPS; i++) {
-    const float L = (float)i / SQUEEZE_STEPS;
-    float top = 0.0f;
-    for (unsigned p = 0; p < TONEMAP_COUNT; p++) {
-      const float lp = k_tonemap[p].L;
-      if (lp > L) continue;
-      for (unsigned q = 0; q < TONEMAP_COUNT; q++) {
-        const float lq = k_tonemap[q].L;
-        if (lq < L) continue;
-        const float c = lq > lp ? ec[p] + (L - lp) * (ec[q] - ec[p]) / (lq - lp) : ec[p];
-        if (c > top) top = c;
+  // The hull from the darkest entry, the one with the most chroma among equals. From each corner
+  // the next is the lighter entry on the steepest line, the farthest of equals.
+  unsigned cur = 0;
+  for (unsigned e = 1; e < TONEMAP_COUNT; e++) {
+    const float dl = k_tonemap[e].L - k_tonemap[cur].L;
+    if (dl < 0.0f || (dl == 0.0f && ec[e] > ec[cur])) cur = e;
+  }
+  s_squeeze_hull_n = 0;
+  for (;;) {
+    s_squeeze_hull_l[s_squeeze_hull_n] = k_tonemap[cur].L;
+    s_squeeze_hull_c[s_squeeze_hull_n] = ec[cur];
+    s_squeeze_hull_n++;
+    int next = -1;
+    float best = 0.0f;
+    for (unsigned q = 0; q < TONEMAP_COUNT; q++) {
+      const float dl = k_tonemap[q].L - k_tonemap[cur].L;
+      if (dl <= 0.0f) continue;
+      const float m = (ec[q] - ec[cur]) / dl;
+      if (next < 0 || m > best || (m == best && k_tonemap[q].L > k_tonemap[next].L)) {
+        next = (int)q;
+        best = m;
       }
     }
-    s_squeeze_pan[i] = top;
+    if (next < 0) break;
+    cur = (unsigned)next;
   }
 }
 
@@ -100,7 +127,7 @@ static void tonemap_squeeze(float t[3])
   const float edge = squeeze_at(s_squeeze_img, L);
   float share = edge > 1e-6f ? c / edge : 1.0f;
   if (share > 1.0f) share = 1.0f;
-  const float c2 = share * squeeze_at(s_squeeze_pan, L2);
+  const float c2 = share * squeeze_pan_at(L2);
   t[1] *= c2 / c;
   t[2] *= c2 / c;
 }

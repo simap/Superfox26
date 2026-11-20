@@ -1,7 +1,7 @@
 // Host probe: which tone entries the fixed point dither (main/tones.cpp tone_dither) gives a solid
 // sRGB fill. For each colour it dithers a 240 x 120 block and prints the share of each entry used.
 // Usage: out/solid_red [R G B ...]. With no arguments it runs (v, 0, 0) for v from 200 to 255,
-// then 170 23 23, the red reference entry's sRGB.
+// then 226 57 22, the red reference entry's sRGB.
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -47,6 +47,6 @@ int main(int argc, char** argv)
         return 0;
     }
     for(int v = 200; v <= 255; v++) probe(v, 0, 0);
-    probe(170, 23, 23);
+    probe(226, 57, 22);
     return 0;
 }
