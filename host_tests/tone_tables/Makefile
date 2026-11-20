@@ -9,9 +9,7 @@
 #                  limits (a build with every limit at 2 frames or less), and runs tone_tables_check, which
 #                  runs pass_a() of main/tones.cpp on the file's tables and compares the slot WHITE
 #                  and the solid gray table, and checks the mean of the photo dither's picks. It also
-#                  checks the phase 2 marks h and '|' in the expansion and the plans. Run
-#                  out/tone_tables_check CODES to compare the plan with a combo plan
-#                  codes file (tone_tables_check.cpp).
+#                  checks the phase 2 marks h and '|' in the expansion and the plans.
 # The file is checked in, so the firmware build needs no host compiler.
 #
 # The flags are those of the host harness (host_tests/tones). The fit of the squeeze runs in float

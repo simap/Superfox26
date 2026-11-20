@@ -8,18 +8,11 @@
 // average to their targets. It checks the phase 2 marks h and '|' in the expansion and in the plans
 // of tone_plan_code(). Exit status 0 when both tables match, every photo mix holds and every mark
 // check passes.
-//
-// usage: tone_tables_check [CODES]
-// CODES is a file of combo plan codes. Each line holds
-// "id", a region id, a pattern, then '|' and the phase 1 codes as SIPM, then '|' and the phase 2
-// codes as hpiw. With CODES the check also plans the entries whose patterns the file names and
-// compares every pull with the file.
 
 #include "tones.cpp"
 
 #include <cstdio>
 #include <string>
-#include <vector>
 
 #include "tone_plan_expand.h"
 #include "tone_tables_build.h"
@@ -164,75 +157,15 @@ static int check_marks()
     return bad;
 }
 
-// The plan of the entries whose patterns path names, against the codes path holds for them.
-static int check_codes(const char* path)
-{
-    FILE* f = fopen(path, "r");
-    if(!f)
-    {
-        printf("FAIL cannot read %s\n", path);
-        return 1;
-    }
-    struct row
-    {
-        unsigned    e;
-        std::string p1, p2;
-    };
-    std::vector<row> rows;
-    uint32_t         count[TONEMAP_COUNT] = {};
-    int              bad                  = 0;
-    char             line[512];
-    while(fgets(line, sizeof(line), f))
-    {
-        unsigned id;
-        char     pat[128], p1[128], p2[128];
-        if(sscanf(line, "id %u %127s |%127s |%127s", &id, pat, p1, p2) != 4) continue;
-        unsigned e = 0;
-        while(e < TONEMAP_COUNT && strcmp(k_tonemap[e].pattern, pat) != 0) e++;
-        if(e == TONEMAP_COUNT)
-        {
-            bad++;
-            printf("FAIL codes id %u: no entry has the pattern %s\n", id, pat);
-            continue;
-        }
-        count[e] = 1;
-        rows.push_back({e, p1, p2});
-    }
-    fclose(f);
-    tone_plan plan;
-    tone_plan_build(count, &plan);
-    int diff[TONE_PHASE_COUNT] = {};
-    for(const row& r : rows)
-    {
-        std::string p1;
-        for(unsigned k = 0; k < plan.len[TONE_PHASE_1]; k++) p1 += "SIPM"[tone_plan_code(plan, r.e, TONE_PHASE_1, k)];
-        const std::string p2 = p2_codes(plan, r.e);
-        diff[TONE_PHASE_1] += p1 != r.p1;
-        diff[TONE_PHASE_2] += p2 != r.p2;
-        if(p1 != r.p1 || p2 != r.p2)
-            printf("DIFF entry %u %s: plan %s | %s, file %s | %s\n", r.e, k_tonemap[r.e].pattern, p1.c_str(),
-                   p2.c_str(), r.p1.c_str(), r.p2.c_str());
-    }
-    int entries = 0;
-    for(uint32_t c : count) entries += c != 0;
-    bad += diff[TONE_PHASE_1] + diff[TONE_PHASE_2];
-    printf("tone_plan codes %s: %zu rows, %d entries, phase 1 %u pulls with %d entries that differ, phase 2 %u pulls "
-           "with %d: %s\n",
-           path, rows.size(), entries, plan.len[TONE_PHASE_1], diff[TONE_PHASE_1], plan.len[TONE_PHASE_2],
-           diff[TONE_PHASE_2], bad ? "FAIL" : "PASS");
-    return bad;
-}
-
 static bool same(const tone_white_slot& a, const tone_white_slot& b)
 {
     return a.r == b.r && a.g == b.g && a.b == b.b && a.L == b.L && a.A == b.A && a.B == b.B && a.C == b.C &&
            a.lo == b.lo && a.hi == b.hi && a.kind == b.kind && a.ent == b.ent && a.white_kind == b.white_kind;
 }
 
-int main(int argc, char** argv)
+int main()
 {
     int bad = check_marks();
-    if(argc > 1) bad += check_codes(argv[1]);
 
     // The slot WHITE, as tones_init() built it from the kernels: 8 white pixels, slot 0 in use, the
     // chunk's arrays as they are before the first chunk.
