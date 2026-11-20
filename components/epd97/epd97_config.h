@@ -182,7 +182,7 @@
 #define EPD_B_FRAME_US 23700u
 #endif
 // BUSY ceiling for one tone pull, in ms. A phase 1 pull is 17 frames, 403 ms
-// at EPD_B_FRAME_US. A seq pull is 10 frames, 237 ms. A pull that runs past
+// at EPD_B_FRAME_US. A seq pull is 11 frames, 261 ms. A pull that runs past
 // this closes the session and cuts the supply.
 #ifndef EPD_TONE_BUSY_MS
 #define EPD_TONE_BUSY_MS 5000u

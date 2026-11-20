@@ -41,57 +41,100 @@
 
 #define LUTB_BYTES  400u
 
-// --- seq set, phase 2 --------------------------------------------------------
-// EPD_TONE_TABLE_SEQ, the table set of phase 2 of a draw. Every group is one
-// frame of subphase C only, the record level 01 01 00 01 00 01 01, the one
-// frame group named above. Ten groups make a 10 frame pull. A drive table
-// drives groups 0 to unit - 1, so unit runs 1 to EPD_SEQ_UNIT_MAX and the step
-// grows with it. Group 9 is always ground. VCOM is ground throughout.
+// --- group shape of both sets ------------------------------------------------
+// Both sets play a pull of 10 to 20 frames in 10 groups. Every group plays one
+// frame of subphase C, the record level 01 01 00 01 00 01 01. The last
+// frames - 10 groups play one more frame in subphase D, the same record with
+// TD 1. Subphases A and B are skipped in every group.
 //
-//   code 0  h  hold    ground
-//   code 1  p  paper   VDL, every driven frame
-//   code 2  i  ink     VDH, every driven frame
-//   code 3  w          VDHR for EPD_SEQ_W_FRAMES frames whatever the unit,
-//                      then ground
-//   table 4    VCOM    ground
-//
-// Code 1 is paper here and ink on the phase 1 set.
-#define EPD_SEQ_UNIT_MAX     9   // driven frames of a p or i pull, at most
-#define EPD_SEQ_PULL_FRAMES 10   // frames of a seq pull, whatever the unit
-#define EPD_SEQ_W_FRAMES     9   // VDHR frames of a w pull, whatever the unit
-static inline void epd_build_lutb_seq(uint8_t* out, uint8_t unit)
+// Packs the levels per frame into a set. Drive table t (0 to 3) plays
+// lv[t * frames] to lv[t * frames + frames - 1]. Table 4 (VCOM) is ground.
+static inline void epd_lutb_pack(uint8_t* out, const uint8_t* lv, unsigned frames)
 {
-  if (unit == 0u) unit = 1u;
-  if (unit > EPD_SEQ_UNIT_MAX) unit = EPD_SEQ_UNIT_MAX;
-  const unsigned driven = unit;
+  const unsigned extra = frames - 10u;
   for (unsigned t = 0; t < 5u; t++) {
+    unsigned f = 0;
     for (unsigned g = 0; g < 10u; g++) {
       uint8_t* q = &out[(t * 10u + g) * 8u];
-      uint8_t lvl = 0;   // subphase C level, bits 3 and 2 of the level byte
-      if (t == 3u) {
-        if (g < EPD_SEQ_W_FRAMES) lvl = 3;
-      } else if (g < driven) {
-        if (t == 1u)      lvl = 2;                           // paper VDL
-        else if (t == 2u) lvl = 1;                           // ink VDH
+      const bool two = g >= 10u - extra;
+      const uint8_t c = t < 4u ? lv[t * frames + f] : 0u;
+      f++;
+      uint8_t d = 0;
+      if (two) {
+        d = t < 4u ? lv[t * frames + f] : 0u;
+        f++;
       }
-      q[0] = (uint8_t)(lvl << 2);
+      q[0] = (uint8_t)((c << 2) | d);
       q[1] = 1; q[2] = 1; q[3] = 0;
-      q[4] = 1; q[5] = 0; q[6] = 1;
+      q[4] = 1; q[5] = two ? 1u : 0u; q[6] = 1;
       q[7] = 1;
     }
   }
 }
 
-static inline uint32_t epd_lutb_seq_frames(const uint8_t* lut)
+// Frames one pull of a set plays, or 0 when a record is not the shape above,
+// the counts differ between tables, or table 4 is not ground.
+static inline uint32_t epd_lutb_frames(const uint8_t* lut)
 {
-  for (unsigned k = 0; k < 50u; k++) {
-    const uint8_t* q = &lut[k * 8u];
-    if (q[1] != 1u || q[2] != 1u || q[3] != 0u || q[4] != 1u || q[5] != 0u ||
-        q[6] != 1u || q[7] != 1u) {
+  uint32_t frames = 0;
+  for (unsigned g = 0; g < 10u; g++) {
+    const uint8_t* v = &lut[(4u * 10u + g) * 8u];
+    if (v[0] != 0u || v[1] != 1u || v[2] != 1u || v[3] != 0u || v[4] != 1u || v[5] > 1u ||
+        v[6] != 1u || v[7] != 1u) {
       return 0;
     }
+    for (unsigned t = 0; t < 4u; t++) {
+      const uint8_t* q = &lut[(t * 10u + g) * 8u];
+      for (unsigned i = 1; i < 8u; i++) {
+        if (q[i] != v[i]) return 0;
+      }
+      if ((q[0] & 0xF0u) != 0u) return 0;          // subphases A and B are skipped
+      if (v[5] == 0u && (q[0] & 3u) != 0u) return 0;   // a skipped D is ground
+    }
+    frames += 1u + v[5];
   }
-  return EPD_SEQ_PULL_FRAMES;
+  return frames;
+}
+
+// --- seq set, phase 2 --------------------------------------------------------
+// EPD_TONE_TABLE_SEQ, the table set of phase 2 of a draw. Paper drives in the
+// first half of the pull and ink in the second, with a ground frame between,
+// so a p pixel beside an i pixel is never on the opposite rail in the same
+// frame. Frame 0 and the last frame are ground for every code, so no pixel
+// stays on a rail between pulls. A p or i pixel drives the first unit frames
+// of its half, so unit runs 1 to EPD_SEQ_UNIT_MAX. Levels per frame at unit 4,
+// G ground, L VDL, H VDH, R VDHR:
+//
+//   code 0  h  hold    GGGGGGGGGGG
+//   code 1  p  paper   GLLLLGGGGGG   VDL from frame 1
+//   code 2  i  ink     GGGGGGHHHHG   VDH from frame 6
+//   code 3  w          GRRRRRRRRRG   VDHR for EPD_SEQ_W_FRAMES frames whatever
+//                                    the unit
+//   table 4    VCOM    ground
+//
+// A pixel plays one code per pull, and push runs and net count driven frames
+// only, so where the frames fall in the pull does not change them.
+//
+// Code 1 is paper here and ink on the phase 1 set.
+#define EPD_SEQ_UNIT_MAX     4   // driven frames of a p or i pull, at most
+#define EPD_SEQ_PULL_FRAMES 11   // frames of a seq pull, whatever the unit
+#define EPD_SEQ_W_FRAMES     9   // VDHR frames of a w pull, whatever the unit
+_Static_assert(EPD_SEQ_PULL_FRAMES == 2 * (EPD_SEQ_UNIT_MAX + 1) + 1, "two halves and the last ground frame");
+_Static_assert(EPD_SEQ_W_FRAMES == EPD_SEQ_PULL_FRAMES - 2, "w drives every frame but the first and the last");
+_Static_assert(EPD_SEQ_PULL_FRAMES >= 10 && EPD_SEQ_PULL_FRAMES <= 20, "10 groups carry 10 to 20 frames");
+static inline void epd_build_lutb_seq(uint8_t* out, uint8_t unit)
+{
+  if (unit == 0u) unit = 1u;
+  if (unit > EPD_SEQ_UNIT_MAX) unit = EPD_SEQ_UNIT_MAX;
+  const unsigned ink_at = EPD_SEQ_UNIT_MAX + 2u;
+  uint8_t lv[4][EPD_SEQ_PULL_FRAMES];
+  for (unsigned f = 0; f < (unsigned)EPD_SEQ_PULL_FRAMES; f++) {
+    lv[0][f] = 0;
+    lv[1][f] = f >= 1u && f < 1u + unit ? 2u : 0u;              // paper VDL
+    lv[2][f] = f >= ink_at && f < ink_at + unit ? 1u : 0u;      // ink VDH
+    lv[3][f] = f >= 1u && f <= EPD_SEQ_W_FRAMES ? 3u : 0u;      // w VDHR
+  }
+  epd_lutb_pack(out, &lv[0][0], EPD_SEQ_PULL_FRAMES);
 }
 
 // --- phase 1 set -------------------------------------------------------------
@@ -100,9 +143,8 @@ static inline uint32_t epd_lutb_seq_frames(const uint8_t* lut)
 // 3 read the same with the two planes swapped, so a run of S pulls needs one
 // plane send.
 //
-// A pull is EPD_PHASE1_PULL_FRAMES frames in the seq group shape. Subphase C
-// plays one frame in every group, and subphase D one more in the last groups,
-// so 10 groups carry 17 frames.
+// A pull is EPD_PHASE1_PULL_FRAMES frames in the group shape above, so the
+// last 7 groups play two frames.
 //
 // The frames are slotted. VDH is driven only in frames 1, 2, 5, 6, 9, 10, 15
 // and 16. VDL is driven only in frames 3, 4, 7, 8 and 11 to 14. A code grounds
@@ -146,45 +188,5 @@ static inline void epd_build_lutb_phase1(uint8_t* out)
       lv[t][f] = c == 'H' ? 1u : c == 'L' ? 2u : 0u;
     }
   }
-  const unsigned extra = (unsigned)EPD_PHASE1_PULL_FRAMES - 10u;
-  for (unsigned t = 0; t < 5u; t++) {
-    unsigned f = 0;
-    for (unsigned g = 0; g < 10u; g++) {
-      uint8_t* q = &out[(t * 10u + g) * 8u];
-      const bool two = g >= 10u - extra;
-      const uint8_t c = t < 4u ? lv[t][f] : 0u;
-      f++;
-      uint8_t d = 0;
-      if (two) {
-        d = t < 4u ? lv[t][f] : 0u;
-        f++;
-      }
-      q[0] = (uint8_t)((c << 2) | d);
-      q[1] = 1; q[2] = 1; q[3] = 0;
-      q[4] = 1; q[5] = two ? 1u : 0u; q[6] = 1;
-      q[7] = 1;
-    }
-  }
-}
-
-static inline uint32_t epd_lutb_phase1_frames(const uint8_t* lut)
-{
-  uint32_t frames = 0;
-  for (unsigned g = 0; g < 10u; g++) {
-    const uint8_t* v = &lut[(4u * 10u + g) * 8u];
-    if (v[0] != 0u || v[1] != 1u || v[2] != 1u || v[3] != 0u || v[4] != 1u || v[5] > 1u ||
-        v[6] != 1u || v[7] != 1u) {
-      return 0;
-    }
-    for (unsigned t = 0; t < 4u; t++) {
-      const uint8_t* q = &lut[(t * 10u + g) * 8u];
-      for (unsigned i = 1; i < 8u; i++) {
-        if (q[i] != v[i]) return 0;
-      }
-      if ((q[0] & 0xF0u) != 0u) return 0;          // subphases A and B are skipped
-      if (v[5] == 0u && (q[0] & 3u) != 0u) return 0;   // a skipped D is ground
-    }
-    frames += 1u + v[5];
-  }
-  return frames;
+  epd_lutb_pack(out, &lv[0][0], EPD_PHASE1_PULL_FRAMES);
 }

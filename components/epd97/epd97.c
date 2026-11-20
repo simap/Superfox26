@@ -1166,28 +1166,25 @@ esp_err_t epd_tone_open_table(uint8_t unit_frames, uint8_t vcom_level,
   if (!s_driver_b) return ESP_ERR_NOT_SUPPORTED;
   if (vcom_level > 3u) return ESP_ERR_INVALID_ARG;
 
-  uint32_t frames;
+  uint32_t want;
   const char* name;
   if (table == EPD_TONE_TABLE_SEQ) {
     if (unit_frames == 0u || unit_frames > EPD_SEQ_UNIT_MAX) return ESP_ERR_INVALID_ARG;
     epd_build_lutb_seq(s_tone_lut, unit_frames);
-    frames = epd_lutb_seq_frames(s_tone_lut);
+    want = EPD_SEQ_PULL_FRAMES;
     name = "seq";
   } else if (table == EPD_TONE_TABLE_PHASE1) {
     unit_frames = EPD_PHASE1_DRIVE;
     epd_build_lutb_phase1(s_tone_lut);
-    frames = epd_lutb_phase1_frames(s_tone_lut);
-    if (frames != (uint32_t)EPD_PHASE1_PULL_FRAMES) {
-      LOGF("phase 1 table plays %u frames, the planner expects %u, not sent", (unsigned)frames,
-           (unsigned)EPD_PHASE1_PULL_FRAMES);
-      return ESP_ERR_INVALID_STATE;
-    }
+    want = EPD_PHASE1_PULL_FRAMES;
     name = "phase1";
   } else {
     return ESP_ERR_INVALID_ARG;
   }
-  if (frames == 0u) {
-    LOGF("tone table has a zero or uneven count, not sent");
+  const uint32_t frames = epd_lutb_frames(s_tone_lut);
+  if (frames != want) {
+    LOGF("%s table plays %u frames, the planner expects %u, not sent", name, (unsigned)frames,
+         (unsigned)want);
     return ESP_ERR_INVALID_STATE;
   }
 

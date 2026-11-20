@@ -14,10 +14,10 @@ namespace
 {
 // Phase 2 shapes per pull at unit TONE_NUDGE_FRAMES, the seq table that epd_build_lutb_seq() in
 // epd97_lut.h builds. G ground, H VDH, L VDL, R VDHR.
-const char P2_SHAPE_P[] = "LLLLGGGGGG";
-const char P2_SHAPE_I[] = "HHHHGGGGGG";
-const char P2_SHAPE_W[] = "RRRRRRRRRG";
-const char P2_SHAPE_H[] = "GGGGGGGGGG";
+const char P2_SHAPE_P[] = "GLLLLGGGGGG";
+const char P2_SHAPE_I[] = "GGGGGGHHHHG";
+const char P2_SHAPE_W[] = "GRRRRRRRRRG";
+const char P2_SHAPE_H[] = "GGGGGGGGGGG";
 
 static_assert(TONE_NUDGE_FRAMES >= 1 && TONE_NUDGE_FRAMES <= EPD_SEQ_UNIT_MAX, "nudge unit in range");
 static_assert(sizeof(P2_SHAPE_H) - 1 == EPD_SEQ_PULL_FRAMES, "h shape is the pull length");
