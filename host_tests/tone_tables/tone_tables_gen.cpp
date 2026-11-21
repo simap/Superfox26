@@ -253,8 +253,9 @@ int main(int argc, char** argv)
 
     // ---- the kernels
     int16_t squeeze_k[tone_fx_squeeze_internal::K_COUNT];
-    float   fit_img = 0.0f, fit_pan = 0.0f;
-    if(!tone_fx_squeeze_build(squeeze_k, &fit_img, &fit_pan)) refuse("the squeeze parameters do not build");
+    float   fit_img = 0.0f, fit_pan = 0.0f, fit_curve = 0.0f;
+    if(!tone_fx_squeeze_build(squeeze_k, &fit_img, &fit_pan, &fit_curve))
+        refuse("the squeeze parameters do not build");
     if(!tone_fx_bracket_build()) refuse("the bracket table does not build");
     static tone_fx_search_internal::table search;
     int                                   search_max[3];
@@ -369,18 +370,21 @@ int main(int argc, char** argv)
         "// this file differs from a fresh run.\n"
         "//\n"
         "// Squeeze edge fit, largest miss against the float tables over every q15 L: image %.6f, panel\n"
-        "// %.6f.\n\n",
-        static_cast<double>(fit_img), static_cast<double>(fit_pan));
+        "// %.6f. Tone curve at gamma %g, largest miss against the power over every q15 L: %.6f.\n\n",
+        static_cast<double>(fit_img), static_cast<double>(fit_pan), static_cast<double>(TONEMAP_GAMMA),
+        static_cast<double>(fit_curve));
     put("namespace tone_tables\n{\n");
     put("inline constexpr unsigned count       = %u;\n", N);
     put("inline constexpr uint64_t source_hash = 0x%016" PRIx64 "ull;\n\n", tone_tables_source_hash());
 
-    put("// The squeeze parameters in the order of tone_fx_squeeze_internal.h, and the edge fit.\n");
+    put("// The squeeze parameters in the order of tone_fx_squeeze_internal.h, the edge fit and the tone\n"
+        "// curve fit.\n");
     put("inline constexpr std::array<int16_t, tone_fx_squeeze_internal::K_COUNT> squeeze_k = {{\n");
     put_list(squeeze_k, tone_fx_squeeze_internal::K_COUNT, 4);
     put("}};\n");
-    put("inline constexpr float squeeze_fit_img = %.9gf;\n", static_cast<double>(fit_img));
-    put("inline constexpr float squeeze_fit_pan = %.9gf;\n\n", static_cast<double>(fit_pan));
+    put("inline constexpr float squeeze_fit_img   = %.9gf;\n", static_cast<double>(fit_img));
+    put("inline constexpr float squeeze_fit_pan   = %.9gf;\n", static_cast<double>(fit_pan));
+    put("inline constexpr float squeeze_fit_curve = %#.9gf;\n\n", static_cast<double>(fit_curve));
 
     const int n_neutral = tone_fx_neutral_count();
     const int steps     = tone_fx_bracket_steps();
@@ -486,9 +490,11 @@ int main(int argc, char** argv)
         fprintf(stderr, "tone_tables_gen: cannot write %s\n", argv[1]);
         return 1;
     }
-    printf("tone_tables_gen: %u entries, %d neutral, %d bracket steps, squeeze fit image %.6f panel %.6f, "
-           "white kind %u entry %u, %zu photo triangles, %d of %zu coloured targets above the hull, wrote %s\n",
-           N, n_neutral, steps, static_cast<double>(fit_img), static_cast<double>(fit_pan), white.kind, white.ent,
-           photo_tri.size(), photo_clamped, photo_s.size(), argv[1]);
+    printf("tone_tables_gen: %u entries, %d neutral, %d bracket steps, squeeze fit image %.6f panel %.6f "
+           "curve %.6f, white kind %u entry %u, %zu photo triangles, %d of %zu coloured targets above the hull, "
+           "wrote %s\n",
+           N, n_neutral, steps, static_cast<double>(fit_img), static_cast<double>(fit_pan),
+           static_cast<double>(fit_curve), white.kind, white.ent, photo_tri.size(), photo_clamped, photo_s.size(),
+           argv[1]);
     return 0;
 }

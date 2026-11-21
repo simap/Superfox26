@@ -54,6 +54,19 @@ static const tone_photo_mode TONE_PHOTO_DEFAULT = TONE_PHOTO_NEAREST;
 void            tones_set_photo_mode(tone_photo_mode m);
 tone_photo_mode tones_photo_mode();
 
+// The ease of the minor tones of TONE_PHOTO_NEAREST (tone_photo.h, tone_near_ease), in q12 units of
+// the plane of L and 2C. solid: a target within t of the tone of the largest weight takes that tone
+// alone, and the mix is linear again at t + w. line: a minor tone within t of the opposite edge
+// takes no dots and reaches its linear share at t + w. 0 and 0 turn a step off, and both off give
+// the linear mix. In RAM only: a power up or a wake from deep sleep starts at the defaults. The next
+// page drawn uses it.
+static const int TONE_NEAR_SOLID_T = 8;
+static const int TONE_NEAR_SOLID_W = 16;
+static const int TONE_NEAR_LINE_T  = 0;
+static const int TONE_NEAR_LINE_W  = 0;
+void             tones_set_near_ease(int solid_t, int solid_w, int line_t, int line_w);
+void             tones_near_ease(int* solid_t, int* solid_w, int* line_t, int* line_w);
+
 struct tone_dither
 {
     int             w       = 0;

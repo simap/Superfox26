@@ -18,6 +18,9 @@
 #include "tone_fx_squeeze.h"
 #include "tone_fx_srgb.h"
 
+// The squeeze kernel without the tone curve, on the same parameters (tone_fx_squeeze.cpp).
+void tone_fx_squeeze_flat(const q15* L, const q15* A, const q15* B, int n, q15* Lo, q15* Ao, q15* Bo, q15* Co);
+
 namespace
 {
 const int    REPS       = 10;
@@ -99,6 +102,7 @@ struct bench_mem
     float*   f1out;
     q15*     q1in;
     q15*     q1out;
+    uint8_t* mask;
 };
 
 bench_mem s_m;
@@ -127,6 +131,8 @@ bool alloc_all()
     s_m.f1out = take<float>(4 * NC, in);
     s_m.q1in  = take<q15>(8 * NC, in);
     s_m.q1out = take<q15>(8 * NC, in);
+    s_m.mask  = take<uint8_t>(NP, in);
+    if(s_m.mask) memset(s_m.mask, 1, NP);
     bool ok   = s_n_alloc < static_cast<int>(sizeof(s_alloc) / sizeof(s_alloc[0]));
     for(int i = 0; i < s_n_alloc; i++) ok = ok && s_alloc[i];
     return ok;
@@ -416,6 +422,10 @@ void stage_squeeze()
             time_call(f_squeeze, fi[0], fi[1], fi[2], n, fo[0], fo[1], fo[2], fo[3]), n);
         row("squeeze", "pie", n, "internal",
             time_call(tone_fx_squeeze, qi[0], qi[1], qi[2], n, qo[0], qo[1], qo[2], qo[3]), n);
+        // With TONEMAP_GAMMA other than 1, the same kernel without the tone curve.
+        if(tone_fx_squeeze_internal::CURVE)
+            row("squeeze", "pie_flat", n, "internal",
+                time_call(tone_fx_squeeze_flat, qi[0], qi[1], qi[2], n, qo[0], qo[1], qo[2], qo[3]), n);
         row("squeeze", "empty_float", n, "internal",
             time_call(empty<const float*, const float*, const float*, int, float*, float*, float*, float*>, fi[0],
                       fi[1], fi[2], n, fo[0], fo[1], fo[2], fo[3]),
@@ -643,6 +653,11 @@ void print_split(const char* stage, const split& sp, int px)
            static_cast<unsigned>(n.white_run_px), static_cast<unsigned>(n.entry_carry_px),
            static_cast<unsigned>(n.neutral_px), static_cast<unsigned>(n.colour_px),
            static_cast<unsigned>(n.colour_runs), static_cast<unsigned>(n.photo_px));
+    if(n.near_px)
+        printf("BENCH %-15s nearest: coloured photo px %u, new targets %u (%.1f%%), pick %.1f cycles per new target, "
+               "%.2f per px of the frame\n",
+               stage, static_cast<unsigned>(n.near_px), static_cast<unsigned>(n.near_new), 100.0 * n.near_new / n.near_px,
+               n.near_new ? static_cast<double>(n.near_cyc) / n.near_new : 0.0, static_cast<double>(n.near_cyc) / p);
 }
 
 void run_frame_fixed(int img, uint8_t* band)
@@ -668,6 +683,214 @@ void run_frame_fixed(int img, uint8_t* band)
            static_cast<double>(sp.total) / px, static_cast<unsigned>(sp.n.lanes),
            static_cast<unsigned>(sp.n.colour_px));
     print_split(k_img[img], sp, px);
+}
+
+// The frame with every pixel a photo pixel, in photo mode mode. In TONE_PHOTO_DIFFUSE row() drops the
+// mask, so that row is the frame of run_frame_fixed() again, timed next to the other two.
+void run_frame_photo(int img, tone_photo_mode mode, uint8_t* band, const uint8_t* mask)
+{
+    static const char* const form[TONE_PHOTO_MODES] = {"photo_diffuse", "photo_triangle", "photo_nearest"};
+    split                    sp;
+    auto                     frame = [&] {
+        tone_dither q;
+        q.alloc(TONE_W);
+        q.mode = mode;
+        return time_frame(img, band, s_frame, [&](int y, const uint8_t* rgb, uint8_t* out) { q.row(rgb, y, out, mask); });
+    };
+    for(int r = 0; r < FRAME_REPS; r++)
+    {
+        memset(s_bench_cyc, 0, sizeof(s_bench_cyc));
+        keep_best(sp, frame());
+    }
+    s_bench_n     = bench_counts();
+    s_bench_count = true;
+    frame();
+    s_bench_count = false;
+    sp.n          = s_bench_n;
+    const int px  = TONE_W * TONE_H;
+    printf("BENCH %-15s %-13s %6d %-8s %10.2f %7u photo   %7u colour\n", k_img[img], form[mode], px, "psram",
+           static_cast<double>(sp.total) / px, static_cast<unsigned>(sp.n.photo_px), static_cast<unsigned>(sp.n.colour_px));
+    print_split(k_img[img], sp, px);
+}
+
+// The steps of the nearest mix (tone_photo.h) on the coloured targets of the first rows of
+// frame_photo, each step over all of them, in cycles per target: the top, the owner, the neighbour
+// toward the target, the whole pick, the choice of an entry from a mix, and the pick from the last
+// triangle as tones.cpp runs it.
+const int NEAR_T = 2048;
+
+volatile uint32_t s_sink;
+
+#if TONE_FX_PIE
+// A trial form of the owner, timed and compared with tone_graph_owner() in stage_near_steps().
+// The owner by a scan of all tones, eight to a block: (dl^2 + dc^2) >> 4 from the accumulator, which
+// saturates at 32767, joined with the entry in the low 16 bits and the least of the keys taken.
+const int OWN_BLOCKS = (TONEMAP_COUNT + 7) / 8;
+struct own_block
+{
+    int16_t l[8];
+    int16_t c[8];
+    int16_t tag[8];
+};
+TONE_FX_ALIGNED own_block s_own[OWN_BLOCKS];
+TONE_FX_ALIGNED int32_t   s_own_none[4] = {INT32_MAX, INT32_MAX, INT32_MAX, INT32_MAX};
+
+void owner_pie_init(const tone_graph& g)
+{
+    for(int k = 0; k < 8 * OWN_BLOCKS; k++)
+    {
+        const bool e = k < static_cast<int>(TONEMAP_COUNT);
+        s_own[k / 8].l[k % 8]   = static_cast<int16_t>(e ? g.l[k] : -16384);
+        s_own[k / 8].c[k % 8]   = static_cast<int16_t>(e ? g.c[k] : 0);
+        s_own[k / 8].tag[k % 8] = static_cast<int16_t>(e ? k : 127);
+    }
+}
+
+unsigned owner_pie(int l, int c)
+{
+    const int16_t           pt[2] = {static_cast<int16_t>(l), static_cast<int16_t>(c)};
+    TONE_FX_ALIGNED int32_t m[4];
+    const own_block*        tp  = s_own;
+    const int32_t*          pn  = s_own_none;
+    int32_t*                out = m;
+    const int               sh  = 4;
+    __asm__ volatile("ee.vldbc.16    q0, %[pl]       \n"
+                     "ee.vldbc.16    q1, %[pc]       \n"
+                     "ee.vld.128.ip  q6, %[pn], 0    \n"
+                     ".rept %[nb]                    \n"
+                     "ee.vld.128.ip  q2, %[tp], 16   \n"
+                     "ee.vld.128.ip  q3, %[tp], 16   \n"
+                     "ee.vsubs.s16   q2, q2, q0      \n"
+                     "ee.vsubs.s16   q3, q3, q1      \n"
+                     "ee.zero.qacc                   \n"
+                     "ee.vmulas.s16.qacc q2, q2      \n"
+                     "ee.vmulas.s16.qacc q3, q3      \n"
+                     "ee.vld.128.ip  q5, %[tp], 16   \n"
+                     "ee.srcmb.s16.qacc q4, %[sh], 0 \n"
+                     "ee.vzip.16     q5, q4          \n"
+                     "ee.vmin.s32    q6, q6, q5      \n"
+                     "ee.vmin.s32    q6, q6, q4      \n"
+                     ".endr                          \n"
+                     "ee.vst.128.ip  q6, %[out], 0   \n"
+                     : [tp] "+r"(tp), [pn] "+r"(pn), [out] "+r"(out)
+                     : [pl] "r"(&pt[0]), [pc] "r"(&pt[1]), [sh] "r"(sh), [nb] "i"(OWN_BLOCKS)
+                     : "memory");
+    const int32_t a = m[0] < m[1] ? m[0] : m[1], b = m[2] < m[3] ? m[2] : m[3];
+    return static_cast<unsigned>((a < b ? a : b) & 0xffff);
+}
+#endif
+
+void stage_near_steps(uint8_t* band)
+{
+    int16_t* tl = take<int16_t>(NEAR_T, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    int16_t* tc = take<int16_t>(NEAR_T, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    uint8_t* to = take<uint8_t>(NEAR_T, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if(!tl || !tc || !to)
+    {
+        printf("BENCH near steps skipped: no memory\n");
+        return;
+    }
+    int n = 0;
+    for(int y = 0; y < TONE_H && n < NEAR_T; y++)
+    {
+        gen_row(IMG_PHOTO, y, band);
+        for(int x0 = 0; x0 < TONE_W && n < NEAR_T; x0 += CHUNK)
+        {
+            decode(band + 3 * x0, CHUNK);
+            const int nu = compact(s_ck, CHUNK);
+            if(nu) pass_a(nu);
+            for(int s = 0; s < nu && n < NEAR_T; s++)
+                if(s_ck.kind[s] == K_COLOUR) tl[n] = static_cast<int16_t>(tone_graph_l12(s_ck.L[s])), tc[n++] = static_cast<int16_t>(tone_graph_c12(s_ck.C[s]));
+        }
+    }
+    for(int i = 0; i < n; i++) to[i] = static_cast<uint8_t>(tone_graph_owner(s_graph, tl[i], tc[i]));
+    const tone_graph& g = s_graph;
+    const uint32_t    top = best_of([&] {
+        uint32_t s = 0;
+        for(int i = 0; i < n; i++) s += tone_graph_top(g, tl[i]);
+        s_sink = s;
+    });
+    const uint32_t owner = best_of([&] {
+        uint32_t s = 0;
+        for(int i = 0; i < n; i++) s += tone_graph_owner(g, tl[i], tc[i]);
+        s_sink = s;
+    });
+    const uint32_t toward = best_of([&] {
+        uint32_t s = 0;
+        for(int i = 0; i < n; i++) s += tone_graph_toward(g, to[i], tl[i] - g.l[to[i]], tc[i] - g.c[to[i]]);
+        s_sink = s;
+    });
+    tone_near_mix  m;
+    const uint32_t pick = best_of([&] {
+        uint32_t s = 0;
+        for(int i = 0; i < n; i++) tone_near_pick(near_graph{g}, s_near_ease, tl[i], tc[i], &m), s += m.v[0];
+        s_sink = s;
+    });
+    const uint32_t choose = best_of([&] {
+        uint32_t s = 0;
+        for(int i = 0; i < n; i++) s += tone_near_choose(m, i & 255);
+        s_sink = s;
+    });
+    const uint32_t rim = best_of([&] {
+        uint32_t s = 0;
+        for(int i = 0; i < n; i++)
+        {
+            int     k;
+            int32_t w[2];
+            tone_graph_rim(g, tl[i], tc[i], &k, w);
+            s += static_cast<uint32_t>(k);
+        }
+        s_sink = s;
+    });
+    const uint32_t focal = best_of([&] {
+        uint32_t s = 0;
+        for(int i = 0; i < n; i++)
+        {
+            int     k;
+            int32_t w[2];
+            tone_graph_focal(g, tl[i], tc[i], &k, w);
+            s += static_cast<uint32_t>(k);
+        }
+        s_sink = s;
+    });
+    int outside = 0;
+    for(int i = 0; i < n; i++) outside += tc[i] > tone_graph_top(g, tl[i]) + 2;
+    printf("BENCH near_steps     %d targets (%d above the top), cycles per target: top %.1f owner %.1f toward %.1f "
+           "closest %.1f focal %.1f pick %.1f choose %.1f\n",
+           n, outside, static_cast<double>(top) / n, static_cast<double>(owner) / n, static_cast<double>(toward) / n,
+           static_cast<double>(rim) / n, static_cast<double>(focal) / n, static_cast<double>(pick) / n,
+           static_cast<double>(choose) / n);
+
+    // The pick as tones.cpp runs it, from the last triangle, against the pick.
+    int            from_diff = 0;
+    tone_near_last last;
+    for(int i = 0; i < n; i++)
+    {
+        tone_near_mix a, b;
+        tone_near_pick_from(near_graph{g}, s_near_ease, &last, tl[i], tc[i], &a);
+        tone_near_pick(near_graph{g}, s_near_ease, tl[i], tc[i], &b);
+        from_diff += memcmp(a.v, b.v, 3) != 0 || memcmp(a.w, b.w, sizeof(a.w)) != 0;
+    }
+    const uint32_t from = best_of([&] {
+        uint32_t s = 0;
+        last       = tone_near_last();
+        for(int i = 0; i < n; i++) tone_near_pick_from(near_graph{g}, s_near_ease, &last, tl[i], tc[i], &m), s += m.v[0];
+        s_sink = s;
+    });
+    printf("BENCH near_steps     pick from the last triangle %.1f cycles per target, %d mixes differ from the pick\n",
+           static_cast<double>(from) / n, from_diff);
+#if TONE_FX_PIE
+    owner_pie_init(g);
+    int own_diff = 0;
+    for(int i = 0; i < n; i++) own_diff += owner_pie(tl[i], tc[i]) != to[i];
+    const uint32_t own_pie = best_of([&] {
+        uint32_t s = 0;
+        for(int i = 0; i < n; i++) s += owner_pie(tl[i], tc[i]);
+        s_sink = s;
+    });
+    printf("BENCH near_trial     owner by a vector scan of all tones %.1f (%d differ from the owner grid)\n",
+           static_cast<double>(own_pie) / n, own_diff);
+#endif
 }
 
 enum
@@ -757,6 +980,8 @@ void stage_frames()
             run_frame(img, "float_nocache", s_m.band);
         }
         run_frame_fixed(img, s_m.band);
+        if(img == IMG_FLAT || img == IMG_PHOTO)
+            for(int m = 0; m < TONE_PHOTO_MODES; m++) run_frame_photo(img, static_cast<tone_photo_mode>(m), s_m.band, s_m.mask);
     }
     s_bench_bits = CACHE_BITS;
     memset(s_cache, 0, CACHE_SLOTS * sizeof(target));
@@ -827,6 +1052,8 @@ void tones_bench()
         stage_pass_a();
         vTaskDelay(1);
         stage_plan_code();
+        vTaskDelay(1);
+        stage_near_steps(s_m.band);
         vTaskDelay(1);
     }
     stage_paths();

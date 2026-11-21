@@ -1,6 +1,6 @@
 // The parameters of the squeeze kernel (main/tone_fx_squeeze.cpp), fitted in float to the image
-// edge table and the panel hull of main/tonemap_squeeze.h. The kernel's file describes the curves
-// and their parameters.
+// edge table and the panel hull of main/tonemap_squeeze.h, and with TONEMAP_GAMMA other than 1 in
+// double to its tone curve. The kernel's file describes the curves and their parameters.
 //
 // In the generator's link this file stands in for main/tone_fx_squeeze.cpp: it defines
 // tone_fx_squeeze_params(), so the stand in of the kernel reads the parameters built here.
@@ -18,7 +18,7 @@
 #include "tone_fx_squeeze_internal.h"
 #include "tone_tables_build.h"
 
-static_assert(TONEMAP_GAMMA == 1.0f, "the fixed point squeeze has no tone curve on L");
+static_assert(TONEMAP_GAMMA >= 1.0f, "the tone curve's linear coefficient, near 1 / TONEMAP_GAMMA, must fit q15");
 static_assert(TONEMAP_COMPRESS >= 0.0f && TONEMAP_COMPRESS <= 1.0f, "the fixed point squeeze always squeezes");
 
 namespace
@@ -28,12 +28,14 @@ using namespace tone_fx_squeeze_internal;
 // Lines of the panel edge. The kernel evaluates exactly this many.
 const int PANEL_LINES = 4;
 
-// The build fails when a fitted edge misses its table by more than this, in real units.
+// The build fails when a fitted edge misses its table, or the tone curve its power, by more than
+// this, in real units.
 const float FIT_MAX = 0.0005f;
 
 static_assert(PANEL_LINES == 4, "the kernels and the parameter order hold four panel lines");
 
-alignas(16) int16_t s_k[K_COUNT];
+// Room for the curve stream at every TONEMAP_GAMMA. The kernel's array holds the first K_COUNT.
+alignas(16) int16_t s_k[K_CURVE_END];
 
 // sRGB bytes to Oklab in float, the conversion of main/tones_float_ref.inc, for the edge tables.
 float s_byte_lin[256];
@@ -177,9 +179,112 @@ bool fit_panel(pan_line out[PANEL_LINES])
     for(; o < PANEL_LINES; o++) out[o] = out[o - 1];
     return true;
 }
+
+// Largest miss of curve() against L^(1 / TONEMAP_GAMMA) over every q15 L from 0 to 1, in real
+// units. Below 0 when an end moves.
+double curve_miss()
+{
+    const double p  = 1.0 / static_cast<double>(TONEMAP_GAMMA);
+    double       mx = 0.0;
+    for(int v = 0; v <= Q15_ONE; v++)
+    {
+        const int16_t y = curve(s_k, static_cast<int16_t>(v));
+        if((v == 0 || v == Q15_ONE) && y != v) return -1.0;
+        mx = fmax(mx, fabs(y / 32768.0 - pow(v / 32768.0, p)));
+    }
+    return mx;
+}
+
+// The tone curve's parameters into s_k. The scale steps are 2^(-s / TONEMAP_GAMMA) for s = 8, 4
+// and 2. The polynomial is (x / 32768)^(1 / TONEMAP_GAMMA) on x from 8192 to 32767 in v = (x - 32767)
+// / 32768, pinned to 32767 at v = 0 and fitted near minimax by reweighted least squares (Lawson)
+// in double. The rounded q15 linear coefficient then moves to the value with the least miss of
+// curve() over every q15 L. False when a parameter does not fit q15 or an end moves. The miss goes
+// to err.
+bool fit_curve(float* err)
+{
+    const double p     = 1.0 / static_cast<double>(TONEMAP_GAMMA);
+    const int    st[3] = {8, 4, 2}, cd[3] = {K_CD8, K_CD4, K_CD2};
+    for(int i = 0; i < 3; i++)
+        if(!param(static_cast<float>(1.0 - pow(2.0, -st[i] * p)), cd[i])) return false;
+
+    const int DEG = 4, NS = 512;
+    double    v[NS + 1], y[NS + 1], w[NS + 1], c[DEG] = {};
+    for(int i = 0; i <= NS; i++)
+    {
+        const double x = 8192.0 + (32767.0 - 8192.0) * (0.5 - 0.5 * cos(M_PI * i / NS));
+        v[i]           = (x - 32767.0) / 32768.0;
+        y[i]           = pow(x / 32768.0, p) - 32767.0 / 32768.0;
+        w[i]           = 1.0;
+    }
+    double best = 1e9;
+    for(int round = 0; round < 100; round++)
+    {
+        double M[DEG][DEG + 1] = {};
+        for(int i = 0; i <= NS; i++)
+        {
+            double ph[DEG];
+            ph[0] = v[i];
+            for(int j = 1; j < DEG; j++) ph[j] = ph[j - 1] * v[i];
+            for(int r = 0; r < DEG; r++)
+            {
+                for(int j = 0; j < DEG; j++) M[r][j] += w[i] * ph[r] * ph[j];
+                M[r][DEG] += w[i] * ph[r] * y[i];
+            }
+        }
+        for(int r = 0; r < DEG; r++)
+            for(int r2 = r + 1; r2 < DEG; r2++)
+            {
+                const double f = M[r2][r] / M[r][r];
+                for(int j = r; j <= DEG; j++) M[r2][j] -= f * M[r][j];
+            }
+        double d[DEG];
+        for(int r = DEG - 1; r >= 0; r--)
+        {
+            double s = M[r][DEG];
+            for(int j = r + 1; j < DEG; j++) s -= M[r][j] * d[j];
+            d[r] = s / M[r][r];
+        }
+        double mx = 0.0, sw = 0.0;
+        for(int i = 0; i <= NS; i++)
+        {
+            double s = 0.0;
+            for(int j = DEG - 1; j >= 0; j--) s = (s + d[j]) * v[i];
+            const double er = fabs(s - y[i]);
+            mx              = fmax(mx, er);
+            w[i] *= er + 1e-12;
+            sw += w[i];
+        }
+        for(int i = 0; i <= NS; i++) w[i] /= sw;
+        if(mx < best)
+        {
+            best = mx;
+            memcpy(c, d, sizeof(c));
+        }
+    }
+    const int ck[DEG] = {K_C1, K_C2, K_C3, K_C4};
+    for(int j = 0; j < DEG; j++)
+        if(!param(static_cast<float>(c[j]), ck[j])) return false;
+    s_k[K_C0] = Q15_ONE;
+
+    const int16_t c1   = s_k[K_C1];
+    int16_t       pick = c1;
+    double        miss = 1e9;
+    for(int d = -8; d <= 8; d++)
+    {
+        if(c1 + d < -32767 || c1 + d > 32767) continue;
+        s_k[K_C1]       = static_cast<int16_t>(c1 + d);
+        const double mi = curve_miss();
+        if(mi >= 0.0 && mi < miss) miss = mi, pick = s_k[K_C1];
+    }
+    s_k[K_C1] = pick;
+    if(miss > FIT_MAX) return false;
+    *err = static_cast<float>(miss);
+    return true;
+}
 } // namespace
 
-bool tone_fx_squeeze_build(int16_t k[], float* err_img, float* err_pan)
+bool tone_fx_squeeze_build(int16_t k[], float* err_img, float* err_pan, float* err_curve)
 {
     for(int v = 0; v < 256; v++)
     {
@@ -253,9 +358,29 @@ bool tone_fx_squeeze_build(int16_t k[], float* err_img, float* err_pan)
         e_pan = fmaxf(e_pan, fabsf(q15_to(pan_edge(s_k, L)) - squeeze_pan_at(x)));
     }
     if(e_img > FIT_MAX || e_pan > FIT_MAX) return false;
-    memcpy(k, s_k, sizeof(s_k));
-    *err_img = e_img;
-    *err_pan = e_pan;
+
+    float e_curve = 0.0f;
+    if(CURVE)
+    {
+        s_k[K_CT8]  = 128;
+        s_k[K_CM8]  = 255;
+        s_k[K_CT4]  = 2048;
+        s_k[K_CM4]  = 15;
+        s_k[K_CT2]  = 8192;
+        s_k[K_CM2]  = 3;
+        s_k[K_CF]   = -32768;
+        s_k[K_CONE] = Q15_ONE;
+        if(!fit_curve(&e_curve)) return false;
+        static const int copy[][2] = {{K_EONE, K_ONE}, {K_EXC, K_XC}, {K_EU3, K_U3},   {K_EU2, K_U2},
+                                      {K_EU1, K_U1},   {K_ES, K_S},   {K_ELC, K_LC},   {K_ECM, K_CM},
+                                      {K_ECB, K_CB},   {K_EG, K_G},   {K_ELB, K_LB},   {K_EH0, K_H0},
+                                      {K_EH1, K_H1},   {K_ELSB, K_LSB}, {K_EHALF, K_HALF}};
+        for(const auto& c : copy) s_k[c[0]] = s_k[c[1]];
+    }
+    memcpy(k, s_k, K_COUNT * sizeof(s_k[0]));
+    *err_img   = e_img;
+    *err_pan   = e_pan;
+    *err_curve = e_curve;
     return true;
 }
 

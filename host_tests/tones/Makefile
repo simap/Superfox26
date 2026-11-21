@@ -13,6 +13,11 @@
 ROOT     := ../..
 MODEL    := ../tone_fx/model
 OUT      := out
+OBJ      := $(OUT)/obj
+# make test builds the objects JOBS at a time, the threads of the host by default.
+ifndef JOBS
+JOBS     := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+endif
 FREETYPE ?= $(shell pkg-config --exists freetype2 && echo 1 || echo 0)
 TONES_FONT ?= $(ROOT)/data/fonts/sans.ttf
 export TONES_FONT
@@ -37,13 +42,21 @@ HDRS := $(ROOT)/main/tones.h $(ROOT)/main/tonemap.h $(ROOT)/main/tonemap_entries
         $(foreach k,$(FX),$(ROOT)/main/tone_fx_$(k).h $(ROOT)/main/tone_fx_$(k)_internal.h) \
         $(wildcard $(ROOT)/components/epd97/*.h) $(wildcard stub/*.h) epd_stub.h
 
+# The sources have distinct names, found through vpath.
+vpath %.cpp $(ROOT)/main $(MODEL)
+OBJS := $(addprefix $(OBJ)/,$(notdir $(SRCS:.cpp=.o)))
+
 .PHONY: test clean
 
-$(OUT)/tones_host: $(SRCS) $(HDRS)
-	mkdir -p $(OUT)
-	$(CXX) $(CXXFLAGS) -o $@ $(SRCS) $(LIBS)
+$(OBJ)/%.o: %.cpp $(HDRS)
+	@mkdir -p $(OBJ)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
-test: $(OUT)/tones_host
+$(OUT)/tones_host: $(OBJS)
+	$(CXX) -o $@ $(OBJS) $(LIBS)
+
+test:
+	@$(MAKE) --no-print-directory -j$(JOBS) $(OUT)/tones_host
 	$(OUT)/tones_host
 
 clean:

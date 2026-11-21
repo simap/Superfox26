@@ -10,21 +10,9 @@ namespace
 {
 using namespace tone_fx_squeeze_internal;
 
-inline int16_t vmax(int16_t x, int16_t y)
-{
-    return x >= y ? x : y;
-}
-inline int16_t gt(int16_t x, int16_t y)
-{
-    return x > y ? -1 : 0;
-}
-inline int16_t vand(int16_t x, int16_t y)
-{
-    return static_cast<int16_t>(x & y);
-}
-
 // One colour, the operations of the vector kernel. The kernel runs them in another order, with the
-// same results.
+// same results. As in tonemap_squeeze(), L2 reads the image edge at the curved L1 and the chroma
+// share reads it at L0.
 inline void squeeze_one(const int16_t* k, int16_t L, int16_t A, int16_t B, q15* lo, q15* ao, q15* bo, q15* co)
 {
     const int16_t L0 = vmax(L, 0);
@@ -33,7 +21,9 @@ inline void squeeze_one(const int16_t* k, int16_t L, int16_t A, int16_t B, q15* 
     const int16_t e  = vmax(e0, k[K_LSB]);
     const int16_t cm = vmin(c, e);
     const int16_t hm = mul(subs(e, k[K_LSB]), k[K_HALF], 15); // floor((e - 1) / 2), r > hm is 2r >= e
-    const int16_t L2 = vmax(adds(L0, mul(e0, k[K_G], 15)), 0);
+    const int16_t L1 = CURVE ? curve(k, L0) : L0;
+    const int16_t e1 = CURVE ? img_edge(k, L1) : e0;
+    const int16_t L2 = vmax(adds(L1, mul(e1, k[K_G], 15)), 0);
     *lo              = vmax(L2, k[K_LB]);
     // Restoring division, q = floor(cm / e * 2^DIV_BITS). r <= e after every bit, 2r <= 2 * red_c.
     int16_t r = cm, q = 0;

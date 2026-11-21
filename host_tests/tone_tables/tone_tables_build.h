@@ -11,9 +11,10 @@
 #include "tone_fx_search_internal.h"
 #include "tone_photo.h"
 
-// The squeeze parameters into k, K_COUNT of them, and the largest miss of each fitted edge against
-// its float table. False when a parameter does not fit q15 or a fit misses by more than 0.0005.
-bool tone_fx_squeeze_build(int16_t k[], float* err_img, float* err_pan);
+// The squeeze parameters into k, K_COUNT of them, the largest miss of each fitted edge against its
+// float table, and that of the tone curve against its power (0 at TONEMAP_GAMMA 1). False when a
+// parameter does not fit q15, a fit misses by more than 0.0005 or an end of the curve moves.
+bool tone_fx_squeeze_build(int16_t k[], float* err_img, float* err_pan, float* err_curve);
 
 // The neutral list and the bracket step table, read through the accessors of tone_fx_bracket.h and
 // tone_fx_bracket_internal.h. False for no neutral entry, more than TONE_FX_NEUTRAL_MAX, an entry

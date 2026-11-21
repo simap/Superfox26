@@ -17,22 +17,42 @@
 //             must give the triangle on each side.
 //   paths     no path of the graph runs from paper to the tone of most chroma through neutral tones
 //             alone.
-//   toward    for targets T in the region of A, tone_graph_toward(A, T - A) against the first other
-//             owner along the ray from T, found exactly. The entries may give no coloured region a
-//             border on the strip line, so a graph of three tones made for it checks rays across it.
+//   toward    for targets T in the region of A, tone_graph_toward(A, T - A) against the neighbour
+//             at the least angle from T - A under 90 degrees, found exactly. A result whose angle
+//             is within the rounding of the unit vectors of the least passes.
+//   top       tone_graph_top() at every l against the highest point of the triangles, found exactly:
+//             at most that point rounded down and at most 2 below it, or 0 where no triangle
+//             reaches it.
+//   pick      tone_near_pick() of tone_photo.h at every lattice point of the area from the strip up,
+//             with the linear weights and with eases of the solid and the line step, by the focal
+//             rule and by the closest rule (pick_run()). Every two entries of a mix with weight are
+//             neighbours. With the linear weights a target in a triangle is met within PICK_REACH. A
+//             target in no triangle takes the point where its segment to the focal point crosses the
+//             top, found in double over every edge of the top, and a target on the top takes the
+//             mix of its triangle; with the closest rule it takes the nearest point of the triangles
+//             and pairs, found by brute force. With an ease the mix moves from the linear mix by at
+//             most the reach of the steps, is linear beyond it and solid inside the solid t. With the
+//             focal rule no mix jumps between adjacent targets; with the closest rule the jumps are
+//             reported, not checked.
+// The owner check runs in parts of l and the pick configurations each on a thread of their own, and
+// each part keeps its report until all are done, so the output is that of one thread.
 // --break K applies fault K, and the run must then fail. Exit 0 when every check passes.
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <set>
+#include <string>
+#include <thread>
 #include <vector>
 
 #include "tone_graph.h"
+#include "tone_photo.h"
 #include "tone_tables.h"
 
 namespace
@@ -40,10 +60,65 @@ namespace
 typedef __int128 i128;
 
 const int N = static_cast<int>(TONEMAP_COUNT);
+// 0.002 and 0.01 of the plane.
+const double PICK_REACH = 0.002 * TONE_GRAPH_ONE;
+const double PICK_JUMP  = 0.01 * TONE_GRAPH_ONE;
 
 tone_graph s_g;
 uint16_t   s_cell[tone_tables::graph_cols * tone_tables::graph_rows];
 uint8_t    s_cand[tone_tables::graph_cand_count];
+
+// The queries of the graph as tone_near_pick() asks them, as in tones.cpp.
+struct near_graph
+{
+    const tone_graph& g;
+    int               top(int l) const { return tone_graph_top(g, l); }
+    unsigned          owner(int l, int c) const { return tone_graph_owner(g, l, c); }
+    int               toward(unsigned a, int dl, int dc) const { return tone_graph_toward(g, a, dl, dc); }
+    int               third(unsigned a, unsigned b, int side) const { return tone_graph_third(g, a, b, side); }
+    bool              unit(unsigned a, unsigned b, int* ul, int* uc) const { return tone_graph_unit(g, a, b, ul, uc); }
+    void              focal(int l, int c, uint8_t t[3], int32_t w[3]) const
+    {
+        int k;
+        tone_graph_focal(g, l, c, &k, w);
+        t[0] = g.top_e[k], t[1] = t[2] = g.top_e[k + 1], w[2] = 0;
+    }
+    void rim(int l, int c, uint8_t t[3], int32_t w[3]) const
+    {
+        int k;
+        tone_graph_rim(g, l, c, &k, w);
+        t[0] = g.rim_a[k], t[1] = g.rim_b[k], t[2] = g.rim_t[k] == TONE_GRAPH_END ? g.rim_b[k] : g.rim_t[k], w[2] = 0;
+    }
+    int l(unsigned e) const { return g.l[e]; }
+    int c(unsigned e) const { return g.c[e]; }
+};
+
+// printf into the report of a thread.
+__attribute__((format(printf, 2, 3))) void say(std::string& out, const char* fmt, ...)
+{
+    char    line[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    out += line;
+}
+
+// The threads of the host.
+int host_threads()
+{
+    return std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
+}
+
+// f(lo, hi, k) for the parts k of 0 to n, each on a thread, the parts in order of lo.
+template <class F> void run_parts(int n, int parts, F f)
+{
+    std::vector<std::thread> th;
+    for(int k = 0; k < parts; k++)
+        th.emplace_back(f, static_cast<int>(static_cast<int64_t>(n) * k / parts),
+                        static_cast<int>(static_cast<int64_t>(n) * (k + 1) / parts), k);
+    for(std::thread& t : th) t.join();
+}
 
 bool neutral(int e)
 {
@@ -307,82 +382,369 @@ void fault(int k)
             }
         break;
     case 6:
-        // In the three tone graph of the strip line check, main() drops the second neutral tone from
-        // the pink's ring.
+        // The unit vectors of the first two neighbours of entry 30 trade places.
+        std::swap(s_g.ul[s_g.at[30]], s_g.ul[s_g.at[30] + 1]);
+        std::swap(s_g.uc[s_g.at[30]], s_g.uc[s_g.at[30] + 1]);
+        break;
+    case 7:
+        // A corner in the middle of the top of the triangles rises by 0.01 of the plane.
+        s_g.top_c[s_g.top_n / 2] = static_cast<int16_t>(s_g.top_c[s_g.top_n / 2] + 41);
+        break;
+    case 8:
+    {
+        // The rim loses the pair that reaches the most c.
+        int top = 0;
+        for(int i = 1; i < s_g.rim_n; i++)
+            if(std::max(s_g.c[s_g.rim_a[i]], s_g.c[s_g.rim_b[i]]) > std::max(s_g.c[s_g.rim_a[top]], s_g.c[s_g.rim_b[top]])) top = i;
+        for(int i = top; i + 1 < s_g.rim_n; i++)
+        {
+            s_g.rim_a[i] = s_g.rim_a[i + 1], s_g.rim_b[i] = s_g.rim_b[i + 1], s_g.rim_t[i] = s_g.rim_t[i + 1];
+            s_g.rim_ul[i] = s_g.rim_ul[i + 1], s_g.rim_uc[i] = s_g.rim_uc[i + 1];
+            s_g.rim_lo[i] = s_g.rim_lo[i + 1], s_g.rim_hi[i] = s_g.rim_hi[i + 1];
+        }
+        s_g.rim_n--;
+        break;
+    }
+    case 9:
+        // The tone at the middle corner of the top is taken for the one at the next corner.
+        s_g.top_e[s_g.top_n / 2] = s_g.top_e[s_g.top_n / 2 + 1];
         break;
     }
 }
 
 struct tow_count
 {
-    int n = 0, bad = 0, out = 0, strip = 0, behind = 0;
+    int n = 0, bad = 0, none = 0, tie = 0;
 };
 
-// tone_graph_toward(a, T - a) for the target T = (l, c) of a's region, against the first region the
-// ray from a through T enters past T, found exactly.
-void toward_one(int a, int l, int c, tow_count& t)
+// The cosine of the angle between neighbour f of a and (dl, dc), for the report of a near tie.
+double cosine(int a, int f, int dl, int dc)
 {
-    const int dl = l - s_g.l[a], dc = c - s_g.c[a];
+    const double ul = s_g.l[f] - s_g.l[a], uc = s_g.c[f] - s_g.c[a];
+    return (ul * dl + uc * dc) / std::sqrt((ul * ul + uc * uc) * (static_cast<double>(dl) * dl + static_cast<double>(dc) * dc));
+}
+
+// tone_graph_toward(a, (dl, dc)) against the neighbour at the least angle from (dl, dc), found exactly:
+// the largest dot^2 / |f - a|^2 of the neighbours f with dot = (f - a).(dl, dc) above 0. A result
+// whose cosine lies within 1e-4 of the best passes as a near tie, also -1 against a best whose
+// cosine is below 1e-4, and the reverse.
+void toward_one(int a, int dl, int dc, tow_count& t)
+{
     if(dl == 0 && dc == 0) return;
     t.n++;
-    // The owner of T + u (dl, dc) for u = n / m, or -1 outside the area.
-    auto at = [&](i128 n, i128 m) {
-        const i128 x = static_cast<i128>(l) * m + n * dl, y = static_cast<i128>(c) * m + n * dc;
-        return in_area(x, y, m) ? brute(x, y, m) : -1;
-    };
-    // March from T in steps of about one until a leaves.
-    const double d = std::sqrt(static_cast<double>(dl) * dl + static_cast<double>(dc) * dc);
-    const int    K = static_cast<int>(std::ceil(d));
-    int          k = 1, o = a;
-    for(; o == a; k++) o = at(k, K);
-    k--;
-    if(o < 0)
+    int  want = -1;
+    i128 bd = 0, bn = 1;
+    for(unsigned k = s_g.at[a]; k < s_g.at[a + 1]; k++)
     {
-        t.out++;
-        return;
+        const int  f  = s_g.nb[k];
+        const i128 ul = s_g.l[f] - s_g.l[a], uc = s_g.c[f] - s_g.c[a];
+        const i128 d = ul * dl + uc * dc, n = ul * ul + uc * uc;
+        if(d > 0 && (want < 0 || d * d * bn > bd * bd * n)) want = f, bd = d, bn = n;
     }
-    // Over that step and the next the owner changes only where two tones are equally near or the ray
-    // meets the strip line. Between two such points one tone owns the whole stretch, so the owner at
-    // a point of each stretch, in order, gives the first region past a exactly, also when a leaves at
-    // the end of the step, a point that a tie may give away.
-    std::vector<std::pair<i128, i128>> u = {{k - 1, K}, {k + 1, K}};
-    auto                               keep = [&](i128 n, i128 m) {
-        if(m == 0) return;
-        if(m < 0) n = -n, m = -m;
-        if(n * K > (k - 1) * m && n * K < (k + 1) * m) u.push_back({n, m});
-    };
-    for(int f = 0; f < N; f++)
-        for(int h = f + 1; h < N; h++)
-            keep(dist(h, l, c, 1) - dist(f, l, c, 1),
-                 2 * (static_cast<i128>(dl) * (s_g.l[h] - s_g.l[f]) + static_cast<i128>(dc) * (s_g.c[h] - s_g.c[f])));
-    keep(TONE_GRAPH_STRIP - c, dc);
-    std::sort(u.begin(), u.end(), [](const std::pair<i128, i128>& p, const std::pair<i128, i128>& q) {
-        return p.first * q.second < q.first * p.second;
-    });
-    int  first = a;
-    bool strip = false;
-    for(size_t i = 0; i + 1 < u.size() && first == a; i++)
-    {
-        if(u[i].first * u[i + 1].second == u[i + 1].first * u[i].second) continue;
-        const i128 n = u[i].first + u[i + 1].first, m = u[i].second + u[i + 1].second;
-        first        = at(n, m);
-        strip        = static_cast<i128>(c) * m + n * dc < TONE_GRAPH_STRIP * m;
-    }
-    if(first < 0)
-    {
-        t.out++;
-        return;
-    }
-    t.strip += strip;
-    const int64_t dot  = static_cast<int64_t>(s_g.l[first] - s_g.l[a]) * dl + static_cast<int64_t>(s_g.c[first] - s_g.c[a]) * dc;
-    const int     want = dot > 0 ? first : -1;
-    t.behind += dot <= 0;
+    t.none += want < 0;
     const int got = tone_graph_toward(s_g, static_cast<unsigned>(a), dl, dc);
-    if(got != want)
+    if(got == want) return;
+    const double cw = want < 0 ? 0 : cosine(a, want, dl, dc), cg = got < 0 ? 0 : cosine(a, got, dl, dc);
+    if(std::fabs(cg - cw) <= 1e-4)
     {
-        if(t.bad < 5) printf("FAIL toward from %d at %d %d to %d %d: %d, the march meets %d\n", a, s_g.l[a], s_g.c[a], l, c, got, want);
-        t.bad++;
+        t.tie++;
+        return;
     }
+    if(t.bad < 5)
+        printf("FAIL toward from %d at %d %d along %d %d: %d at cosine %.6f, the least angle is %d at %.6f\n", a, s_g.l[a],
+               s_g.c[a], dl, dc, got, cg, want, cw);
+    t.bad++;
+}
+
+// The highest c of the triangles at l, times den, or -1 where no triangle reaches l.
+struct top_at
+{
+    i128 num = -1, den = 1;
+};
+
+top_at exact_top(const std::set<std::array<int, 3>>& tris, int l)
+{
+    top_at best;
+    for(const auto& t : tris)
+        for(int i = 0; i < 3; i++)
+        {
+            int e = t[static_cast<size_t>(i)], f = t[static_cast<size_t>((i + 1) % 3)];
+            if(s_g.l[e] > s_g.l[f]) std::swap(e, f);
+            if(l < s_g.l[e] || l > s_g.l[f]) continue;
+            top_at v;
+            if(s_g.l[e] == s_g.l[f]) v.num = std::max(s_g.c[e], s_g.c[f]);
+            else
+            {
+                v.den = s_g.l[f] - s_g.l[e];
+                v.num = static_cast<i128>(s_g.c[e]) * v.den + static_cast<i128>(s_g.c[f] - s_g.c[e]) * (l - s_g.l[e]);
+            }
+            if(best.num < 0 || v.num * best.den > best.num * v.den) best = v;
+        }
+    return best;
+}
+
+// Whether triangle t holds (l, c), its edges included.
+bool holds(const std::array<int, 3>& t, int l, int c)
+{
+    int pos = 0, neg = 0;
+    for(int i = 0; i < 3; i++)
+    {
+        const int     p = t[static_cast<size_t>(i)], q = t[static_cast<size_t>((i + 1) % 3)];
+        const int64_t x = static_cast<int64_t>(s_g.l[q] - s_g.l[p]) * (c - s_g.c[p]) -
+                          static_cast<int64_t>(s_g.c[q] - s_g.c[p]) * (l - s_g.l[p]);
+        pos += x > 0, neg += x < 0;
+    }
+    return !(pos && neg);
+}
+
+// The point a mix reaches.
+void point_of(const tone_near_mix& m, double* ml, double* mc)
+{
+    const double s = m.w[0] + m.w[1] + m.w[2];
+    *ml = *mc = 0;
+    for(int i = 0; i < 3; i++) *ml += m.w[i] / s * s_g.l[m.v[i]], *mc += m.w[i] / s * s_g.c[m.v[i]];
+}
+
+// The distance from (l, c) to the pair e f.
+double seg_dist(int e, int f, double l, double c)
+{
+    const double vl = s_g.l[f] - s_g.l[e], vc = s_g.c[f] - s_g.c[e], el = l - s_g.l[e], ec = c - s_g.c[e];
+    double       t  = (el * vl + ec * vc) / (vl * vl + vc * vc);
+    t               = t < 0 ? 0 : t > 1 ? 1 : t;
+    return std::hypot(el - t * vl, ec - t * vc);
+}
+
+// The nearest mix at every lattice target of the area from the strip up, column by column, with the
+// ease z. Checks every two entries with weight are neighbours, and that the pick from the last
+// triangle moves at most 1 of the 256 ranks. With the linear weights: a target that a triangle holds
+// is met within PICK_REACH, and the mix of a target in no triangle lies within 1 of the crossing of
+// the focal rule, or with the closest rule of the nearest point of all triangles and pairs, found by
+// brute force over the pairs. With the focal rule a target on the top takes within 4 the mix of its
+// triangle, and no mix moves over PICK_JUMP between adjacent targets. With an ease: the mix point
+// lies within the larger reach t + w of the two steps, plus 1, of the linear mix point. A target 1.5
+// beyond the reach of each step that is on takes the linear mix, and with the line step off a target
+// 1.5 inside the solid t of the tone of its largest weight takes that tone alone; targets whose two
+// largest weights lie within 2% are left out of these two. It reports the jumps over PICK_JUMP and
+// the largest move, which inward bends of the rim give, and the largest move between adjacent
+// targets where a step acts. The report goes into out.
+int pick_run(const tone_near_ease& z, const std::vector<std::array<int, 3>>& tris,
+             const std::vector<std::pair<int, int>>& pairs, std::string& out)
+{
+    const bool           solid_on = tone_near_step_on(z.solid), line_on = tone_near_step_on(z.line);
+    const bool           linear = !solid_on && !line_on;
+    tone_near_ease       lin    = tone_near_ease_of(0, 0, 0, 0);
+    lin.closest                 = z.closest;
+    const double         rs = z.solid.t + z.solid.w, rl = z.line.t + z.line.w, reach = std::max(rs, rl);
+    int64_t              n = 0, held = 0, rim = 0, steps[TONE_NEAR_STEPS + 1] = {}, jumps = 0, used_n = 0, solid_n = 0;
+    int                  pair_bad = 0, reach_bad = 0, out_bad = 0, ease_bad = 0, from_n = 0, from_most = 0, from_bad = 0;
+    tone_near_last       last_t;
+    double               reach_worst = 0, out_worst = 0, jump_worst = 0, move_worst = 0, zone_jump = 0;
+    int                  zone_at[2] = {};
+    std::vector<bool>    used(static_cast<size_t>(N), false);
+    std::vector<double>  prev_l, prev_c, cur_l, cur_c;
+    size_t               last = 0;
+    for(int l = 0; l <= TONE_GRAPH_ONE; l++)
+    {
+        const int top = s_top[static_cast<size_t>(l)];
+        cur_l.assign(static_cast<size_t>(std::max(top + 1, 0)), -1), cur_c = cur_l;
+        for(int c = TONE_GRAPH_STRIP; c <= top; c++)
+        {
+            tone_near_mix m, mf, m0;
+            tone_near_pick(near_graph{s_g}, z, l, c, &m);
+            tone_near_pick(near_graph{s_g}, lin, l, c, &m0);
+            n++, steps[m.steps]++, rim += m.how == TONE_NEAR_RIM;
+            tone_near_pick_from(near_graph{s_g}, z, &last_t, l, c, &mf);
+            if(memcmp(m.v, mf.v, 3) != 0 || memcmp(m.w, mf.w, sizeof(m.w)) != 0)
+            {
+                int moved = 0;
+                for(int r = 0; r < 256; r++) moved += tone_near_choose(m, r) != tone_near_choose(mf, r);
+                from_n++, from_most = std::max(from_most, moved);
+                if(moved > 1)
+                {
+                    if(from_bad < 5) say(out, "FAIL pick at %d %d: from the last triangle %d ranks differ\n", l, c, moved);
+                    from_bad++;
+                }
+            }
+            for(int i = 0; i < 3; i++)
+            {
+                if(m.w[i] > 0) used[m.v[i]] = true;
+                for(int j = i + 1; j < 3; j++)
+                    if(m.w[i] > 0 && m.w[j] > 0 && m.v[i] != m.v[j] && !has(m.v[i], m.v[j]))
+                    {
+                        if(pair_bad < 5) say(out, "FAIL pick at %d %d: %d and %d mix, not neighbours\n", l, c, m.v[i], m.v[j]);
+                        pair_bad++;
+                    }
+            }
+            double ml, mc;
+            point_of(m, &ml, &mc);
+            bool in = holds(tris[last], l, c);
+            for(size_t i = 0; !in && i < tris.size(); i++)
+                if(holds(tris[i], l, c)) in = true, last = i;
+            const double err = std::hypot(ml - l, mc - c);
+            if(in)
+            {
+                held++;
+                reach_worst = std::max(reach_worst, err);
+                if(linear && err > PICK_REACH)
+                {
+                    if(reach_bad < 5) say(out, "FAIL pick at %d %d: a triangle holds it, the mix reaches %.1f %.1f\n", l, c, ml, mc);
+                    reach_bad++;
+                }
+            }
+            else if(linear && z.closest)
+            {
+                double best = 1e30;
+                for(const auto& p : pairs) best = std::min(best, seg_dist(p.first, p.second, l, c));
+                out_worst = std::max(out_worst, err - best);
+                if(err > best + 1)
+                {
+                    if(out_bad < 5) say(out, "FAIL pick at %d %d: in no triangle, the mix lies %.2f away, the nearest point %.2f\n", l, c, err, best);
+                    out_bad++;
+                }
+            }
+            else if(linear)
+            {
+                // The crossing of the segment from the target to the focal point with the top, found
+                // over every edge of the top in double.
+                double xl = -1, xc = -1;
+                for(int k = 0; k + 1 < s_g.top_n; k++)
+                {
+                    const double ax = s_g.top_l[k], ay = s_g.top_c[k], bx = s_g.top_l[k + 1], by = s_g.top_c[k + 1];
+                    const double dx = TONE_GRAPH_FOCAL_L - l, dy = TONE_GRAPH_FOCAL_C - c, ex = bx - ax, ey = by - ay;
+                    const double den = dx * ey - dy * ex;
+                    if(den == 0) continue;
+                    const double s = ((ax - l) * ey - (ay - c) * ex) / den, u = ((ax - l) * dy - (ay - c) * dx) / den;
+                    if(s >= 0 && s <= 1 && u >= 0 && u <= 1) xl = l + s * dx, xc = c + s * dy;
+                }
+                const double off = xl < 0 ? 1e9 : std::hypot(ml - xl, mc - xc);
+                out_worst        = std::max(out_worst, off);
+                if(off > 1)
+                {
+                    if(out_bad < 5) say(out, "FAIL pick at %d %d: in no triangle, the mix lies %.2f from the crossing\n", l, c, off);
+                    out_bad++;
+                }
+            }
+            bool zone = false;
+            if(!linear)
+            {
+                // The mix point moves by at most the larger reach of the two steps.
+                double l0, c0;
+                point_of(m0, &l0, &c0);
+                const double move = std::hypot(ml - l0, mc - c0);
+                move_worst        = std::max(move_worst, move);
+                if(move > reach + 1)
+                {
+                    if(ease_bad < 5) say(out, "FAIL ease at %d %d: the mix moves %.2f from the linear mix, over %.0f\n", l, c, move, reach);
+                    ease_bad++;
+                }
+                // The distances the steps read: from the target to the nearest edge of a triangle mix,
+                // and from the point of the linear mix to the corner of its largest weight.
+                const bool tri = m0.how == TONE_NEAR_IN && m0.v[0] != m0.v[1] && m0.v[1] != m0.v[2] && m0.v[0] != m0.v[2];
+                double     e   = 1e9;
+                if(tri)
+                    for(int i = 0; i < 3; i++) e = std::min(e, seg_dist(m0.v[i], m0.v[(i + 1) % 3], l, c));
+                int b = 0, b2 = -1;
+                for(int i = 1; i < 3; i++)
+                    if(m0.w[i] > m0.w[b] || (m0.w[i] == m0.w[b] && m0.v[i] < m0.v[b])) b = i;
+                for(int i = 0; i < 3; i++)
+                    if(i != b && m0.v[i] != m0.v[b] && (b2 < 0 || m0.w[i] > m0.w[b2])) b2 = i;
+                const double s0 = m0.w[0] + m0.w[1] + m0.w[2];
+                const bool   tie = b2 >= 0 && m0.w[b] - m0.w[b2] < 0.02 * s0;
+                const double d   = std::hypot(l0 - s_g.l[m0.v[b]], c0 - s_g.c[m0.v[b]]);
+                const bool   far = (!line_on || !tri || e >= rl + 1.5) && (!solid_on || d >= rs + 1.5);
+                zone             = (solid_on && d < rs) || (line_on && tri && e < rl);
+                // tone_near_choose() reads the entries and weights alone, so two mixes that hold the
+                // same choose the same at every rank.
+                const bool same = memcmp(m.v, m0.v, 3) == 0 && memcmp(m.w, m0.w, sizeof(m.w)) == 0;
+                if(far && !tie && !same)
+                    for(int r = 0; r < 256; r++)
+                        if(tone_near_choose(m, r) != tone_near_choose(m0, r))
+                        {
+                            if(ease_bad < 5) say(out, "FAIL ease at %d %d: beyond the reach of both steps, the mix is not linear\n", l, c);
+                            ease_bad++;
+                            break;
+                        }
+                if(solid_on && !line_on && !tie && d <= z.solid.t - 1.5)
+                {
+                    solid_n++;
+                    int with = 0;
+                    for(int i = 0; i < 3; i++) with += m.w[i] > 0 && m.v[i] != m0.v[b];
+                    if(with)
+                    {
+                        if(ease_bad < 5) say(out, "FAIL ease at %d %d: %.2f from tone %d, the mix holds another\n", l, c, d, m0.v[b]);
+                        ease_bad++;
+                    }
+                }
+            }
+            cur_l[static_cast<size_t>(c)] = ml, cur_c[static_cast<size_t>(c)] = mc;
+            double jl = c > TONE_GRAPH_STRIP ? std::hypot(ml - cur_l[static_cast<size_t>(c - 1)], mc - cur_c[static_cast<size_t>(c - 1)]) : 0;
+            if(static_cast<size_t>(c) < prev_l.size() && prev_l[static_cast<size_t>(c)] >= 0)
+                jl = std::max(jl, std::hypot(ml - prev_l[static_cast<size_t>(c)], mc - prev_c[static_cast<size_t>(c)]));
+            jump_worst = std::max(jump_worst, jl);
+            jumps += jl > PICK_JUMP;
+            if(zone && jl > zone_jump) zone_jump = jl, zone_at[0] = l, zone_at[1] = c;
+        }
+        prev_l.swap(cur_l), prev_c.swap(cur_c);
+    }
+    for(bool u : used) used_n += u;
+    const double q = 1.0 / TONE_GRAPH_ONE;
+    char name[80];
+    snprintf(name, sizeof(name), "pick %s solid %d %d line %d %d", z.closest ? "closest" : "focal", z.solid.t, z.solid.w,
+             z.line.t, z.line.w);
+    say(out, "%s: %lld targets, %lld held by a triangle, %lld outside the triangles. Steps across an edge 0 to %d: ", name,
+        static_cast<long long>(n), static_cast<long long>(held), static_cast<long long>(rim), TONE_NEAR_STEPS);
+    for(int64_t s : steps) say(out, "%lld ", static_cast<long long>(s));
+    say(out, "\n%s: held targets missed by up to %.4f%s, %d faults. Pairs not neighbours %d. From the last triangle %d "
+        "mixes differ, at most %d of 256 ranks (limit 1), %d faults. %lld of %d tones take dots\n",
+        name, reach_worst * q, linear ? " (limit 0.0020)" : "", reach_bad, pair_bad, from_n, from_most, from_bad,
+        static_cast<long long>(used_n), N);
+    if(linear && z.closest)
+        say(out, "%s: targets in no triangle lie up to %.4f farther from the mix than from the nearest point of the "
+            "triangles and pairs (limit %.4f), %d faults\n",
+            name, out_worst * q, q, out_bad);
+    else if(linear)
+    {
+        // A target on the top takes itself: the focal rule for the target at the top of each l, which
+        // lies at most 2 below the exact top, against the mix of step 1 there.
+        double top_worst = 0;
+        int    top_bad   = 0;
+        for(int l = 0; l <= TONE_GRAPH_ONE; l++)
+        {
+            const int c = tone_graph_top(s_g, l);
+            if(c < TONE_GRAPH_STRIP || c > s_top[static_cast<size_t>(l)]) continue;
+            tone_near_mix in, cross;
+            tone_near_pick(near_graph{s_g}, z, l, c, &in);
+            uint8_t t[3];
+            int32_t w[3];
+            near_graph{s_g}.focal(l, c, t, w);
+            tone_near_put(near_graph{s_g}, z, t, w, TONE_NEAR_RIM, l, c, &cross);
+            double il, ic, xl, xc;
+            point_of(in, &il, &ic), point_of(cross, &xl, &xc);
+            const double d = std::hypot(il - xl, ic - xc);
+            top_worst      = std::max(top_worst, d);
+            if(d > 4)
+            {
+                if(top_bad < 5) say(out, "FAIL pick at %d %d: on the top, the crossing lies %.2f from the mix in the triangle\n", l, c, d);
+                top_bad++;
+            }
+        }
+        out_bad += top_bad;
+        say(out, "%s: targets in no triangle lie up to %.4f from the crossing (limit %.4f), %d faults. On the top the "
+            "crossing lies up to %.4f from the mix in the triangle (limit %.4f), %d faults\n",
+            name, out_worst * q, q, out_bad - top_bad, top_worst * q, 4 * q, top_bad);
+    }
+    else
+        say(out, "%s: the mix moves from the linear mix by up to %.4f (limit %.4f + %.4f), %lld targets checked solid, %d "
+            "faults. Where a step acts the mix moves by up to %.4f between adjacent targets (at %d %d)\n",
+            name, move_worst * q, reach * q, q, static_cast<long long>(solid_n), ease_bad, zone_jump * q, zone_at[0],
+            zone_at[1]);
+    // The focal rule moves its point without a step, so with it no mix moves over PICK_JUMP between
+    // adjacent targets.
+    const int jump_bad = z.closest ? 0 : static_cast<int>(jumps);
+    say(out, "%s: %lld targets whose mix moves over %.4f from a target next to it%s, the largest move %.4f\n", name,
+        static_cast<long long>(jumps), PICK_JUMP * q, z.closest ? "" : " (limit 0)", jump_worst * q);
+    if(jump_bad) say(out, "FAIL pick: %d jumps with the focal rule\n", jump_bad);
+    return pair_bad + reach_bad + out_bad + ease_bad + from_bad + jump_bad;
 }
 } // namespace
 
@@ -393,9 +755,10 @@ int main(int argc, char** argv)
     std::copy(tone_tables::graph_cand.begin(), tone_tables::graph_cand.end(), s_cand);
     if(!tone_graph_hydrate(&s_g, tone_tables::qL.data(), tone_tables::graph_c.data(), tone_tables::neutral.data(),
                            tone_tables::neutral_count, tone_tables::graph_ring.data(), tone_tables::graph_ring_count,
-                           s_cell, s_cand, tone_tables::graph_rows))
+                           tone_tables::graph_top.data(), tone_tables::graph_top_count, s_cell, s_cand,
+                           tone_tables::graph_rows))
     {
-        printf("FAIL tone_graph_hydrate refuses the rings\n");
+        printf("FAIL tone_graph_hydrate refuses the rings or the top\n");
         return 1;
     }
     fault(brk);
@@ -403,26 +766,48 @@ int main(int argc, char** argv)
     make_top();
     int bad = 0;
 
-    // ---- owner: every lattice point of the grid, and two rows below c = 0
-    const int H   = s_g.rows << TONE_GRAPH_CELL_SHIFT;
-    int       own_bad = 0, most = 0;
-    std::vector<uint8_t> img(static_cast<size_t>((TONE_GRAPH_ONE + 1) * H));
-    for(int l = 0; l <= TONE_GRAPH_ONE; l++)
-        for(int c = -2; c < H; c++)
-        {
-            const int want = brute(l, c, 1);
-            const int got  = static_cast<int>(tone_graph_owner(s_g, l, c));
-            if(c >= 0) img[static_cast<size_t>(l * H + c)] = static_cast<uint8_t>(want);
-            if(c >= 0 && c <= s_top[static_cast<size_t>(l)])
-                most = std::max(most, static_cast<int>(s_g.cell[std::min(l >> TONE_GRAPH_CELL_SHIFT, TONE_GRAPH_COLS - 1) * s_g.rows +
-                                                                (c >> TONE_GRAPH_CELL_SHIFT)] &
-                                                         15));
-            if(got != want)
+    // ---- owner: every lattice point of the grid, and two rows below c = 0, in parts of l
+    const int H = s_g.rows << TONE_GRAPH_CELL_SHIFT;
+    struct own_part
+    {
+        int         bad = 0, most = 0;
+        std::string log;
+    };
+    const int             parts = host_threads();
+    std::vector<own_part> op(static_cast<size_t>(parts));
+    std::vector<uint8_t>  img(static_cast<size_t>((TONE_GRAPH_ONE + 1) * H));
+    run_parts(TONE_GRAPH_ONE + 1, parts, [&](int lo, int hi, int k) {
+        own_part& r = op[static_cast<size_t>(k)];
+        for(int l = lo; l < hi; l++)
+            for(int c = -2; c < H; c++)
             {
-                if(own_bad < 5) printf("FAIL owner of %d %d: %d, nearest %d\n", l, c, got, want);
-                own_bad++;
+                const int want = brute(l, c, 1);
+                const int got  = static_cast<int>(tone_graph_owner(s_g, l, c));
+                if(c >= 0) img[static_cast<size_t>(l * H + c)] = static_cast<uint8_t>(want);
+                if(c >= 0 && c <= s_top[static_cast<size_t>(l)])
+                    r.most = std::max(r.most, static_cast<int>(s_g.cell[std::min(l >> TONE_GRAPH_CELL_SHIFT, TONE_GRAPH_COLS - 1) * s_g.rows +
+                                                                        (c >> TONE_GRAPH_CELL_SHIFT)] &
+                                                                 15));
+                if(got != want)
+                {
+                    if(r.bad < 5) say(r.log, "FAIL owner of %d %d: %d, nearest %d\n", l, c, got, want);
+                    r.bad++;
+                }
             }
+    });
+    int own_bad = 0, most = 0;
+    for(const own_part& r : op)
+    {
+        // The first 5 faults of all parts, in order of l.
+        size_t at = 0;
+        for(int i = own_bad; i < 5 && at < r.log.size(); i++)
+        {
+            const size_t nl = r.log.find('\n', at);
+            fwrite(r.log.data() + at, 1, nl + 1 - at, stdout);
+            at = nl + 1;
         }
+        own_bad += r.bad, most = std::max(most, r.most);
+    }
     bad += own_bad;
     int64_t   pts = 0;
     unsigned  sink = 0;
@@ -664,40 +1049,71 @@ int main(int argc, char** argv)
     printf("paths: entry %d, the most chroma, %s from paper through neutral tones alone\n", top,
            path_bad ? "FAIL: reachable" : "not reachable");
 
-    // ---- toward
+    // ---- toward: from the owner to targets of its region, and from each tone in 64 directions
     tow_count tw;
     for(int l = 3; l <= TONE_GRAPH_ONE; l += 13)
-        for(int c = TONE_GRAPH_STRIP; c <= s_top[static_cast<size_t>(l)]; c += 5) toward_one(img[static_cast<size_t>(l * H + c)], l, c, tw);
-    bad += tw.bad;
-    printf("toward: %d targets, %d leave the area first, %d enter a neutral band across the strip line, %d meet a "
-           "neutral behind the tone, %d faults\n",
-           tw.n, tw.out, tw.strip, tw.behind, tw.bad);
-
-    // A graph of three tones whose pink reaches the strip line takes rays across it: neutral tones at
-    // l 1000 and 3000, the pink at l 2100 and c 20 between them, and every other entry at the first
-    // neutral's point, where it owns nothing. It must give both kinds of result of that branch.
-    {
-        int16_t qs[TONEMAP_COUNT], cs[TONEMAP_COUNT];
-        for(int e = 0; e < N; e++) qs[e] = 8 * 1000, cs[e] = 0;
-        qs[1] = 8 * 3000, qs[2] = 8 * 2100, cs[2] = 20;
-        const uint8_t        nt[2] = {0, 1};
-        std::vector<uint8_t> rg    = {1, 2, TONE_GRAPH_GAP, TONE_GRAPH_END, 2, 0, TONE_GRAPH_GAP, TONE_GRAPH_END,
-                                      0, 1, TONE_GRAPH_GAP, TONE_GRAPH_END};
-        if(brk == 6) rg[9] = TONE_GRAPH_GAP, rg[10] = TONE_GRAPH_END, rg.pop_back();
-        rg.resize(rg.size() + N - 3, TONE_GRAPH_END);
-        if(!tone_graph_hydrate(&s_g, qs, cs, nt, 2, rg.data(), static_cast<int>(rg.size()), s_cell, s_cand, 1))
+        for(int c = TONE_GRAPH_STRIP; c <= s_top[static_cast<size_t>(l)]; c += 5)
         {
-            printf("FAIL tone_graph_hydrate refuses the three tone graph\n");
-            return 1;
+            const int a = img[static_cast<size_t>(l * H + c)];
+            toward_one(a, l - s_g.l[a], c - s_g.c[a], tw);
         }
-        tow_count ts;
-        for(int l = 1500; l <= 2700; l += 7)
-            for(int c = TONE_GRAPH_STRIP; c <= 60; c++)
-                if(brute(l, c, 1) == 2) toward_one(2, l, c, ts);
-        bad += ts.bad + (ts.strip == 0) + (ts.behind == 0);
-        printf("toward across the strip line: %d targets, %d enter a neutral band across it, %d meet a neutral "
-               "behind the tone, %d faults\n",
-               ts.n, ts.strip, ts.behind, ts.bad);
+    for(int a = 0; a < N; a++)
+        for(int k = 0; k < 64; k++)
+            toward_one(a, static_cast<int>(std::lround(1000 * std::cos(k * M_PI / 32))),
+                       static_cast<int>(std::lround(1000 * std::sin(k * M_PI / 32))), tw);
+    bad += tw.bad;
+    printf("toward: %d targets, %d with no neighbour under 90 degrees, %d near ties, %d faults\n", tw.n, tw.none, tw.tie,
+           tw.bad);
+
+    // ---- top
+    int top_bad = 0, top_none = 0, top_low = 0;
+    for(int l = 0; l <= TONE_GRAPH_ONE; l++)
+    {
+        const top_at t   = exact_top(gt, l);
+        const int    got = tone_graph_top(s_g, l);
+        int          hi = 0, lo = 0;
+        if(t.num >= 0)
+        {
+            const int f = static_cast<int>(t.num / t.den);
+            hi = f, lo = std::max(f - 2, 0);
+        }
+        top_none += t.num < 0;
+        top_low += got < hi;
+        if(got < lo || got > hi)
+        {
+            if(top_bad < 5) printf("FAIL top at l %d: %d, the triangles reach %d\n", l, got, hi);
+            top_bad++;
+        }
+    }
+    bad += top_bad;
+    printf("top: %d corners, %d of %d l with no triangle, %d below the exact top by 1 or 2, %d faults\n", s_g.top_n,
+           top_none, TONE_GRAPH_ONE + 1, top_low, top_bad);
+
+    // ---- pick, with the linear weights, a step at 8 and the default ease, each on a thread
+    {
+        const std::vector<std::array<int, 3>> tris(gt.begin(), gt.end());
+        std::vector<std::pair<int, int>>      pairs;
+        for(int e = 0; e < N; e++)
+            for(unsigned k = s_g.at[e]; k < s_g.at[e + 1]; k++)
+                if(s_g.nb[k] > e) pairs.push_back({e, s_g.nb[k]});
+        auto closest = [](tone_near_ease z) {
+            z.closest = true;
+            return z;
+        };
+        const std::vector<tone_near_ease> zs = {tone_near_ease_of(0, 0, 0, 0),         tone_near_ease_of(8, 0, 0, 0),
+                                                tone_near_ease_of(8, 16, 0, 0),        tone_near_ease_of(0, 0, 8, 16),
+                                                tone_near_ease_of(8, 16, 8, 16),       closest(tone_near_ease_of(0, 0, 0, 0)),
+                                                closest(tone_near_ease_of(8, 16, 0, 0))};
+        std::vector<std::string>          logs(zs.size());
+        std::vector<int>                  fails(zs.size());
+        std::vector<std::thread>          th;
+        for(size_t i = 0; i < zs.size(); i++) th.emplace_back([&, i] { fails[i] = pick_run(zs[i], tris, pairs, logs[i]); });
+        for(size_t i = 0; i < zs.size(); i++)
+        {
+            th[i].join();
+            fputs(logs[i].c_str(), stdout);
+            bad += fails[i];
+        }
     }
 
     printf("tone_graph_check%s: %s\n", brk ? " with a fault" : "", bad ? "FAIL" : "PASS");

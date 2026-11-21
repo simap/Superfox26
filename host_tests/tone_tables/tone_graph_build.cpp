@@ -323,6 +323,72 @@ void put_list(std::string& s, const std::vector<int>& v, int ind)
     }
 }
 
+int64_t floor_div(int64_t n, int64_t d)
+{
+    return n >= 0 ? n / d : -((-n + d - 1) / d);
+}
+
+// The top of the triangles: per stretch of l between the l of two corners of triangles, the edge of
+// a triangle that lies highest, as corners l, c by rising l from 0 to TONE_GRAPH_ONE, c rounded down
+// and 0 where no triangle reaches. Edges of a planar graph cross only at their ends, so on each
+// stretch one edge lies highest. Stretches on one edge merge, and two corners at one l mark a step.
+std::vector<int> top_of(const graph_in& g, const std::map<std::array<int, 3>, std::set<int>>& tri)
+{
+    std::vector<int64_t>            xs = {0, TONE_GRAPH_ONE};
+    std::set<std::pair<int, int>>   edges;
+    for(const auto& kv : tri)
+        for(int i = 0; i < 3; i++)
+        {
+            int e = kv.first[static_cast<size_t>(i)], f = kv.first[static_cast<size_t>((i + 1) % 3)];
+            xs.push_back(g.p[static_cast<size_t>(e)].x);
+            if(g.p[static_cast<size_t>(e)].x > g.p[static_cast<size_t>(f)].x) std::swap(e, f);
+            if(g.p[static_cast<size_t>(e)].x < g.p[static_cast<size_t>(f)].x) edges.insert({e, f});
+        }
+    std::sort(xs.begin(), xs.end());
+    xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
+    // c of edge e f at l = n / 2, times 2 (x_f - x_e).
+    auto at2 = [&](const std::pair<int, int>& ef, int64_t n) {
+        const tone_pt &a = g.p[static_cast<size_t>(ef.first)], &b = g.p[static_cast<size_t>(ef.second)];
+        return 2 * a.y * (b.x - a.x) + (b.y - a.y) * (n - 2 * a.x);
+    };
+    std::vector<std::pair<int, int>> top;
+    for(size_t i = 0; i + 1 < xs.size(); i++)
+    {
+        const int64_t        mid  = xs[i] + xs[i + 1];
+        std::pair<int, int>  best = {-1, -1};
+        for(const auto& ef : edges)
+        {
+            if(g.p[static_cast<size_t>(ef.first)].x > xs[i] || g.p[static_cast<size_t>(ef.second)].x < xs[i + 1]) continue;
+            if(best.first < 0) best = ef;
+            else
+            {
+                const int64_t db = g.p[static_cast<size_t>(best.second)].x - g.p[static_cast<size_t>(best.first)].x;
+                const int64_t de = g.p[static_cast<size_t>(ef.second)].x - g.p[static_cast<size_t>(ef.first)].x;
+                if(static_cast<i128>(at2(ef, mid)) * db > static_cast<i128>(at2(best, mid)) * de) best = ef;
+            }
+        }
+        top.push_back(best);
+    }
+    std::vector<int> out;
+    auto             corner = [&](int64_t x, const std::pair<int, int>& ef) {
+        int64_t c = 0;
+        if(ef.first >= 0)
+            c = floor_div(at2(ef, 2 * x), 2 * (g.p[static_cast<size_t>(ef.second)].x - g.p[static_cast<size_t>(ef.first)].x));
+        const size_t n = out.size();
+        if(n >= 2 && out[n - 2] == x && out[n - 1] == c) return;
+        out.push_back(static_cast<int>(x)), out.push_back(static_cast<int>(c));
+    };
+    for(size_t i = 0; i < top.size();)
+    {
+        size_t j = i;
+        while(j + 1 < top.size() && top[j + 1] == top[i]) j++;
+        corner(xs[i], top[i]);
+        corner(xs[j + 1], top[i]);
+        i = j + 1;
+    }
+    return out;
+}
+
 // The domain of the targets in the plane. pan_edge() of the squeeze is at most the least of its
 // four lines, C <= PM L / 2^15 + PB with PB 0 for the first, as a real number. A point (l, c) comes
 // from some L in 8 l - 4 to 8 l + 3 and some C of at least 4 c - 2, so each line gives the half plane
@@ -448,6 +514,42 @@ bool tone_graph_build(const int16_t* qL, const int16_t* k, std::string& inc, cha
                      kv.second.size());
             return false;
         }
+    const std::vector<int> top_c = top_of(g, tri);
+    if(top_c.size() / 2 > static_cast<size_t>(TONE_GRAPH_TOP_MAX))
+    {
+        snprintf(why, len, "the top of the triangles has %zu corners, more than %d", top_c.size() / 2, TONE_GRAPH_TOP_MAX);
+        return false;
+    }
+    // The top must be a chain of neighbouring tones, star shaped from the focal point: each edge turns
+    // the same way seen from it, so the segment from a target above the top to it crosses the top once.
+    for(size_t i = 0, prev = 0; i < top_c.size() / 2; i++)
+    {
+        int at = -1;
+        for(int e = 0; e < N && at < 0; e++)
+            if(g.p[static_cast<size_t>(e)].x == top_c[2 * i] && g.p[static_cast<size_t>(e)].y == top_c[2 * i + 1]) at = e;
+        if(at < 0)
+        {
+            snprintf(why, len, "corner %zu of the top, l %d c %d, is no tone", i, top_c[2 * i], top_c[2 * i + 1]);
+            return false;
+        }
+        const size_t here = static_cast<size_t>(at);
+        if(i > 0 && !pairs.count({static_cast<int>(prev), at}))
+        {
+            snprintf(why, len, "corners %zu and %zu of the top, entries %zu and %d, are no neighbours", i - 1, i, prev, at);
+            return false;
+        }
+        prev = here;
+        if(i == 0) continue;
+        const int64_t al = top_c[2 * i - 2] - TONE_GRAPH_FOCAL_L, ac = top_c[2 * i - 1] - TONE_GRAPH_FOCAL_C;
+        const int64_t bl = top_c[2 * i] - TONE_GRAPH_FOCAL_L, bc = top_c[2 * i + 1] - TONE_GRAPH_FOCAL_C;
+        if(al * bc - ac * bl >= 0)
+        {
+            snprintf(why, len, "the top is not star shaped from the focal point l %d c %d: its edge from l %d c %d to l %d c %d "
+                     "turns the other way",
+                     TONE_GRAPH_FOCAL_L, TONE_GRAPH_FOCAL_C, top_c[2 * i - 2], top_c[2 * i - 1], top_c[2 * i], top_c[2 * i + 1]);
+            return false;
+        }
+    }
 
     // ---- the owner grid over l 0 to 4096 and c 0 to the top of its last row, which holds the area
     i128 top = 0;
@@ -544,13 +646,18 @@ bool tone_graph_build(const int16_t* qL, const int16_t* k, std::string& inc, cha
     }
     char buf[512];
     inc += "// The graph of the tones in the plane of L and 2C, q12 (tone_graph.h): per entry 2C, the rings of\n"
-           "// neighbours, and the owner grid with its lists of candidates.\n";
+           "// neighbours, the corners of the top of the triangles, and the owner grid with its lists of\n"
+           "// candidates.\n";
     inc += "inline constexpr std::array<int16_t, count> graph_c = {{\n";
     put_list(inc, gc, 4);
     snprintf(buf, sizeof(buf), "}};\ninline constexpr int graph_ring_count = %zu;\n", rb.size());
     inc += buf;
     inc += "inline constexpr std::array<uint8_t, graph_ring_count> graph_ring = {{\n";
     put_list(inc, rb, 4);
+    snprintf(buf, sizeof(buf), "}};\ninline constexpr int graph_top_count = %zu;\n", top_c.size() / 2);
+    inc += buf;
+    inc += "inline constexpr std::array<int16_t, 2 * graph_top_count> graph_top = {{\n";
+    put_list(inc, top_c, 4);
     snprintf(buf, sizeof(buf), "}};\ninline constexpr int graph_cols = %d;\ninline constexpr int graph_rows = %d;\n", cols,
              rows);
     inc += buf;
@@ -563,9 +670,9 @@ bool tone_graph_build(const int16_t* qL, const int16_t* k, std::string& inc, cha
     inc += "}};\n";
 
     printf("tone_graph_build: %d entries, %d without a region, %zu neighbour pairs, %zu triangles, at most %d "
-           "neighbours, ring %zu bytes, owner grid %d x %d cells, at most %d candidates at a point of the area, mean "
-           "%.2f over its %lld points, %zu candidate bytes\n",
-           N, none, pairs.size() / 2, tri.size(), deg_max, rb.size(), cols, rows, cmax, sum / static_cast<double>(pts),
-           static_cast<long long>(pts), cand.size());
+           "neighbours, ring %zu bytes, %zu corners of the top of the triangles, owner grid %d x %d cells, at most %d "
+           "candidates at a point of the area, mean %.2f over its %lld points, %zu candidate bytes\n",
+           N, none, pairs.size() / 2, tri.size(), deg_max, rb.size(), top_c.size() / 2, cols, rows, cmax,
+           sum / static_cast<double>(pts), static_cast<long long>(pts), cand.size());
     return true;
 }

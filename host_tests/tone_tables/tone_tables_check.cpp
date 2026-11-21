@@ -201,18 +201,24 @@ static void reach_of(const double* pl, const double* pc, int n, double tl, doubl
 
 // The nearest mix (TONE_PHOTO_NEAREST) on the graph of the file, for sRGB colours on a step of 5
 // through pass_a(). Checks:
-// 1. Every entry a coloured pixel takes at any rank is the owner of its target or a neighbour of
-//    the owner, and the entries of a mix of three are neighbours of each other.
+// 1. Every entry a coloured pixel takes at any rank is an entry of its mix with weight, and the
+//    entries of a mix with weight are neighbours of each other.
 // 2. The mean of the picks of photo_entry<true>() over the 256 ranks lies within 1/256 of the spread
-//    of the entries and 1 count of the point the mix reaches, computed here in double.
+//    of the entries and 1 count of the point the mix reaches, computed here in double: in a triangle
+//    the point of it nearest the target, outside the triangles the point of the mix's weights.
 // 3. A neutral target takes no entry with r or R at any rank.
 // 4. A target on a tone that owns its own point takes that tone at every rank.
-// Prints how the mixes end, the spread of the mixes and the largest colour error. Returns the faults.
+// It runs with the linear weights (both steps of the ease off) and restores the ease after. Prints how the mixes end,
+// the spread of the mixes and the largest colour error. Returns the faults.
 static int check_near()
 {
+    int ease[4];
+    tones_near_ease(&ease[0], &ease[1], &ease[2], &ease[3]);
+    tones_set_near_ease(0, 0, 0, 0);
     if(!tone_graph_hydrate(&s_graph, tone_tables::qL.data(), tone_tables::graph_c.data(), tone_tables::neutral.data(),
                            tone_tables::neutral_count, tone_tables::graph_ring.data(), tone_tables::graph_ring_count,
-                           s_graph_cell.data(), s_graph_cand.data(), tone_tables::graph_rows))
+                           tone_tables::graph_top.data(), tone_tables::graph_top_count, s_graph_cell.data(),
+                           s_graph_cand.data(), tone_tables::graph_rows))
     {
         printf("FAIL nearest mix: the graph does not hydrate\n");
         return 1;
@@ -228,7 +234,7 @@ static int check_near()
     auto tinted = [](unsigned e) { return strpbrk(k_tonemap[e].pattern, "rR") != nullptr; };
 
     int                 far = 0, mean_bad = 0, tint = 0, on_bad = 0, paper_red = 0, n = 0;
-    int                 how[6] = {};
+    int                 how[2] = {};
     std::vector<double> spread;
     double              worst = 0, err_max = 0, sp_max = 0;
     int                 err_px[3] = {}, sp_v[3] = {}, sp_n = 0;
@@ -255,52 +261,68 @@ static int check_near()
                 for(int r = 0; r < 256; r++) tint += tinted(photo_entry<true>(s, r));
                 continue;
             }
-            const int     tl = tone_graph_l12(c.L[s]), tc = tone_graph_c12(c.C[s]);
+            const int     tl = tone_graph_l12(c.L[s]);
+            const int     tc = tone_graph_c12(c.C[s]);
             tone_near_mix m;
-            tone_near_pick(near_graph{g}, tl, tc, &m);
+            tone_near_pick(near_graph{g}, s_near_ease, tl, tc, &m);
             how[m.how]++;
             n++;
-            const unsigned o = tone_graph_owner(g, tl, tc);
-            double         ml = 0, mc = 0;
-            bool           near = true;
+            double ml = 0, mc = 0;
+            bool   near = true;
             for(int r = 0; r < 256; r++)
             {
                 const unsigned e = photo_entry<true>(s, r);
-                near             = near && touch(o, e);
+                bool           in = false;
+                for(int i = 0; i < 3; i++) in = in || (m.v[i] == e && m.w[i] > 0);
+                near = near && in;
                 ml += g.l[e] / 256.0, mc += g.c[e] / 256.0;
             }
-            for(int i = 0; i < m.n; i++)
-                for(int j = i + 1; j < m.n; j++) near = near && touch(m.v[i], m.v[j]);
+            for(int i = 0; i < 3; i++)
+                for(int j = i + 1; j < 3; j++) near = near && (m.w[i] == 0 || m.w[j] == 0 || touch(m.v[i], m.v[j]));
             far += !near;
+            // The corners of the mix: three for a triangle, else the entries with weight.
+            const bool tri = m.how == TONE_NEAR_IN && m.v[0] != m.v[1] && m.v[1] != m.v[2] && m.v[0] != m.v[2];
+            uint8_t    mv[3];
+            int        mn = 0;
+            for(int i = 0; i < 3; i++)
+                if(tri || m.w[i] > 0) mv[mn++] = m.v[i];
             double pl[3], pc[3], sp = 0;
-            for(int i = 0; i < m.n; i++) pl[i] = g.l[m.v[i]], pc[i] = g.c[m.v[i]];
-            for(int i = 0; i < m.n; i++)
-                for(int j = i + 1; j < m.n; j++) sp = std::max(sp, std::hypot(pl[i] - pl[j], pc[i] - pc[j]));
+            for(int i = 0; i < mn; i++) pl[i] = g.l[mv[i]], pc[i] = g.c[mv[i]];
+            for(int i = 0; i < mn; i++)
+                for(int j = i + 1; j < mn; j++) sp = std::max(sp, std::hypot(pl[i] - pl[j], pc[i] - pc[j]));
+            // In a triangle the point of it nearest the target, outside the triangles the point the
+            // weights of the mix give, the point of the focal rule that tone_graph_check checks.
             double rl, rc;
-            reach_of(pl, pc, m.n, tl, tc, &rl, &rc);
+            if(m.how == TONE_NEAR_IN) reach_of(pl, pc, mn, tl, tc, &rl, &rc);
+            else
+            {
+                const double s = static_cast<double>(m.w[0]) + m.w[1] + m.w[2];
+                rl = rc = 0;
+                for(int i = 0; i < 3; i++) rl += m.w[i] / s * g.l[m.v[i]], rc += m.w[i] / s * g.c[m.v[i]];
+            }
             const double miss = std::max(fabs(ml - rl), fabs(mc - rc)) / (sp / 256 + 1);
             worst             = std::max(worst, miss);
             if(miss > 1 && mean_bad++ < 8)
                 printf("FAIL nearest mix %u %u %u: reaches L %.1f 2C %.1f, mean of the picks %.1f %.1f\n", px[3 * s],
                        px[3 * s + 1], px[3 * s + 2], rl, rc, ml, mc);
-            if(m.n > 1)
+            if(mn > 1)
             {
                 spread.push_back(sp);
                 if(sp > sp_max)
                 {
-                    sp_max = sp, sp_n = m.n;
-                    for(int i = 0; i < 3; i++) sp_v[i] = m.v[i];
+                    sp_max = sp, sp_n = mn;
+                    for(int i = 0; i < mn; i++) sp_v[i] = mv[i];
                 }
             }
             const double err = std::hypot(rl - tl, rc - tc);
             if(err > err_max)
             {
                 err_max = err, err_t[0] = tl, err_t[1] = tc;
-                for(int k = 0; k < 3; k++) err_px[k] = px[3 * s + k];
+                for(int j = 0; j < 3; j++) err_px[j] = px[3 * s + j];
             }
             bool paper = false, red = false;
-            for(int i = 0; i < m.n; i++)
-                paper = paper || m.v[i] == TONE_PAPER, red = red || g.c[m.v[i]] >= 0.05 * 8192;
+            for(int i = 0; i < 3; i++)
+                if(m.w[i] > 0) paper = paper || m.v[i] == TONE_PAPER, red = red || g.c[m.v[i]] >= 0.05 * 8192;
             paper_red += paper && red;
         }
     }
@@ -309,29 +331,28 @@ static int check_near()
     {
         if(g.c[e] < TONE_GRAPH_STRIP || tone_graph_owner(g, g.l[e], g.c[e]) != e) continue;
         tone_near_mix m;
-        tone_near_pick(near_graph{g}, g.l[e], g.c[e], &m);
+        tone_near_pick(near_graph{g}, s_near_ease, g.l[e], g.c[e], &m);
         for(int r = 0; r < 256; r++) on_bad += tone_near_choose(m, r) != e;
         own++;
     }
+    tones_set_near_ease(ease[0], ease[1], ease[2], ease[3]);
     std::sort(spread.begin(), spread.end());
     const double q    = 1.0 / TONE_GRAPH_ONE;
     const int    bad  = far + mean_bad + tint + on_bad;
     auto         pct  = [&](int k) { return 100.0 * k / n; };
-    printf("nearest mix: %d coloured targets: %.1f%% on the owner, %.1f%% the owner alone with no tone toward the "
-           "error, %.1f%% two tones near the line, %.1f%% two tones with no third tone, %.1f%% three tones inside, "
-           "%.1f%% three tones at the triangle's edge\n",
-           n, pct(how[TONE_NEAR_ON]), pct(how[TONE_NEAR_NO_B]), pct(how[TONE_NEAR_LINE]), pct(how[TONE_NEAR_NO_C]),
-           pct(how[TONE_NEAR_IN]), pct(how[TONE_NEAR_EDGE_OF]));
+    printf("nearest mix: %d coloured targets: %.1f%% in a triangle, %.1f%% outside the triangles on the nearest point "
+           "of the rim\n",
+           n, pct(how[TONE_NEAR_IN]), pct(how[TONE_NEAR_RIM]));
     if(!spread.empty())
         printf("nearest mix: spread of a mix in the plane, median %.4f, 95th percentile %.4f, largest %.4f: %d tones",
                spread[spread.size() / 2] * q, spread[spread.size() * 95 / 100] * q, sp_max * q, sp_n);
     for(int i = 0; i < sp_n; i++)
         printf(" %d %s (L %.3f C %.3f)", sp_v[i], k_tonemap[sp_v[i]].pattern, g.l[sp_v[i]] * q, g.c[sp_v[i]] * q / 2);
-    printf("\nnearest mix: largest distance from target to the point reached %.4f, sRGB %d %d %d, target L %.4f C "
-           "%.4f\n",
+    printf("\nnearest mix: largest distance from the target to the point reached %.4f, sRGB "
+           "%d %d %d, target L %.4f C %.4f\n",
            err_max * q, err_px[0], err_px[1], err_px[2], err_t[0] * q, err_t[1] * q / 2);
-    printf("nearest mix: mixes with paper and a tone of chroma 0.05 or more %d. Checks: off the owner and its "
-           "neighbours %d, means off the point reached %d (worst %.2f of the bound), neutral targets on r or R %d, "
+    printf("nearest mix: mixes with paper and a tone of chroma 0.05 or more %d. Checks: picks off the mix or mixes of "
+           "tones that are not neighbours %d, means off the point reached %d (worst %.2f of the bound), neutral targets on r or R %d, "
            "tones on their own point off at a rank %d of %d tones: %s\n",
            paper_red, far, mean_bad, worst, tint, on_bad, own, bad ? "FAIL" : "PASS");
     return bad;

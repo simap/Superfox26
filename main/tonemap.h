@@ -15,7 +15,7 @@
 
 #define TONEMAP_COMPRESS 0.75f
 
-#define TONEMAP_GAMMA 1.0f
+#define TONEMAP_GAMMA 1.4f
 
 #define TONEMAP_CHROMA_WEIGHT 2.0f
 

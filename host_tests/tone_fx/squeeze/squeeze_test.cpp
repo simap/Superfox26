@@ -2,8 +2,9 @@
 // ../model/tone_fx_squeeze_model.cpp) against the float squeeze of main/tonemap_squeeze.h followed by
 // the floor on L at the black entry, as make_target() in main/tones_float_ref.inc runs it.
 //
-// Sets, each sRGB through the float Oklab conversion below (a copy of the one in
-// main/tones_float_ref.inc):
+// The set every L puts each q15 L from 0 to 1, with a = b = 0, through both forms and checks L and
+// that no chroma appears. The other sets, each sRGB through the float Oklab conversion below (a copy
+// of the one in main/tones_float_ref.inc):
 //   gray    all 256 grays. Co, Ao and Bo must be exactly 0. Lo of white and of black must be the
 //           input L in q15 held at the black entry's L: the two ends do not move.
 //   edge    the image edge, (v, 0, 0) then (255, v, v), 512 colours
@@ -154,6 +155,37 @@ bool report(const char* name, const set_stats& st, size_t count)
     return ok;
 }
 
+// Every q15 L from 0 to 1 with a = b = 0, against the float squeeze of the same L. The sRGB sets
+// reach no L between 0 and that of their darkest colour, about 0.03, where the tone curve scales its
+// input most. Returns false when an L error is above LIMIT or a colour has chroma.
+bool every_l()
+{
+    const int        n = Q15_ONE + 1;
+    std::vector<q15> buf(7 * static_cast<size_t>(n) + 8);
+    q15*             base = reinterpret_cast<q15*>((reinterpret_cast<uintptr_t>(buf.data()) + 15) & ~uintptr_t(15));
+    q15 *            L = base, *A = L + n, *B = A + n, *Lo = B + n, *Ao = Lo + n, *Bo = Ao + n, *Co = Bo + n;
+    for(int i = 0; i < n; i++) L[i] = static_cast<q15>(i), A[i] = B[i] = 0;
+    tone_fx_squeeze(L, A, B, n, Lo, Ao, Bo, Co);
+    stat st;
+    int  chroma = 0;
+    for(int i = 0; i < n; i++)
+    {
+        float lab[3] = {q15_to(L[i]), 0.0f, 0.0f};
+        tonemap_squeeze(lab);
+        lab[0] = std::max(lab[0], s_black_l);
+        st.add(fabsf(q15_to(Lo[i]) - lab[0]), static_cast<uint32_t>(i), lab[0], 0.0f);
+        chroma += Co[i] != 0 || Ao[i] != 0 || Bo[i] != 0;
+    }
+    printf("every q15 L, a = b = 0, %d colours\n", n);
+    printf("  L  max %.6f mean %.6f p99 <%.5f  worst at input L %.5f, ref L %.4f\n", static_cast<double>(st.max),
+           st.sum / static_cast<double>(st.n), static_cast<double>(st.pct(0.99)),
+           static_cast<double>(q15_to(static_cast<q15>(st.worst_rgb))), static_cast<double>(st.worst_l));
+    printf("  %d of them with Co, Ao or Bo not 0\n", chroma);
+    const bool ok = st.max <= LIMIT && chroma == 0;
+    if(!ok) printf("  FAIL: limit %.4f\n", LIMIT);
+    return ok;
+}
+
 // Same in place as out of place, on the random set.
 int in_place_diff(const std::vector<uint32_t>& rgb)
 {
@@ -190,8 +222,10 @@ int main()
         if(strcmp(k_tonemap[e].pattern, TONEMAP_BLACK_PATTERN) == 0) s_black_l = k_tonemap[e].L;
     printf("edge fits against the float tables, largest miss over every q15 L: image %.6f panel %.6f\n",
            static_cast<double>(tone_tables::squeeze_fit_img), static_cast<double>(tone_tables::squeeze_fit_pan));
+    printf("tone curve at gamma %g, largest miss against the power over every q15 L: %.6f\n",
+           static_cast<double>(TONEMAP_GAMMA), static_cast<double>(tone_tables::squeeze_fit_curve));
 
-    bool ok = true;
+    bool ok = every_l();
     {
         std::vector<uint32_t> rgb;
         for(uint32_t v = 0; v < 256; v++) rgb.push_back(v << 16 | v << 8 | v);

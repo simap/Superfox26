@@ -1,7 +1,6 @@
   { 1.0000f, +0.0000f, +0.0000f, TONEMAP_PAPER_PATTERN },   // paper
-  { 0.9945f, +0.0000f, +0.0000f, "M3i2p9|"          },   // sRGB 253 253 253
   { 0.9755f, +0.0000f, +0.0000f, "M3i2p5|i2p2"      },   // sRGB 247 247 247
-  { 0.9675f, +0.0110f, +0.0000f, "M3i2p5|rRprRprRp" },   // sRGB 251 241 244
+  { 0.9750f, +0.0110f, +0.0000f, "M3i2p5|rRprRprRp" },   // sRGB 254 244 246. Read L 0.9675, set 0.0075 lighter, within reading noise, so it neighbours paper
   { 0.9480f, +0.0150f, +0.0015f, "M3i2p5|ir2R2p"    },   // sRGB 247 234 236
   { 0.9470f, +0.0000f, +0.0000f, "M4i2p5|i3p2"      },   // sRGB 237 237 237
   { 0.9425f, +0.0220f, +0.0020f, "M3i2p5|r3R3p"     },   // sRGB 250 230 234

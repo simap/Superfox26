@@ -12,7 +12,7 @@ CXXFLAGS := -std=gnu++17 -O2 -Wall -Wextra -fno-exceptions -fno-rtti \
             -I$(TONES)/stub -I$(TONES) -I$(ROOT)/main -I$(MODEL) -I$(ROOT)/components/epd97
 
 DEPS := tone_graph.cpp $(ROOT)/main/tone_graph.h $(ROOT)/main/tone_photo.h $(ROOT)/main/tone_tables.h $(ROOT)/main/tone_tables.inc \
-        $(ROOT)/main/tonemap_entries.inc
+        $(ROOT)/main/tonemap_entries.inc $(ROOT)/main/tones.h
 
 # lodepng.c builds as C++ here, so its names link with tone_graph.cpp without a wrapper.
 $(OUT)/tone_graph: $(DEPS) $(TONES)/lodepng.c

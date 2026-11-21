@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <string>
@@ -75,7 +76,7 @@ void cmd_help()
            "OK   url move FROM TO | url del N | url clear\n"
            "OK   next | prev | load N\n"
            "OK   show lowbatt | show welcome\n"
-           "OK   dither [diffuse | triangle | nearest]\n");
+           "OK   dither [diffuse | triangle | nearest] | dither solid T W | dither line T W\n");
 }
 
 // The names of the photo modes of tones.h, in their order.
@@ -91,14 +92,34 @@ void cmd_dither(const std::vector<std::string>& a)
                 printf("OK dither=%s from the next page drawn. load N draws page N again\n", DITHER_NAMES[m]);
                 return;
             }
+    int st, sw, lt, lw;
+    tones_near_ease(&st, &sw, &lt, &lw);
+    if(a.size() == 4 && (a[1] == "solid" || a[1] == "line"))
+    {
+        char*      e1 = nullptr;
+        char*      e2 = nullptr;
+        const long t  = strtol(a[2].c_str(), &e1, 10), w = strtol(a[3].c_str(), &e2, 10);
+        if(*e1 == '\0' && *e2 == '\0' && t >= 0 && t <= 1024 && w >= 0 && w <= 1024)
+        {
+            if(a[1] == "solid") st = static_cast<int>(t), sw = static_cast<int>(w);
+            else lt = static_cast<int>(t), lw = static_cast<int>(w);
+            tones_set_near_ease(st, sw, lt, lw);
+            printf("OK dither solid=%d %d line=%d %d from the next page drawn, until power off or deep sleep\n", st, sw,
+                   lt, lw);
+            return;
+        }
+    }
     if(a.size() > 1)
     {
-        printf("ERR dither diffuse | dither triangle | dither nearest\n");
+        printf("ERR dither diffuse | dither triangle | dither nearest | dither solid T W | dither line T W (0 to 1024 "
+               "each)\n");
         return;
     }
-    printf("OK dither=%s. Photo pixels: diffuse takes error diffusion, triangle the mix that keeps the mean "
-           "colour, nearest the mix of the nearest tones\n",
-           DITHER_NAMES[tones_photo_mode()]);
+    printf("OK dither=%s solid=%d %d line=%d %d. Photo pixels: diffuse takes error diffusion, triangle the mix that "
+           "keeps the mean colour, nearest the mix of the nearest tones. In nearest, solid T W: a target within T of "
+           "its main tone takes that tone alone, linear again at T + W. line T W: a minor tone within T of the "
+           "opposite edge takes no dots, linear again at T + W. In 1/4096 of L, 0 0 is off\n",
+           DITHER_NAMES[tones_photo_mode()], st, sw, lt, lw);
 }
 
 void cmd_status()

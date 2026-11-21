@@ -112,133 +112,364 @@ inline unsigned tone_photo_pair(unsigned lo, unsigned hi, int ll, int lh, int li
 
 // The nearest mix of a coloured photo pixel (TONE_PHOTO_NEAREST of tones.h), in the plane of L and
 // 2C of tone_graph.h. The graph G of that plane answers (tones.cpp maps these to tone_graph.h):
+//   G::top(l)             the highest c that a triangle of the graph reaches at l, at most 2 low, so
+//                         a point more than 2 above it lies in no triangle
 //   G::owner(l, c)        the entry that owns the point (l, c)
-//   G::toward(a, dl, dc)  the neighbour of a in the direction (dl, dc), or -1
+//   G::toward(a, dl, dc)  the neighbour of a at the least angle from (dl, dc), under 90 degrees, or -1
 //   G::third(a, b, side)  the entry that forms a triangle with a and b on the left of a to b for side
 //                         above 0, on the right for side below 0, or -1
+//   G::focal(l, c, t, w)  the focal rule for a point above the top: the point where the segment from
+//                         it to the focal point crosses the top, on the pair t[0] t[1] with the parts
+//                         w[0] and w[1], t[2] t[1], w[2] 0
+//   G::rim(l, c, t, w)    the closest rule, the same with the point nearest it of the union of the
+//                         triangles and the pairs in no triangle, t[2] the third corner of its triangle
+//                         or t[1]
+//   G::unit(a, b, ul, uc) the vector from a to its neighbour b at the length 2^14, false for none
 //   G::l(e), G::c(e)      the point of entry e
-// So a mix holds only the owner, its neighbours and the entries of their triangles. A target takes:
-// 1. A, the owner of T, the target.
-// 2. When T lies more than TONE_NEAR_ONE_Q from A: B, the entry toward T - A from A. The mix of A
-//    and B reaches P, the point of the segment A B nearest T.
-// 3. When T lies more than TONE_NEAR_TWO_Q from P: C, the third entry of A and B on the side of
-//    A B that T is on. The mix of A, B and C reaches the point of the triangle nearest T, which is
-//    T when the triangle holds it.
-// Without B the target takes A alone, and without C it takes the mix of A and B. The weights are the
-// position of that point among the entries in the plane.
-static const int TONE_NEAR_ONE_Q = 8;
-static const int TONE_NEAR_TWO_Q = 8;
+// A target T at (l, c) keeps its l and c and takes:
+// 1. When T lies at most 2 above top(l): A, the owner of T, B, the neighbour of A toward T, and C,
+//    the third entry of A and B on the side of A B that T is on, or on the other side when that side
+//    has none. When the point of triangle A B C nearest T lies inside an edge and T beyond it, the
+//    triangle across the edge takes the place of A B C, up to TONE_NEAR_STEPS times. When the
+//    triangle holds T, the weights are T's position in it. A target on its owner takes the owner.
+// 2. Else, or when no triangle on the way holds T, the focal rule: the point where the segment from
+//    T to the focal point of tone_graph.h crosses the top, as the parts of the two tones of that
+//    edge. Each point of the top takes the targets of one direction, so the mix moves with the
+//    target without a step, and a target on the top takes itself, the mix of step 1.
+// 3. The ease of tone_near_ease.
+// Every two entries of a mix with weight are neighbours, and a target that a triangle holds is met
+// to the rounding of the weights before the ease.
+static const int TONE_NEAR_STEPS = 3;
+// The weights of a mix sum to below 2^TONE_NEAR_BITS, and to 2^14 or more but for a mix of one.
+static const int TONE_NEAR_BITS = 15;
 
-// How tone_near_pick() ended, for the host checks.
+// How tone_near_pick() ended.
 enum tone_near_how : uint8_t
 {
-    TONE_NEAR_ON,
-    TONE_NEAR_NO_B,
-    TONE_NEAR_LINE,
-    TONE_NEAR_NO_C,
-    TONE_NEAR_IN,
-    TONE_NEAR_EDGE_OF,
+    TONE_NEAR_IN,  // a triangle holds T, or T lies on its owner
+    TONE_NEAR_RIM, // T lies outside the triangles, and the mix is a point of the top or the rim
 };
 
-// The entries of a mix, darkest first, and their weights. Entries past n have weight 0.
+// The entries of a mix, darkest first, their weights and the steps across edges. The entries are
+// the corners of a triangle, but for a pair in no triangle and a target on its owner, where an entry
+// of weight 0 repeats another.
 struct tone_near_mix
 {
-    uint8_t       n;
-    tone_near_how how;
     uint8_t       v[3];
-    int64_t       w[3];
+    tone_near_how how;
+    uint8_t       steps;
+    int16_t       w[3];
 };
 
-
-// The weights of the point of triangle a b c nearest p, all as offsets from a, into w. Exact: the
-// cases of the regions of a triangle's vertices, edges and inside. False for a flat triangle.
-inline bool tone_near_triangle(int64_t bl, int64_t bc, int64_t cl, int64_t cc, int64_t pl, int64_t pc, int64_t w[3])
+// A step of the ease: smoothstep((e - t) / w) of a distance e in q12 units, 0 at e <= t and 1 at
+// e >= t + w. t 0 and w 0 turn it off, w 0 alone makes a hard step at t. r is 2^15 / w, rounded
+// down, at most 32767, so the factor is a cubic in q15.
+struct tone_near_step
 {
-    const int64_t d1 = bl * pl + bc * pc, d2 = cl * pl + cc * pc;
-    if(d1 <= 0 && d2 <= 0) return w[0] = 1, w[1] = w[2] = 0, true;
-    const int64_t d3 = d1 - (bl * bl + bc * bc), d4 = d2 - (cl * bl + cc * bc);
-    if(d3 >= 0 && d4 <= d3) return w[1] = 1, w[0] = w[2] = 0, true;
-    const int64_t vc = d1 * d4 - d3 * d2;
-    if(vc <= 0 && d1 >= 0 && d3 <= 0) return w[0] = -d3, w[1] = d1, w[2] = 0, true;
-    const int64_t d5 = d1 - (bl * cl + bc * cc), d6 = d2 - (cl * cl + cc * cc);
-    if(d6 >= 0 && d5 <= d6) return w[2] = 1, w[0] = w[1] = 0, true;
-    const int64_t vb = d5 * d2 - d1 * d6;
-    if(vb <= 0 && d2 >= 0 && d6 <= 0) return w[0] = -d6, w[1] = 0, w[2] = d2, true;
-    const int64_t va = d3 * d6 - d5 * d4;
-    if(va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) return w[0] = 0, w[1] = d5 - d6, w[2] = d4 - d3, true;
-    w[0] = va, w[1] = vb, w[2] = vc;
-    return va + vb + vc > 0;
+    int t = 0, w = 0, r = 0;
+};
+
+inline tone_near_step tone_near_step_of(int t, int w)
+{
+    tone_near_step z;
+    z.t = t < 0 ? 0 : t, z.w = w < 0 ? 0 : w;
+    z.r = z.w > 0 ? (32768 / z.w > 32767 ? 32767 : 32768 / z.w) : 0;
+    return z;
 }
 
-template <class G> void tone_near_sort(const G& g, tone_near_mix* m)
+inline bool tone_near_step_on(const tone_near_step& z)
 {
-    for(int i = 1; i < m->n; i++)
+    return z.t > 0 || z.w > 0;
+}
+
+// The factor at the distance e, q15 with 32768 for 1: 3 x^2 - 2 x^3 as x2 + 2 (x2 - x3), each term
+// below 2^15.
+inline int32_t tone_near_step_at(const tone_near_step& z, int e)
+{
+    const int d = e - z.t;
+    if(d <= 0) return 0;
+    if(d >= z.w) return 32768;
+    const int32_t x = d * z.r, x2 = (x * x) >> 15, x3 = (x2 * x) >> 15;
+    return x2 + 2 * (x2 - x3);
+}
+
+// The ease of the minor tones of a mix, two steps, each a blend w = lerp(w_near, w, step(distance)):
+//   line   for a mix in a triangle, the edge nearest T by the distance e to its nearest point, and
+//          w_near the two parts of that point. So a target within t of an edge takes the two tones
+//          of that edge alone, and the mix point moves by at most e. At most one corner drops. It
+//          draws a band of another texture along every edge, so it is off by default.
+//   solid  d, the distance from the corner of the largest weight after the line step to the point
+//          the mix reaches, T in a triangle and the point of the top or rim outside, and w_near that
+//          corner alone. So a target within t of a tone takes that tone alone, in a disc
+//          around each tone point, and the mix point moves by at most d. Nothing changes along the
+//          edges.
+// Both steps off give the linear weights exactly, and the mix point moves by at most the larger
+// reach t + w of the two. closest, for comparison, makes a target outside the triangles take the
+// closest rule, the point of the rim nearest it, in place of the focal rule.
+struct tone_near_ease
+{
+    tone_near_step solid, line;
+    bool           closest = false;
+};
+
+inline tone_near_ease tone_near_ease_of(int solid_t, int solid_w, int line_t, int line_w)
+{
+    tone_near_ease z;
+    z.solid = tone_near_step_of(solid_t, solid_w), z.line = tone_near_step_of(line_t, line_w);
+    return z;
+}
+
+// The integer square root of v, rounded down.
+inline uint32_t tone_near_isqrt(uint32_t v)
+{
+    uint32_t r = 0;
+    for(uint32_t b = 1u << 30; b != 0; b >>= 2)
+        if(v >= r + b)
+        {
+            v -= r + b;
+            r = (r >> 1) + b;
+        }
+        else
+            r >>= 1;
+    return r;
+}
+
+// The point of triangle t nearest (l, c) as weights of its corners, into w. Returns -1 when the
+// triangle holds (l, c), i when the point lies inside the edge opposite corner i and (l, c) beyond
+// that edge, or 3 when the point is a corner and (l, c) lies outside. Inside, w[i] is twice the area
+// of (l, c) and the edge opposite corner i. On an edge the weights are its two parts. Every product
+// stays below 2^26 while the points lie in the plane, l from 0 to 4096 and c below 2048.
+template <class G> int tone_near_area(const G& g, const uint8_t t[3], int l, int c, int32_t w[3])
+{
+    int32_t pl[3], pc[3];
+    for(int i = 0; i < 3; i++) pl[i] = g.l(t[i]) - l, pc[i] = g.c(t[i]) - c;
+    for(int i = 0; i < 3; i++)
+    {
+        const int j = i == 2 ? 0 : i + 1, k = i == 0 ? 2 : i - 1;
+        w[i]        = pl[j] * pc[k] - pc[j] * pl[k];
+    }
+    if(w[0] + w[1] + w[2] < 0)
+        for(int i = 0; i < 3; i++) w[i] = -w[i];
+    if(w[0] >= 0 && w[1] >= 0 && w[2] >= 0) return -1;
+    // Outside. The point lies inside edge j k when (l, c) projects into the edge from beyond it.
+    for(int i = 0; i < 3; i++)
+    {
+        if(w[i] >= 0) continue;
+        const int     j = i == 2 ? 0 : i + 1, k = i == 0 ? 2 : i - 1;
+        const int32_t el = pl[k] - pl[j], ec = pc[k] - pc[j];
+        const int32_t s = -(pl[j] * el + pc[j] * ec), d = el * el + ec * ec;
+        if(s > 0 && s < d)
+        {
+            w[i] = 0, w[j] = d - s, w[k] = s;
+            return i;
+        }
+    }
+    int     n  = 0;
+    int32_t nd = INT32_MAX;
+    for(int i = 0; i < 3; i++)
+    {
+        const int32_t d = pl[i] * pl[i] + pc[i] * pc[i];
+        if(d < nd) nd = d, n = i;
+    }
+    w[0] = w[1] = w[2] = 0;
+    w[n] = 1;
+    return 3;
+}
+
+// The entries t and their weights w, at least 0, of T at (l, c) into m: the weights to below
+// 2^TONE_NEAR_BITS, all shifted by one amount, so each keeps 14 bits or more of the sum, then eased
+// by z (how tells a triangle from a pair t[0] t[1]), and the entries darkest first, by l, then by
+// entry. Each product stays below 2^31. The solid step reads the distance squared, below 2^26, and
+// takes its root only within the reach t + w of the step.
+template <class G>
+void tone_near_put(const G& g, const tone_near_ease& z, const uint8_t t[3], const int32_t w[3], tone_near_how how, int l,
+                   int c, tone_near_mix* m)
+{
+    const uint32_t sum = static_cast<uint32_t>(w[0]) + static_cast<uint32_t>(w[1]) + static_cast<uint32_t>(w[2]);
+    const int      sh  = sum >> TONE_NEAR_BITS ? 32 - __builtin_clz(sum) - TONE_NEAR_BITS : 0;
+    int32_t        n[3];
+    for(int i = 0; i < 3; i++) n[i] = w[i] >> sh;
+    if(tone_near_step_on(z.line) && how == TONE_NEAR_IN && t[0] != t[1] && t[1] != t[2] && t[0] != t[2])
+    {
+        // The edge nearest T, by the distance to its nearest point, squared in quarter steps as in
+        // tone_graph_rim(), each edge read from its lower entry and a tie to the edge whose far corner
+        // is the lower entry, so that every order of the corners gives the same edge. x is the far
+        // corner, j and k the ends, a and b the parts of the nearest point.
+        int      x = -1, xj = 0, xk = 0;
+        int32_t  xa = 0, xb = 0;
+        uint32_t best = UINT32_MAX;
+        for(int i = 0; i < 3; i++)
+        {
+            int j = i == 2 ? 0 : i + 1, k = i == 0 ? 2 : i - 1;
+            if(t[k] < t[j])
+            {
+                const int s = j;
+                j = k, k = s;
+            }
+            int ul, uc;
+            if(!g.unit(t[j], t[k], &ul, &uc)) continue;
+            const int32_t el = l - g.l(t[j]), ec = c - g.c(t[j]), vl = g.l(t[k]) - g.l(t[j]), vc = g.c(t[k]) - g.c(t[j]);
+            const int32_t dot = el * vl + ec * vc, n2 = vl * vl + vc * vc;
+            uint32_t      d2;
+            int32_t       a = n2 - dot, b = dot;
+            if(dot <= 0) d2 = static_cast<uint32_t>(el * el + ec * ec) << 4, a = 1, b = 0;
+            else if(dot >= n2)
+            {
+                const int32_t fl = l - g.l(t[k]), fc = c - g.c(t[k]);
+                d2 = static_cast<uint32_t>(fl * fl + fc * fc) << 4, a = 0, b = 1;
+            }
+            else
+            {
+                const int32_t  cr = ul * ec - uc * el;
+                const uint32_t q  = static_cast<uint32_t>(cr < 0 ? -cr : cr) >> 12;
+                d2                = q * q;
+            }
+            if(d2 < best || (d2 == best && t[i] < t[x])) best = d2, x = i, xj = j, xk = k, xa = a, xb = b;
+        }
+        const int32_t reach = z.line.t + z.line.w;
+        if(x >= 0 && best < static_cast<uint32_t>(reach * reach) << 4)
+        {
+            // The parts of the edge to the sum of n, with both cut to below 2^16 first so the
+            // products fit 32 bits, then w = lerp(edge, linear, step(e)).
+            const int32_t f  = tone_near_step_at(z.line, static_cast<int>(tone_near_isqrt(best) >> 2));
+            const int32_t s  = n[0] + n[1] + n[2];
+            const int     cut = 32 - __builtin_clz(static_cast<uint32_t>(xa + xb)) > 16 ? 32 - __builtin_clz(static_cast<uint32_t>(xa + xb)) - 16 : 0;
+            const int32_t pa = xa >> cut, pb = xb >> cut, den = pa + pb > 0 ? pa + pb : 1;
+            int32_t       e[3];
+            e[x]  = 0;
+            e[xj] = s * pa / den;
+            e[xk] = s - e[xj];
+            for(int i = 0; i < 3; i++) n[i] = ((n[i] * f) >> 15) + ((e[i] * (32768 - f)) >> 15);
+        }
+    }
+    if(tone_near_step_on(z.solid))
+    {
+        // The corner of the largest weight, the lower entry on a tie, and the distance from it of the
+        // point the mix reaches: T in a triangle, else the point of the weights, each product below
+        // 2^28.
+        int b = 0;
+        for(int i = 1; i < 3; i++)
+            if(n[i] > n[b] || (n[i] == n[b] && t[i] < t[b])) b = i;
+        int32_t pl = l, pc = c;
+        if(how == TONE_NEAR_RIM)
+        {
+            const int32_t s = n[0] + n[1] + n[2] > 0 ? n[0] + n[1] + n[2] : 1;
+            pl = pc = 0;
+            for(int i = 0; i < 3; i++) pl += n[i] * g.l(t[i]), pc += n[i] * g.c(t[i]);
+            pl = (pl + s / 2) / s, pc = (pc + s / 2) / s;
+        }
+        const int32_t  dl = pl - g.l(t[b]), dc = pc - g.c(t[b]), reach = z.solid.t + z.solid.w;
+        const uint32_t d2 = static_cast<uint32_t>(dl * dl + dc * dc);
+        if(d2 < static_cast<uint32_t>(reach * reach))
+        {
+            const int32_t f   = tone_near_step_at(z.solid, static_cast<int>(tone_near_isqrt(d2)));
+            int32_t       all = 0, rest = 0;
+            for(int i = 0; i < 3; i++)
+            {
+                all += n[i];
+                if(i == b) continue;
+                n[i] = (n[i] * f) >> 15;
+                rest += n[i];
+            }
+            n[b] = all - rest;
+        }
+    }
+    for(int i = 0; i < 3; i++) m->v[i] = t[i], m->w[i] = static_cast<int16_t>(n[i]);
+    m->how = how;
+    for(int i = 1; i < 3; i++)
         for(int j = i; j > 0; j--)
         {
             const unsigned x = m->v[j - 1], y = m->v[j];
-            if(g.l(x) < g.l(y) || (g.l(x) == g.l(y) && x < y)) break;
+            if(g.l(x) < g.l(y) || (g.l(x) == g.l(y) && x <= y)) break;
             m->v[j - 1] = static_cast<uint8_t>(y), m->v[j] = static_cast<uint8_t>(x);
-            const int64_t t = m->w[j - 1];
-            m->w[j - 1] = m->w[j], m->w[j] = t;
+            const int16_t k = m->w[j - 1];
+            m->w[j - 1] = m->w[j], m->w[j] = k;
         }
 }
 
-// The mix of the target at L l and 2C c, q12. Every product stays below 2^50 while the points of
-// the plane lie within 0 to 4096.
-template <class G> void tone_near_pick(const G& g, int l, int c, tone_near_mix* m)
+// Step 1 for T at (l, c): true with the triangle t that holds T and T's weights in it, or with t the
+// owner three times and w 1 0 0 for a target on its owner. *steps counts the steps across edges.
+template <class G> bool tone_near_find(const G& g, int l, int c, uint8_t t[3], int32_t w[3], int* steps)
 {
     const unsigned a  = g.owner(l, c);
     const int32_t  al = g.l(a), ac = g.c(a);
-    const int32_t  el = l - al, ec = c - ac;
-    m->n = 1, m->how = TONE_NEAR_ON;
-    m->v[0] = m->v[1] = m->v[2] = static_cast<uint8_t>(a);
-    m->w[0] = 1, m->w[1] = m->w[2] = 0;
-    const int32_t ee = el * el + ec * ec;
-    if(ee <= TONE_NEAR_ONE_Q * TONE_NEAR_ONE_Q) return;
-
-    const int bi = g.toward(a, el, ec);
-    if(bi < 0)
+    *steps            = 0;
+    t[0] = t[1] = t[2] = static_cast<uint8_t>(a);
+    w[0] = 1, w[1] = w[2] = 0;
+    if(l == al && c == ac) return true;
+    const int bi = g.toward(a, l - al, c - ac);
+    if(bi < 0) return false;
+    const unsigned b  = static_cast<unsigned>(bi);
+    const int32_t  bl = g.l(b) - al, bc = g.c(b) - ac;
+    const int32_t  side = bl * (c - ac) - bc * (l - al);
+    int            ci   = g.third(a, b, side >= 0 ? 1 : -1);
+    if(ci < 0) ci = g.third(a, b, side >= 0 ? -1 : 1);
+    if(ci < 0) return false;
+    t[1] = static_cast<uint8_t>(b), t[2] = static_cast<uint8_t>(ci);
+    for(;;)
     {
-        m->how = TONE_NEAR_NO_B;
+        const int x = tone_near_area(g, t, l, c, w);
+        if(x < 0) return true;
+        if(x > 2 || *steps == TONE_NEAR_STEPS) return false;
+        // Across the edge p q: the triangle on the side of (l, c), which is not that of t[x].
+        const unsigned p = t[x == 2 ? 0 : x + 1], q = t[x == 0 ? 2 : x - 1];
+        const int32_t  s = (g.l(q) - g.l(p)) * (c - g.c(p)) - (g.c(q) - g.c(p)) * (l - g.l(p));
+        const int      n = g.third(p, q, s > 0 ? 1 : -1);
+        if(n < 0) return false;
+        t[x] = static_cast<uint8_t>(n);
+        ++*steps;
+    }
+}
+
+// The mix of the target at L l and 2C c, q12, with the ease z.
+template <class G> void tone_near_pick(const G& g, const tone_near_ease& z, int l, int c, tone_near_mix* m)
+{
+    uint8_t t[3];
+    int32_t w[3];
+    int     steps = 0;
+    if(c <= g.top(l) + 2 && tone_near_find(g, l, c, t, w, &steps))
+        tone_near_put(g, z, t, w, TONE_NEAR_IN, l, c, m);
+    else
+    {
+        if(z.closest) g.rim(l, c, t, w);
+        else g.focal(l, c, t, w);
+        tone_near_put(g, z, t, w, TONE_NEAR_RIM, l, c, m);
+    }
+    m->steps = static_cast<uint8_t>(steps);
+}
+
+// The last triangle that held a target, for tone_near_pick_from().
+struct tone_near_last
+{
+    uint8_t t[3];
+    bool    ok = false;
+};
+
+// tone_near_pick() that first tries the triangle of last, and keeps the triangle that holds T in it.
+// Adjacent pixels of a photo mostly fall in one triangle, so most targets skip step 1. A target on an
+// edge or corner of that triangle takes tone_near_pick(), since a second triangle holds it too and
+// the ease of the two differs there. So the mix is always that of tone_near_pick().
+template <class G>
+void tone_near_pick_from(const G& g, const tone_near_ease& z, tone_near_last* last, int l, int c, tone_near_mix* m)
+{
+    int32_t w[3];
+    if(last->ok && tone_near_area(g, last->t, l, c, w) < 0 && w[0] > 0 && w[1] > 0 && w[2] > 0)
+    {
+        tone_near_put(g, z, last->t, w, TONE_NEAR_IN, l, c, m);
+        m->steps = 0;
         return;
     }
-    const unsigned b   = static_cast<unsigned>(bi);
-    const int32_t  bl  = g.l(b) - al, bc = g.c(b) - ac;
-    const int64_t  d11 = bl * bl + bc * bc;
-    const int64_t  eb  = bl * el + bc * ec;
-    const int64_t  t   = eb < 0 ? 0 : eb < d11 ? eb : d11;
-    m->n = 2, m->how = TONE_NEAR_LINE;
-    m->v[1] = m->v[2] = static_cast<uint8_t>(b);
-    m->w[0] = d11 - t, m->w[1] = t;
-    // The square of T - P, times d11.
-    const int32_t fl = l - g.l(b), fc = c - g.c(b);
-    const int64_t r2 = t == 0     ? static_cast<int64_t>(ee) * d11
-                       : t == d11 ? static_cast<int64_t>(fl * fl + fc * fc) * d11
-                                  : static_cast<int64_t>(ee) * d11 - t * t;
-    const int64_t side = static_cast<int64_t>(bl) * ec - static_cast<int64_t>(bc) * el;
-    if(r2 > static_cast<int64_t>(TONE_NEAR_TWO_Q * TONE_NEAR_TWO_Q) * d11)
-    {
-        m->how       = TONE_NEAR_NO_C;
-        const int ci = side == 0 ? -1 : g.third(a, b, side > 0 ? 1 : -1);
-        int64_t      w[3];
-        if(ci >= 0 && tone_near_triangle(bl, bc, g.l(static_cast<unsigned>(ci)) - al,
-                                         g.c(static_cast<unsigned>(ci)) - ac, el, ec, w))
-        {
-            const bool in = w[0] > 0 && w[1] > 0 && w[2] > 0;
-            m->n = 3, m->how = in ? TONE_NEAR_IN : TONE_NEAR_EDGE_OF;
-            m->v[2] = static_cast<uint8_t>(ci);
-            m->w[0] = w[0], m->w[1] = w[1], m->w[2] = w[2];
-        }
-    }
-    tone_near_sort(g, m);
+    tone_near_pick(g, z, l, c, m);
+    last->ok = m->how == TONE_NEAR_IN && m->v[0] != m->v[1] && m->v[1] != m->v[2] && m->v[0] != m->v[2];
+    for(int i = 0; i < 3; i++) last->t[i] = m->v[i];
 }
 
 // Of the mix m, the entry at threshold rank r, 0 to 255: the darkest for the lowest ranks. Exact,
 // so the share of each entry over the 256 ranks is its weight to within 1/512.
 inline unsigned tone_near_choose(const tone_near_mix& m, int r)
 {
-    const int64_t s  = m.w[0] + m.w[1] + m.w[2];
-    const int64_t th = (2 * r + 1) * s;
+    const int32_t s  = m.w[0] + m.w[1] + m.w[2];
+    const int32_t th = (2 * r + 1) * s;
     if(th < m.w[0] * 512) return m.v[0];
     if(th < (m.w[0] + m.w[1]) * 512) return m.v[1];
     return m.v[2];

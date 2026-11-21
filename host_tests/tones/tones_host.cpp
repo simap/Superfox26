@@ -543,6 +543,8 @@ test_case text_block()
 struct toy_graph
 {
     int      pl[3] = {600, 3600, 1400}, pc[3] = {100, 300, 1500};
+    // No top: every target keeps its c.
+    int      top(int) const { return 4096; }
     int      l(unsigned e) const { return pl[e]; }
     int      c(unsigned e) const { return pc[e]; }
     int64_t  d2(unsigned e, int x, int y) const
@@ -576,6 +578,30 @@ struct toy_graph
                           static_cast<int64_t>(pc[b] - pc[a]) * (pl[t] - pl[a]);
         return (o > 0) == (side > 0) ? static_cast<int>(t) : -1;
     }
+    bool unit(unsigned a, unsigned b, int* ul, int* uc) const
+    {
+        const double vl = pl[b] - pl[a], vc = pc[b] - pc[a], n = std::hypot(vl, vc);
+        *ul = static_cast<int>(std::lround(16384 * vl / n)), *uc = static_cast<int>(std::lround(16384 * vc / n));
+        return a != b;
+    }
+    // The toy has no top and no focal point: its focal rule takes the nearest point.
+    void focal(int x, int y, uint8_t t[3], int32_t w[3]) const { rim(x, y, t, w); }
+    // The point of the three edges nearest (x, y).
+    void rim(int x, int y, uint8_t t[3], int32_t w[3]) const
+    {
+        double bd = 1e30;
+        for(unsigned a = 0; a < 3; a++)
+        {
+            const unsigned b = (a + 1) % 3;
+            const int32_t  vl = pl[b] - pl[a], vc = pc[b] - pc[a], n = vl * vl + vc * vc;
+            int32_t        dot = (x - pl[a]) * vl + (y - pc[a]) * vc;
+            dot                = dot < 0 ? 0 : dot > n ? n : dot;
+            const double d     = std::hypot(pl[a] + vl * (double(dot) / n) - x, pc[a] + vc * (double(dot) / n) - y);
+            if(d < bd)
+                bd = d, t[0] = static_cast<uint8_t>(a), t[1] = static_cast<uint8_t>(b), t[2] = static_cast<uint8_t>(3 - a - b),
+                w[0] = n - dot, w[1] = dot, w[2] = 0;
+        }
+    }
 };
 
 // The distance from (x, y) to the triangle of the toy graph, 0 inside.
@@ -596,25 +622,25 @@ double toy_out(const toy_graph& g, double x, double y)
 
 // 5. The check of the nearest mix on the toy graph. A target on an entry takes that entry at every
 //    rank. For targets on a grid around the triangle, the mean of the picks over the 256 ranks
-//    lies within the rounding bound of the nearest point of the triangle when it holds the target or
-//    takes a third entry, and every pick is an entry of the mix.
+//    lies within the rounding bound of the nearest point of the triangle, and every pick is an entry
+//    of the mix.
 bool near_toy()
 {
-    const toy_graph g;
-    unsigned        on_bad = 0, mean_bad = 0, n = 0;
-    double          worst  = 0;
+    const toy_graph      g;
+    const tone_near_ease linear;
+    unsigned             on_bad = 0, mean_bad = 0, n = 0;
+    double               worst  = 0;
     for(unsigned e = 0; e < 3; e++)
     {
         tone_near_mix m;
-        tone_near_pick(g, g.l(e), g.c(e), &m);
+        tone_near_pick(g, linear, g.l(e), g.c(e), &m);
         for(int r = 0; r < 256; r++) on_bad += tone_near_choose(m, r) != e;
     }
     for(int x = 0; x <= 4096; x += 32)
         for(int y = 0; y <= 1600; y += 16)
         {
             tone_near_mix m;
-            tone_near_pick(g, x, y, &m);
-            if(m.how != TONE_NEAR_IN && m.how != TONE_NEAR_EDGE_OF && m.how != TONE_NEAR_LINE) continue;
+            tone_near_pick(g, linear, x, y, &m);
             double ml = 0, mc = 0;
             bool   own = true;
             for(int r = 0; r < 256; r++)
@@ -624,9 +650,8 @@ bool near_toy()
                 ml += g.l(e) / 256.0, mc += g.c(e) / 256.0;
             }
             // Each cut is placed to 1/512, so the mean misses the point the mix reaches by at most
-            // 1/256 of the spread, here below 13, and a mix of two stops within TONE_NEAR_TWO_Q.
-            const double reach = m.how == TONE_NEAR_LINE ? TONE_NEAR_TWO_Q : 0;
-            const double miss  = std::hypot(ml - x, mc - y) - toy_out(g, x, y) - reach;
+            // 1/256 of the spread, here below 13.
+            const double miss = std::hypot(ml - x, mc - y) - toy_out(g, x, y);
             worst              = std::max(worst, miss);
             mean_bad += !own || miss > 14;
             n++;
