@@ -130,7 +130,7 @@ after the first build, when the ESP-IDF component manager downloads those compon
 
 ### Superfox26 logo
 
-The logo PNGs in the firmware (`logo/panel_32.png`, `logo/panel_100.png`) contain the Pirata One
+The logo PNGs in the firmware (`logo/panel_32.png`, `logo/panel_200.png`) contain the Pirata One
 outlines and the Hackaday Supercon graphic described under Artwork.
 
 ## Loaded by the web installer
@@ -159,8 +159,14 @@ The X and the ring of the logo derive from the Hackaday Supercon event graphic.
 
 The head of `components/epd97/epd97.c` lists the sources of the panel driver.
 
-The badge team's driver names the OpenEPaperLink EFR32FG22 driver for this panel as its own origin.
-That repository, https://github.com/OpenEPaperLink/Tag_FW_EFR32xG22, is licensed CC BY-NC-SA 4.0. The epd.py driver names Pervasive Displays' EPD_Driver_GU_large, https://github.com/PervasiveDisplays/EPD_Driver_GU_large, as its origin. That repository is CC BY-SA 4.0.
+`components/epd97/epd97.c` and `components/epd97/epd97_config.h` are licensed CC BY-NC-SA 4.0,
+https://creativecommons.org/licenses/by-nc-sa/4.0/. They are modified from the badge team's ITC97
+driver, which is ported from the OpenEPaperLink EFR32FG22 driver,
+https://github.com/OpenEPaperLink/Tag_FW_EFR32xG22, CC BY-NC-SA 4.0.
+
+`components/epd97/epd97.c` also follows the badge's `firmware/badge/lib/epd.py`, which is ported
+from Pervasive Displays' EPD_Driver_GU_large, https://github.com/PervasiveDisplays/EPD_Driver_GU_large,
+CC BY-SA 4.0. `epd97.c` keeps the Pervasive Displays notice of `epd.py` in its head.
 
 The firmware's button and LED pins follow `firmware/badge/lib/button.py` and `led_bar.py` of the
 badge repository. Those files carry no notice.

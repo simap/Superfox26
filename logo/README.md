@@ -16,8 +16,8 @@ Any SVG renderer with antialiasing and alpha renders these PNGs, for example
 `rsvg-convert -w 32 -h 32 superfox26_panel.svg -o panel_32.png`. After a change to
 `superfox26_panel.svg`, render both panel PNGs again because the firmware embeds them.
 
-`superfox26_text.svg` loads Pirata One from Google Fonts with a CSS `@import`. Without the import
-the "26" shows in a fallback face where the font is not installed, so the import stays.
+`superfox26_text.svg` loads Pirata One from Google Fonts with a CSS `@import`. Keep the import.
+Without it the "26" shows in a fallback face where the font is not installed.
 
 ## Credits
 

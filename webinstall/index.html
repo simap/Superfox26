@@ -503,7 +503,7 @@ async function status(silent = false) {
   // ip is empty while WiFi is not connected.
   const m = text.match(/^OK wifi ssid="(.*)" connected=(\d) ip=(\S*) rssi=(-?\d+)/m);
   if (!m) return null;
-  // A build from before the app line has no date and no hash, and counts as a different build.
+  // A build without the app line has no date and no hash, and counts as a different build.
   const app = text.match(/^OK app built="([^"]*)" sha=(\w+)/m) || [];
   return {
     ssid: m[1], connected: m[2] === "1", ip: m[3], rssi: m[4],
@@ -771,7 +771,7 @@ async function install() {
   const segs = segments(fw, $("full").checked);
   const total = segs.reduce((n, s) => n + s.data.length, 0);
 
-  // A reset during a panel draw halts the badge until a power cycle (README, Cut draw).
+  // A reset during a panel draw halts the badge until a power cycle (README, Warnings).
   if (badge) await untilIdle("Waiting for the page draw to end.");
 
   say("Starting the bootloader.");

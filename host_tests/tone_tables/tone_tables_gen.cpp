@@ -5,7 +5,7 @@
 // usage: tone_tables_gen OUT
 //
 // It writes OUT only when every build and every check passes. Else it prints the reason, writes
-// nothing and exits 1. The checks are those the firmware ran at boot before the tables became data:
+// nothing and exits 1. The checks:
 // every pattern expands and passes every check of tone_pattern_expand() (the push limits and the
 // balance of tone_plan.h), the paper and black entries exist, a neutral entry has a and b of 0, the
 // kernel tables build, and an entry's linear light fits the dither's error rows.
@@ -264,7 +264,7 @@ int main(int argc, char** argv)
     static int8_t noise[NOISE_N][NOISE_N];
     build_noise(noise);
 
-    // ---- pass A: the slot WHITE, from 8 white pixels with slot 0 in use, as tones_init() ran it
+    // ---- pass A: the slot WHITE, from 8 white pixels with slot 0 in use
     slot_a  w[8];
     uint8_t px[3 * CHUNK + 16];
     memset(px, 255, sizeof(px));
@@ -278,7 +278,7 @@ int main(int argc, char** argv)
     }
     white.ent = white.kind == K_ENTRY ? white.lo : NO_ENTRY;
 
-    // ---- pass A on every gray byte, in chunks as tones_solid_gray() ran it
+    // ---- pass A on every gray byte, in chunks
     tone_gray_target gray[256];
     static_assert(256 % CHUNK % 8 == 0, "the gray runs are whole vectors");
     for(int v0 = 0; v0 < 256; v0 += CHUNK)

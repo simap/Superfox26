@@ -686,7 +686,7 @@ void run_frame_fixed(int img, uint8_t* band)
 }
 
 // The frame with every pixel a photo pixel, in photo mode mode. In TONE_PHOTO_DIFFUSE row() drops the
-// mask, so that row is the frame of run_frame_fixed() again, timed next to the other two.
+// mask, so that row is the frame of run_frame_fixed(), timed next to the other two.
 void run_frame_photo(int img, tone_photo_mode mode, uint8_t* band, const uint8_t* mask)
 {
     static const char* const form[TONE_PHOTO_MODES] = {"photo_diffuse", "photo_triangle", "photo_nearest"};

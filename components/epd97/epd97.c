@@ -1,3 +1,37 @@
+// SPDX-License-Identifier: CC-BY-NC-SA-4.0
+//
+// This file is licensed under Creative Commons Attribution-NonCommercial-
+// ShareAlike 4.0 International, https://creativecommons.org/licenses/by-nc-sa/4.0/
+// It is modified from the badge team's ITC97 driver, which is ported from the
+// OpenEPaperLink EFR32FG22 driver,
+// https://github.com/OpenEPaperLink/Tag_FW_EFR32xG22, under the same licence.
+//
+// Parts follow firmware/badge/lib/epd.py of the badge repository, which is
+// ported from Pervasive Displays' EPD_Driver_GU_large and carries this notice:
+//
+//   Copyright (c) 2012-2021 Pervasive Displays Inc. All rights reserved.
+//    Authors: Pervasive Displays Inc.
+//    Redistribution and use in source and binary forms, with or without
+//    modification, are permitted provided that the following conditions
+//    are met:
+//    1. Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//    2. Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in
+//       the documentation and/or other materials provided with the
+//       distribution.
+//    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+//    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+//    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+//    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+//    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+//    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+//    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+//    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+//    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+//    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+//    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//
 // -----------------------------------------------------------------------------
 // epd97: Pervasive Displays iTC 9.7" dual-COG panel on an ESP32-S3, ESP-IDF.
 //
@@ -141,11 +175,9 @@ static bool      s_otp_valid;
 static bool      s_driver_b;          // true = E2969JS0B1, false = E2969JS084
 static epd_panel_t s_panel = EPD_PANEL_UNKNOWN;
 
-// The OTP survives deep sleep in RTC memory. It is a fuse block on a panel that
-// is still plugged into the same board, so reading it again on every wake costs
-// a full power cycle and about three seconds for an answer that cannot have
-// changed. It is only trusted after a deep-sleep wake, so unplugging the panel
-// and power-cycling the board reads it again.
+// The OTP is kept in RTC memory across deep sleep, because a read takes a panel
+// power cycle and about 3 s. It is only trusted after a deep-sleep wake, so a
+// power cycle of the board reads it again.
 #define OTP_RTC_MAGIC 0x69544301u
 RTC_DATA_ATTR static uint32_t s_rtc_magic;
 RTC_DATA_ATTR static uint8_t  s_rtc_otp[EPD_OTP_LEN];
@@ -834,8 +866,8 @@ static int do_refresh(void)
 
   // Stock fires 0x15 about 100 ms after the last soft start write. The 084 is
   // ready by then. The B1 still holds BUSY low because its DC/DC ramp is not
-  // finished, and starting the update into a booster that is still ramping
-  // makes the panel sit still for a minute before it draws.
+  // finished. An update started into a booster that is still ramping draws
+  // about a minute late.
   delay_ms(100);
   if (!busy_idle()) {
     int ready = wait_busy(1, 10000, "pre-0x15 ready");
@@ -851,9 +883,8 @@ static int do_refresh(void)
   int waited = wait_busy(1, EPD_IDLE_WAIT_MS, "refresh done");
   if (waited < 0) return -3;
 
-  // Watch a little longer. Some panels drop BUSY again and run the waveform a
-  // second time, which looks like a refresh that sits still and then draws.
-  // A second run that does not finish fails the refresh.
+  // Some panels drop BUSY again and run the waveform a second time. A second
+  // run that does not finish fails the refresh.
   for (uint32_t i = 0; i < EPD_SECOND_PASS_MS / 10u; i++) {
     vTaskDelay(pdMS_TO_TICKS(10));
     if (!busy_idle()) {

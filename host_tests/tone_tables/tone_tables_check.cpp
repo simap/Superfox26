@@ -368,7 +368,7 @@ int main()
 {
     int bad = check_marks();
 
-    // The slot WHITE, as tones_init() built it from the kernels: 8 white pixels, slot 0 in use, the
+    // The slot WHITE from the kernels: 8 white pixels, slot 0 in use, the
     // chunk's arrays as they are before the first chunk.
     chunk&  c = s_ck;
     uint8_t white[3 * 8 + 16];
@@ -394,8 +394,7 @@ int main()
                t.B, t.C, t.lo, t.hi, t.kind, t.ent, t.white_kind);
     }
 
-    // Every gray byte in chunks, as tones_solid_gray() ran pass_a(), then the choice of
-    // tone_tables_build.h.
+    // Every gray byte in chunks through pass_a(), then the choice of tone_tables_build.h.
     tone_gray_target gray[256];
     uint8_t          px[3 * CHUNK + 16];
     for(int v0 = 0; v0 < 256; v0 += CHUNK)
