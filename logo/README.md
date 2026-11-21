@@ -24,5 +24,4 @@ Without it the "26" shows in a fallback face where the font is not installed.
 - The "26" is set in Pirata One, under the SIL Open Font License 1.1,
   https://fonts.google.com/specimen/Pirata+One. The outlined files hold glyph outlines only, not
   the font.
-- The X and the ring derive from the Hackaday Supercon event graphic. Superfox26 is not affiliated
-  with Hackaday.
+- The X and the ring derive from the Hackaday Supercon event graphic.
