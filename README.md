@@ -1,6 +1,4 @@
-# Superfox26
-
-![Superfox26](logo/superfox26.png)
+# <img src="logo/superfox26.png" alt="" width="32"> Superfox26
 
 What better way to put the Supercon X ('26) badge to use than a web browser you can hang on a wall?
 
