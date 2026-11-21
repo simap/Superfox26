@@ -143,6 +143,15 @@ outlines and the Hackaday Supercon graphic described under Artwork.
 - Upstream: https://github.com/espressif/esptool-js
 - Notice: the licence files of the esptool-js package, https://www.npmjs.com/package/esptool-js
 
+## In the repository only
+
+### LodePNG
+
+- Version: 20230410
+- Licence: zlib License
+- Upstream: https://github.com/lvandeve/lodepng
+- Notice: the copyright notice and licence at the top of `host_tests/tones/lodepng.h`
+
 ## Artwork
 
 ### Pirata One
