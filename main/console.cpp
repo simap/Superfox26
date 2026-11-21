@@ -23,6 +23,7 @@
 #include "browser.h"
 #include "config.h"
 #include "power.h"
+#include "tones.h"
 #include "wifi.h"
 
 static const char* TAG = "console";
@@ -73,7 +74,31 @@ void cmd_help()
            "OK   url add URL [OFFSET [SECONDS]] | url put N URL [OFFSET [SECONDS]] | url set N OFFSET [SECONDS]\n"
            "OK   url move FROM TO | url del N | url clear\n"
            "OK   next | prev | load N\n"
-           "OK   show lowbatt | show welcome\n");
+           "OK   show lowbatt | show welcome\n"
+           "OK   dither [diffuse | triangle | nearest]\n");
+}
+
+// The names of the photo modes of tones.h, in their order.
+const char* const DITHER_NAMES[TONE_PHOTO_MODES] = {"diffuse", "triangle", "nearest"};
+
+void cmd_dither(const std::vector<std::string>& a)
+{
+    if(a.size() == 2)
+        for(int m = 0; m < TONE_PHOTO_MODES; m++)
+            if(a[1] == DITHER_NAMES[m])
+            {
+                tones_set_photo_mode(static_cast<tone_photo_mode>(m));
+                printf("OK dither=%s from the next page drawn. load N draws page N again\n", DITHER_NAMES[m]);
+                return;
+            }
+    if(a.size() > 1)
+    {
+        printf("ERR dither diffuse | dither triangle | dither nearest\n");
+        return;
+    }
+    printf("OK dither=%s. Photo pixels: diffuse takes error diffusion, triangle the mix that keeps the mean "
+           "colour, nearest the mix of the nearest tones\n",
+           DITHER_NAMES[tones_photo_mode()]);
 }
 
 void cmd_status()
@@ -277,6 +302,7 @@ void run_line(const char* line)
     else if(c == "urls") cmd_urls();
     else if(c == "url") cmd_url(a);
     else if(c == "next" || c == "prev" || c == "load") cmd_page(a);
+    else if(c == "dither") cmd_dither(a);
     else if(c == "show")
     {
         const char* state = browser_state();

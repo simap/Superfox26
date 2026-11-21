@@ -109,3 +109,137 @@ inline unsigned tone_photo_pair(unsigned lo, unsigned hi, int ll, int lh, int li
     const int v = lin < ll ? ll : lin > lh ? lh : lin;
     return (2 * r + 1) * (lh - ll) < 512 * (lh - v) ? lo : hi;
 }
+
+// The nearest mix of a coloured photo pixel (TONE_PHOTO_NEAREST of tones.h), in the plane of L and
+// 2C of tone_graph.h. The graph G of that plane answers (tones.cpp maps these to tone_graph.h):
+//   G::owner(l, c)        the entry that owns the point (l, c)
+//   G::toward(a, dl, dc)  the neighbour of a in the direction (dl, dc), or -1
+//   G::third(a, b, side)  the entry that forms a triangle with a and b on the left of a to b for side
+//                         above 0, on the right for side below 0, or -1
+//   G::l(e), G::c(e)      the point of entry e
+// So a mix holds only the owner, its neighbours and the entries of their triangles. A target takes:
+// 1. A, the owner of T, the target.
+// 2. When T lies more than TONE_NEAR_ONE_Q from A: B, the entry toward T - A from A. The mix of A
+//    and B reaches P, the point of the segment A B nearest T.
+// 3. When T lies more than TONE_NEAR_TWO_Q from P: C, the third entry of A and B on the side of
+//    A B that T is on. The mix of A, B and C reaches the point of the triangle nearest T, which is
+//    T when the triangle holds it.
+// Without B the target takes A alone, and without C it takes the mix of A and B. The weights are the
+// position of that point among the entries in the plane.
+static const int TONE_NEAR_ONE_Q = 8;
+static const int TONE_NEAR_TWO_Q = 8;
+
+// How tone_near_pick() ended, for the host checks.
+enum tone_near_how : uint8_t
+{
+    TONE_NEAR_ON,
+    TONE_NEAR_NO_B,
+    TONE_NEAR_LINE,
+    TONE_NEAR_NO_C,
+    TONE_NEAR_IN,
+    TONE_NEAR_EDGE_OF,
+};
+
+// The entries of a mix, darkest first, and their weights. Entries past n have weight 0.
+struct tone_near_mix
+{
+    uint8_t       n;
+    tone_near_how how;
+    uint8_t       v[3];
+    int64_t       w[3];
+};
+
+
+// The weights of the point of triangle a b c nearest p, all as offsets from a, into w. Exact: the
+// cases of the regions of a triangle's vertices, edges and inside. False for a flat triangle.
+inline bool tone_near_triangle(int64_t bl, int64_t bc, int64_t cl, int64_t cc, int64_t pl, int64_t pc, int64_t w[3])
+{
+    const int64_t d1 = bl * pl + bc * pc, d2 = cl * pl + cc * pc;
+    if(d1 <= 0 && d2 <= 0) return w[0] = 1, w[1] = w[2] = 0, true;
+    const int64_t d3 = d1 - (bl * bl + bc * bc), d4 = d2 - (cl * bl + cc * bc);
+    if(d3 >= 0 && d4 <= d3) return w[1] = 1, w[0] = w[2] = 0, true;
+    const int64_t vc = d1 * d4 - d3 * d2;
+    if(vc <= 0 && d1 >= 0 && d3 <= 0) return w[0] = -d3, w[1] = d1, w[2] = 0, true;
+    const int64_t d5 = d1 - (bl * cl + bc * cc), d6 = d2 - (cl * cl + cc * cc);
+    if(d6 >= 0 && d5 <= d6) return w[2] = 1, w[0] = w[1] = 0, true;
+    const int64_t vb = d5 * d2 - d1 * d6;
+    if(vb <= 0 && d2 >= 0 && d6 <= 0) return w[0] = -d6, w[1] = 0, w[2] = d2, true;
+    const int64_t va = d3 * d6 - d5 * d4;
+    if(va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) return w[0] = 0, w[1] = d5 - d6, w[2] = d4 - d3, true;
+    w[0] = va, w[1] = vb, w[2] = vc;
+    return va + vb + vc > 0;
+}
+
+template <class G> void tone_near_sort(const G& g, tone_near_mix* m)
+{
+    for(int i = 1; i < m->n; i++)
+        for(int j = i; j > 0; j--)
+        {
+            const unsigned x = m->v[j - 1], y = m->v[j];
+            if(g.l(x) < g.l(y) || (g.l(x) == g.l(y) && x < y)) break;
+            m->v[j - 1] = static_cast<uint8_t>(y), m->v[j] = static_cast<uint8_t>(x);
+            const int64_t t = m->w[j - 1];
+            m->w[j - 1] = m->w[j], m->w[j] = t;
+        }
+}
+
+// The mix of the target at L l and 2C c, q12. Every product stays below 2^50 while the points of
+// the plane lie within 0 to 4096.
+template <class G> void tone_near_pick(const G& g, int l, int c, tone_near_mix* m)
+{
+    const unsigned a  = g.owner(l, c);
+    const int32_t  al = g.l(a), ac = g.c(a);
+    const int32_t  el = l - al, ec = c - ac;
+    m->n = 1, m->how = TONE_NEAR_ON;
+    m->v[0] = m->v[1] = m->v[2] = static_cast<uint8_t>(a);
+    m->w[0] = 1, m->w[1] = m->w[2] = 0;
+    const int32_t ee = el * el + ec * ec;
+    if(ee <= TONE_NEAR_ONE_Q * TONE_NEAR_ONE_Q) return;
+
+    const int bi = g.toward(a, el, ec);
+    if(bi < 0)
+    {
+        m->how = TONE_NEAR_NO_B;
+        return;
+    }
+    const unsigned b   = static_cast<unsigned>(bi);
+    const int32_t  bl  = g.l(b) - al, bc = g.c(b) - ac;
+    const int64_t  d11 = bl * bl + bc * bc;
+    const int64_t  eb  = bl * el + bc * ec;
+    const int64_t  t   = eb < 0 ? 0 : eb < d11 ? eb : d11;
+    m->n = 2, m->how = TONE_NEAR_LINE;
+    m->v[1] = m->v[2] = static_cast<uint8_t>(b);
+    m->w[0] = d11 - t, m->w[1] = t;
+    // The square of T - P, times d11.
+    const int32_t fl = l - g.l(b), fc = c - g.c(b);
+    const int64_t r2 = t == 0     ? static_cast<int64_t>(ee) * d11
+                       : t == d11 ? static_cast<int64_t>(fl * fl + fc * fc) * d11
+                                  : static_cast<int64_t>(ee) * d11 - t * t;
+    const int64_t side = static_cast<int64_t>(bl) * ec - static_cast<int64_t>(bc) * el;
+    if(r2 > static_cast<int64_t>(TONE_NEAR_TWO_Q * TONE_NEAR_TWO_Q) * d11)
+    {
+        m->how       = TONE_NEAR_NO_C;
+        const int ci = side == 0 ? -1 : g.third(a, b, side > 0 ? 1 : -1);
+        int64_t      w[3];
+        if(ci >= 0 && tone_near_triangle(bl, bc, g.l(static_cast<unsigned>(ci)) - al,
+                                         g.c(static_cast<unsigned>(ci)) - ac, el, ec, w))
+        {
+            const bool in = w[0] > 0 && w[1] > 0 && w[2] > 0;
+            m->n = 3, m->how = in ? TONE_NEAR_IN : TONE_NEAR_EDGE_OF;
+            m->v[2] = static_cast<uint8_t>(ci);
+            m->w[0] = w[0], m->w[1] = w[1], m->w[2] = w[2];
+        }
+    }
+    tone_near_sort(g, m);
+}
+
+// Of the mix m, the entry at threshold rank r, 0 to 255: the darkest for the lowest ranks. Exact,
+// so the share of each entry over the 256 ranks is its weight to within 1/512.
+inline unsigned tone_near_choose(const tone_near_mix& m, int r)
+{
+    const int64_t s  = m.w[0] + m.w[1] + m.w[2];
+    const int64_t th = (2 * r + 1) * s;
+    if(th < m.w[0] * 512) return m.v[0];
+    if(th < (m.w[0] + m.w[1]) * 512) return m.v[1];
+    return m.v[2];
+}

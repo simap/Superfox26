@@ -1,7 +1,8 @@
 // Host test of the tone dither and the frame play of main/tones.cpp. Run from this directory: make test.
 //
 // Each test image runs through tone_dither::row, some of them with a photo mask, and three checks
-// run on the entry frame it gives:
+// run on the entry frame it gives. An image with a mask runs in the photo modes triangle and
+// nearest (tones.h), and the seam image in diffuse too:
 // 1. The play check. The frame, with paper rows below it to TONE_H, plays through tones_draw() into
 //    the driver model of epd_stub.cpp. tone_plan_build() makes a plan, the code of every pixel at
 //    every pull equals tone_plan_code() of its entry after the COG's plane swap, the pulls of each
@@ -12,7 +13,10 @@
 //    pattern has r or R.
 // 3. The white and black check. Every input pixel 255 255 255 takes the paper entry, and every input
 //    pixel 0 0 0 takes the black entry.
-// Prints one line per image. Exit status 1 when a check fails.
+// 4. The mode check. The seam image in diffuse gives the frame of the same image without a mask,
+//    and its pixels outside the mask are the same in triangle and nearest.
+// 5. The nearest mix of tone_photo.h on a made up graph of three entries (near_toy()).
+// Prints one line per run. Exit status 1 when a check fails.
 // TONES_FONT in the environment names the face of the text image. Without FreeType, or when the face
 // does not open, the text image holds only its strokes.
 
@@ -29,6 +33,7 @@
 #include "epd_stub.h"
 #include "tone_plan.h"
 #include "tonemap.h"
+#include "tone_photo.h"
 #include "tonemap_squeeze.h"
 #include "tones.h"
 
@@ -192,7 +197,9 @@ bool play_ok(const std::vector<uint8_t>& idx, int h, const std::string& name)
     return good;
 }
 
-bool run(const test_case& tc)
+// Runs the checks on the frame of tc in the photo mode tones_photo_mode() gives, and keeps the
+// frame in *frame when frame is not null.
+bool run(const test_case& tc, std::vector<uint8_t>* frame = nullptr)
 {
     const int    h = tc.im.h;
     const size_t n = static_cast<size_t>(W) * h;
@@ -215,9 +222,10 @@ bool run(const test_case& tc)
         if(in[0] == 0 && in[1] == 0 && in[2] == 0) black++, black_off += idx[p] != g_black;
     }
     const bool good = play && tint == 0 && white_off == 0 && black_off == 0;
-    printf("%s  %-20s play %s, neutral targets on an entry with r or R %zu, white pixels not on paper %zu of %zu, "
+    printf("%s  %-28s play %s, neutral targets on an entry with r or R %zu, white pixels not on paper %zu of %zu, "
            "black pixels not on black %zu of %zu\n",
            good ? "pass" : "FAIL", tc.name.c_str(), play ? "ok" : "FAIL", tint, white_off, white, black_off, black);
+    if(frame) frame->swap(idx);
     return good;
 }
 
@@ -529,6 +537,107 @@ test_case text_block()
     return tc;
 }
 
+// ---------------------------------------------------------------- the nearest mix on a made up graph
+
+// Three entries 0, 1 and 2 that all touch, at the corners of a triangle in the plane of L and 2C.
+struct toy_graph
+{
+    int      pl[3] = {600, 3600, 1400}, pc[3] = {100, 300, 1500};
+    int      l(unsigned e) const { return pl[e]; }
+    int      c(unsigned e) const { return pc[e]; }
+    int64_t  d2(unsigned e, int x, int y) const
+    {
+        return static_cast<int64_t>(pl[e] - x) * (pl[e] - x) + static_cast<int64_t>(pc[e] - y) * (pc[e] - y);
+    }
+    unsigned owner(int x, int y) const
+    {
+        unsigned a = 0;
+        for(unsigned e = 1; e < 3; e++)
+            if(d2(e, x, y) < d2(a, x, y)) a = e;
+        return a;
+    }
+    int toward(unsigned a, int dl, int dc) const
+    {
+        int    best = -1;
+        double cb   = 0;
+        for(unsigned e = 0; e < 3; e++)
+        {
+            const double xl = pl[e] - pl[a], xc = pc[e] - pc[a], dot = xl * dl + xc * dc;
+            if(e == a || dot <= 0) continue;
+            const double cs = dot / sqrt((xl * xl + xc * xc) * (double(dl) * dl + double(dc) * dc));
+            if(best < 0 || cs > cb) best = static_cast<int>(e), cb = cs;
+        }
+        return best;
+    }
+    int third(unsigned a, unsigned b, int side) const
+    {
+        const unsigned t = 3 - a - b;
+        const int64_t  o = static_cast<int64_t>(pl[b] - pl[a]) * (pc[t] - pc[a]) -
+                          static_cast<int64_t>(pc[b] - pc[a]) * (pl[t] - pl[a]);
+        return (o > 0) == (side > 0) ? static_cast<int>(t) : -1;
+    }
+};
+
+// The distance from (x, y) to the triangle of the toy graph, 0 inside.
+double toy_out(const toy_graph& g, double x, double y)
+{
+    double d = 1e30, s = 0;
+    for(int i = 0; i < 3; i++)
+    {
+        const int    j  = (i + 1) % 3;
+        const double ax = g.pl[i], ay = g.pc[i], bx = g.pl[j] - ax, by = g.pc[j] - ay;
+        double       t  = ((x - ax) * bx + (y - ay) * by) / (bx * bx + by * by);
+        t               = t < 0 ? 0 : t > 1 ? 1 : t;
+        d               = std::min(d, std::hypot(x - ax - t * bx, y - ay - t * by));
+        s += (bx * (y - ay) - by * (x - ax)) > 0 ? 1 : -1;
+    }
+    return fabs(s) == 3 ? 0 : d;
+}
+
+// 5. The check of the nearest mix on the toy graph. A target on an entry takes that entry at every
+//    rank. For targets on a grid around the triangle, the mean of the picks over the 256 ranks
+//    lies within the rounding bound of the nearest point of the triangle when it holds the target or
+//    takes a third entry, and every pick is an entry of the mix.
+bool near_toy()
+{
+    const toy_graph g;
+    unsigned        on_bad = 0, mean_bad = 0, n = 0;
+    double          worst  = 0;
+    for(unsigned e = 0; e < 3; e++)
+    {
+        tone_near_mix m;
+        tone_near_pick(g, g.l(e), g.c(e), &m);
+        for(int r = 0; r < 256; r++) on_bad += tone_near_choose(m, r) != e;
+    }
+    for(int x = 0; x <= 4096; x += 32)
+        for(int y = 0; y <= 1600; y += 16)
+        {
+            tone_near_mix m;
+            tone_near_pick(g, x, y, &m);
+            if(m.how != TONE_NEAR_IN && m.how != TONE_NEAR_EDGE_OF && m.how != TONE_NEAR_LINE) continue;
+            double ml = 0, mc = 0;
+            bool   own = true;
+            for(int r = 0; r < 256; r++)
+            {
+                const unsigned e = tone_near_choose(m, r);
+                own              = own && (e == m.v[0] || e == m.v[1] || e == m.v[2]);
+                ml += g.l(e) / 256.0, mc += g.c(e) / 256.0;
+            }
+            // Each cut is placed to 1/512, so the mean misses the point the mix reaches by at most
+            // 1/256 of the spread, here below 13, and a mix of two stops within TONE_NEAR_TWO_Q.
+            const double reach = m.how == TONE_NEAR_LINE ? TONE_NEAR_TWO_Q : 0;
+            const double miss  = std::hypot(ml - x, mc - y) - toy_out(g, x, y) - reach;
+            worst              = std::max(worst, miss);
+            mean_bad += !own || miss > 14;
+            n++;
+        }
+    const bool good = on_bad == 0 && mean_bad == 0 && n > 0;
+    printf("%s  nearest mix on a toy graph: on entry picks off %u, %u of %u targets off the point the mix reaches "
+           "(worst %.1f of 14)\n",
+           good ? "pass" : "FAIL", on_bad, mean_bad, n, worst);
+    return good;
+}
+
 } // namespace
 
 int main()
@@ -539,24 +648,56 @@ int main()
         return 1;
     }
     unsigned images = 0, fails = 0;
-    auto     check = [&](const test_case& tc) { images++, fails += !run(tc); };
-    check(gray_ramp());
-    check(dark_gray_ramp());
-    check(red_sat_ramp());
-    check(red_dark_ramp());
-    check(dark_red_ramp());
-    check(tri_axes());
-    check(tri_show());
-    check(text_block());
-    check(scene());
-    check(as_photo(gray_ramp(), "pa_gray_ramp"));
-    check(as_photo(dark_gray_ramp(), "pa2_dark_gray_ramp"));
-    check(as_photo(red_sat_ramp(), "pb1_red_sat_ramp"));
-    check(as_photo(red_dark_ramp(), "pb2_red_dark_ramp"));
-    check(as_photo(dark_red_ramp(), "pb3_dark_red_ramp"));
-    check(as_photo(tri_show(), "pc2_tri_show"));
-    check(as_photo(scene(), "pe_scene"));
-    check(seam());
-    printf("%s, %u of %u images failed\n", fails ? "FAIL" : "pass", fails, images);
+    auto     check = [&](const test_case& tc, std::vector<uint8_t>* frame) { images++, fails += !run(tc, frame); };
+    std::vector<uint8_t> plain;
+    check(gray_ramp(), nullptr);
+    check(dark_gray_ramp(), &plain);
+    check(red_sat_ramp(), nullptr);
+    check(red_dark_ramp(), nullptr);
+    check(dark_red_ramp(), nullptr);
+    check(tri_axes(), nullptr);
+    check(tri_show(), nullptr);
+    check(text_block(), nullptr);
+    check(scene(), nullptr);
+
+    // The photo images in each photo mode that reads the mask, and the seam in all three.
+    const char* const    mode_name[TONE_PHOTO_MODES] = {"diffuse", "triangle", "nearest"};
+    const test_case      photo[]                     = {as_photo(gray_ramp(), "pa_gray_ramp"),
+                                                        as_photo(dark_gray_ramp(), "pa2_dark_gray_ramp"),
+                                                        as_photo(red_sat_ramp(), "pb1_red_sat_ramp"),
+                                                        as_photo(red_dark_ramp(), "pb2_red_dark_ramp"),
+                                                        as_photo(dark_red_ramp(), "pb3_dark_red_ramp"),
+                                                        as_photo(tri_show(), "pc2_tri_show"),
+                                                        as_photo(scene(), "pe_scene")};
+    std::vector<uint8_t> seam_frame[TONE_PHOTO_MODES];
+    for(int m = 0; m < TONE_PHOTO_MODES; m++)
+    {
+        tones_set_photo_mode(static_cast<tone_photo_mode>(m));
+        if(m != TONE_PHOTO_DIFFUSE)
+            for(test_case tc : photo)
+            {
+                tc.name += std::string("/") + mode_name[m];
+                check(tc, nullptr);
+            }
+        test_case tc = seam();
+        tc.name += std::string("/") + mode_name[m];
+        check(tc, &seam_frame[m]);
+    }
+    tones_set_photo_mode(TONE_PHOTO_DEFAULT);
+
+    // 4. The mode check. The diffuse mode gives the frame of the image without a mask, and the pixels
+    // the mask leaves to error diffusion are the same in the two photo modes.
+    const std::vector<uint8_t>& tri = seam_frame[TONE_PHOTO_TRIANGLE];
+    const std::vector<uint8_t>& nea = seam_frame[TONE_PHOTO_NEAREST];
+    const test_case             sm  = seam();
+    size_t                      off = 0;
+    for(size_t p = 0; p < sm.mask.size(); p++) off += !sm.mask[p] && tri[p] != nea[p];
+    const bool modes = seam_frame[TONE_PHOTO_DIFFUSE] == plain && off == 0;
+    printf("%s  modes: diffuse seam %s the image without a mask, pixels without the mask that differ between "
+           "triangle and nearest %zu\n",
+           modes ? "pass" : "FAIL", seam_frame[TONE_PHOTO_DIFFUSE] == plain ? "is" : "is NOT", off);
+    images++, fails += !modes;
+    images++, fails += !near_toy();
+    printf("%s, %u of %u runs failed\n", fails ? "FAIL" : "pass", fails, images);
     return fails ? 1 : 0;
 }

@@ -20,12 +20,39 @@ strongest red the panel shows.
 
 ## The draw
 
-1. The renderer composites a page into a 24-bit RGB band buffer, then error diffusion dithers each
-   row to shade indices in the tone frame (`main/tones.cpp`, `tone_dither`). The frame is one byte
-   per pixel, 960 by 672.
+1. The renderer composites a page into a 24-bit RGB band buffer and a mask that marks the opaque
+   pixels of photo images. Each row is then dithered to shade indices in the tone frame
+   (`main/tones.cpp`, `tone_dither`). The frame is one byte per pixel, 960 by 672.
 2. `tones_draw()` plans the pulls for the shades the frame uses (`main/tone_plan.h`,
    `tone_plan_build`), then plays them.
 3. The driver (`components/epd97`) plays the pulls on the panel.
+
+## The dither
+
+Each pixel's colour is first mapped to a target shade colour: the colour is moved onto the red hue
+and its chroma is scaled to what the panel can show at its lightness. A pixel whose target is on a
+shade takes that shade. A target without chroma never takes a shade whose pattern has r or R.
+
+Pixels outside the photo mask, text and fills, take Atkinson error diffusion. Photo pixels take an
+ordered dither: a blue noise threshold picks one of a few shades per pixel and no error is carried.
+A grey photo pixel mixes the two grey shades on either side of it. The photo mode sets what a
+coloured photo pixel does:
+
+- `diffuse`: the mask is ignored and photo pixels take error diffusion too.
+- `triangle`: the pixel mixes the three shades that enclose its target in linear light. The mix keeps
+  the mean colour, but the shades can be far apart, for example paper dots on a strong red.
+- `nearest`, the default: the pixel mixes up to three shades around its target in a plane of
+  lightness and chroma (`main/tone_photo.h`, `main/tone_graph.h`). Each shade owns the targets
+  nearer to it than to any other shade, and two shades neighbour when their areas share a border.
+  The pixel takes the owner of its target, then the neighbour in the direction of the error that
+  is left, then the shade that neighbours both on the target's side, and stops early when the error
+  left is below 0.002. So a mix never holds a shade far from the target while a nearer one lies
+  between, and paper does not mix with a strong red. The colour can be off where the neighbours do
+  not enclose the target, and the mix is set in lightness, not in light.
+
+The console command `dither` prints the mode, and `dither diffuse`, `dither triangle` or
+`dither nearest` sets it. The next page drawn uses it, and `load N` draws page N again. The mode
+is kept across deep sleep and goes back to `nearest` when power is removed.
 
 The driver runs two drive tables in turn. Phase 1 uses one table, phase 2 the other. At each pull a
 pixel plays the code its shade holds for that pull. A code is a two-bit value in the two plane

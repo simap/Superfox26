@@ -17,6 +17,7 @@
 #include "tone_fx_search.h"
 #include "tone_fx_squeeze.h"
 #include "tone_fx_srgb.h"
+#include "tone_graph.h"
 #include "tone_plan.h"
 #include "tone_tables.h"
 #include "tonemap.h"
@@ -25,6 +26,12 @@
 #endif
 #ifdef TONES_BENCH
 #include "esp_cpu.h"
+#endif
+#if defined(ESP_PLATFORM)
+#include "esp_attr.h"
+#define TONES_KEEP RTC_NOINIT_ATTR
+#else
+#define TONES_KEEP
 #endif
 
 static const char* TAG = "tones";
@@ -145,6 +152,31 @@ TONE_TABLES_RAM std::array<int16_t, 2 * TONEMAP_COUNT> s_photo_yv = tone_tables:
 TONE_TABLES_RAM std::array<tone_tri, tone_tables::photo_tri_count> s_photo_tri = tone_tables::photo_tri;
 TONE_TABLES_RAM std::array<uint8_t, tone_tables::photo_top_count> s_photo_top = tone_tables::photo_top;
 TONE_TABLES_RAM std::array<uint8_t, TONE_PHOTO_GRID * TONE_PHOTO_GRID> s_photo_grid = tone_tables::photo_grid;
+// The graph of the tones (tone_graph.h): the owner grid as the file holds it, and the rest, which
+// tones_init() hydrates from the rings.
+TONE_TABLES_RAM std::array<uint16_t, tone_tables::graph_cols * tone_tables::graph_rows> s_graph_cell = tone_tables::graph_cell;
+TONE_TABLES_RAM std::array<uint8_t, tone_tables::graph_cand_count> s_graph_cand = tone_tables::graph_cand;
+tone_graph s_graph;
+static_assert(tone_tables::graph_cols == TONE_GRAPH_COLS, "main/tone_tables.inc has another owner grid: regenerate it");
+static_assert(tone_graph_c12(NEUTRAL_C_Q) == TONE_GRAPH_STRIP, "the strip of the graph is the neutral chroma limit");
+// The queries of the graph as tone_near_pick() asks them.
+struct near_graph
+{
+    const tone_graph& g;
+    unsigned          owner(int l, int c) const { return tone_graph_owner(g, l, c); }
+    int               toward(unsigned a, int dl, int dc) const { return tone_graph_toward(g, a, dl, dc); }
+    int               third(unsigned a, unsigned b, int side) const { return tone_graph_third(g, a, b, side); }
+    int               l(unsigned e) const { return g.l[e]; }
+    int               c(unsigned e) const { return g.c[e]; }
+};
+// The mix of the last coloured target of the nearest mix, which the next pixel of a run reuses.
+int32_t       s_near_key = -1;
+tone_near_mix s_near_mix;
+// The photo mode in the low byte under PHOTO_TAG. On the badge deep sleep keeps it and a power up
+// leaves it undefined, so a word without the tag reads as TONE_PHOTO_DEFAULT. A change of the
+// memory kept across deep sleep needs a new magic in main/rtcstate.cpp.
+const uint32_t               PHOTO_TAG = 0x50480000u;
+TONES_KEEP volatile uint32_t s_photo_keep;
 const lab_table s_lab   = make_lab();
 const uint8_t   s_black = static_cast<uint8_t>(entry_of(TONEMAP_BLACK_PATTERN));
 uint8_t*        s_frame     = nullptr;
@@ -317,14 +349,26 @@ ALWAYS_INLINE unsigned decide_colour(int s, const int ec[3], int res[3])
 }
 
 // The entry of a photo pixel of slot s at threshold rank r, 0 to 255. It depends on the target and
-// the rank alone: a photo pixel takes no carried error and leaves none, so its mix averages to its
-// target over the noise table.
-unsigned photo_entry(int s, int r)
+// the rank alone: a photo pixel takes no carried error and leaves none, so its mix averages over the
+// noise table to the point the mix reaches. NEAR picks the nearest mix of a coloured target, else
+// the triangle mix.
+template <bool NEAR> unsigned photo_entry(int s, int r)
 {
     const chunk& c    = s_ck;
     const int    kind = c.kind[s] == K_WHITE ? s_white_kind : c.kind[s];
     if(kind == K_ENTRY) return c.lo[s];
     if(kind == K_NEUTRAL) return tone_photo_pair(c.lo[s], c.hi[s], s_qlin[c.lo[s]][0], s_qlin[c.hi[s]][0], c.r[s], r);
+    if(NEAR)
+    {
+        const int     l = tone_graph_l12(c.L[s]), cc = tone_graph_c12(c.C[s]);
+        const int32_t key = l << 16 | cc;
+        if(key != s_near_key)
+        {
+            tone_near_pick(near_graph{s_graph}, l, cc, &s_near_mix);
+            s_near_key = key;
+        }
+        return tone_near_choose(s_near_mix, r);
+    }
     int     y, v;
     int32_t w[3];
     tone_photo_yv(c.r[s], c.g[s], c.b[s], &y, &v);
@@ -342,6 +386,7 @@ struct pass_b_rows
     uint8_t*       out;
     const int8_t*  noise;
     const uint8_t* mask;
+    unsigned (*photo)(int s, int r);
 };
 
 struct pass_b_pos
@@ -526,7 +571,7 @@ template <bool COUNT, int D> ALWAYS_INLINE void step_p(pass_b_pos& ps, const pas
     int16_t* const pa = ps.pa;
     int16_t* const p1 = ps.p1;
     const int      x  = static_cast<int>(ps.op - rw.out);
-    *ps.op            = static_cast<uint8_t>(photo_entry(*ps.sp, rw.noise[x & (NOISE_N - 1)] + 128));
+    *ps.op            = static_cast<uint8_t>(rw.photo(*ps.sp, rw.noise[x & (NOISE_N - 1)] + 128));
     for(int k = 0; k < 3; k++)
     {
         p1[k]          = static_cast<int16_t>(p1[k] + pa[C::A1 + k] + pa[C::A2 + k]);
@@ -559,7 +604,7 @@ template <bool COUNT> NOIPA void photo_chunk(const pass_b_rows& rw, int x0, int 
 {
     const uint8_t* sl = s_ck.slot;
     for(int i = 0; i < n; i++)
-        rw.out[x0 + i] = static_cast<uint8_t>(photo_entry(sl[i], rw.noise[(x0 + i) & (NOISE_N - 1)] + 128));
+        rw.out[x0 + i] = static_cast<uint8_t>(rw.photo(sl[i], rw.noise[(x0 + i) & (NOISE_N - 1)] + 128));
     BENCH_COUNT(photo_px, n);
 }
 
@@ -616,7 +661,8 @@ template <bool COUNT> void dither_row(tone_dither& dt, const uint8_t* rgb, int y
     const int      nch   = (w + CHUNK - 1) / CHUNK;
     chunk&         c     = s_ck;
     int            pend  = 0;
-    const pass_b_rows rw = {cur, row1, row2, out, noise, mask};
+    const pass_b_rows rw = {cur, row1, row2, out, noise, mask,
+                            dt.mode == TONE_PHOTO_TRIANGLE ? photo_entry<false> : photo_entry<true>};
     memset(row2 + (d > 0 ? 0 : (w + 2) * 3), 0, 6 * sizeof(int16_t));
     for(int ci = 0; ci < nch; ci++)
     {
@@ -780,6 +826,13 @@ bool tones_init()
         ESP_LOGE(TAG, "tone map refused: %s", why);
         return false;
     }
+    if(!tone_graph_hydrate(&s_graph, tone_tables::qL.data(), tone_tables::graph_c.data(), tone_tables::neutral.data(),
+                           tone_tables::neutral_count, tone_tables::graph_ring.data(), tone_tables::graph_ring_count,
+                           s_graph_cell.data(), s_graph_cand.data(), tone_tables::graph_rows))
+    {
+        ESP_LOGE(TAG, "the rings of the tone graph do not fit its arrays");
+        return false;
+    }
 
     chunk&                 c = s_ck;
     const tone_white_slot& w = tone_tables::white;
@@ -815,9 +868,22 @@ uint8_t* tones_frame()
     return s_frame;
 }
 
+void tones_set_photo_mode(tone_photo_mode m)
+{
+    s_photo_keep = PHOTO_TAG | (m < TONE_PHOTO_MODES ? m : TONE_PHOTO_DEFAULT);
+}
+
+tone_photo_mode tones_photo_mode()
+{
+    const uint32_t v = s_photo_keep;
+    return (v & ~0xffu) == PHOTO_TAG && (v & 0xffu) < TONE_PHOTO_MODES ? static_cast<tone_photo_mode>(v & 0xffu)
+                                                                         : TONE_PHOTO_DEFAULT;
+}
+
 void tone_dither::alloc(int w_)
 {
     release();
+    mode           = tones_photo_mode();
     w              = w_;
     const size_t n = static_cast<size_t>(w + 4) * 3;
     const size_t b = 3 * n * sizeof(int16_t);
@@ -848,6 +914,7 @@ void tone_dither::row(const uint8_t* c, int y, uint8_t* out, const uint8_t* mask
         memset(out, TONE_PAPER, static_cast<size_t>(w));
         return;
     }
+    if(mode == TONE_PHOTO_DIFFUSE) mask = nullptr;
 #ifdef TONES_BENCH
     if(s_bench_count)
     {

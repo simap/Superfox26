@@ -11,7 +11,7 @@
 
 namespace
 {
-const uint32_t RTCSTATE_MAGIC = 0x52545307;
+const uint32_t RTCSTATE_MAGIC = 0x52545308;
 
 RTC_NOINIT_ATTR uint32_t s_magic;
 

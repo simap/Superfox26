@@ -1,5 +1,5 @@
 # Host probe of the dither on an RGB image, see image_dither.cpp.
-# Run from this directory: make, then out/image_dither [--photo] IN.png OUT.png
+# Run from this directory: make, then out/image_dither [--photo] [--mode NAME] IN.png OUT.png
 # Builds against the same sources and stubs as host_tests/tones.
 
 ROOT  := ../..

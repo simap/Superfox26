@@ -32,6 +32,7 @@ SRCS := tones_host.cpp epd_stub.cpp $(ROOT)/main/tones.cpp $(ROOT)/main/tone_pla
         $(foreach k,$(FX),$(ROOT)/main/tone_fx_$(k).cpp $(MODEL)/tone_fx_$(k)_model.cpp)
 HDRS := $(ROOT)/main/tones.h $(ROOT)/main/tonemap.h $(ROOT)/main/tonemap_entries.inc \
         $(ROOT)/main/tonemap_squeeze.h $(ROOT)/main/tone_plan.h $(ROOT)/main/tone_fx.h $(MODEL)/tone_fx_model.h \
+        $(ROOT)/main/tone_photo.h \
         $(wildcard $(ROOT)/main/tone_tables*) \
         $(foreach k,$(FX),$(ROOT)/main/tone_fx_$(k).h $(ROOT)/main/tone_fx_$(k)_internal.h) \
         $(wildcard $(ROOT)/components/epd97/*.h) $(wildcard stub/*.h) epd_stub.h

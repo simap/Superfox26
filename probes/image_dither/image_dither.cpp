@@ -1,9 +1,10 @@
 // Host probe: the fixed point dither (main/tones.cpp tone_dither) on an RGB image. Writes the result
 // as a PNG with every pixel in the colour of its tone entry, and prints the share of each entry and
 // the dither time.
-// Usage: out/image_dither [--photo] IN.png OUT.png. IN is read as 24 bit RGB. Its alpha is dropped,
-// so composite a transparent image on its background first. --photo marks every pixel as a photo
-// pixel, so the image takes the blue noise ordered dither instead of error diffusion.
+// Usage: out/image_dither [--photo] [--mode diffuse|triangle|nearest] IN.png OUT.png. IN is read as
+// 24 bit RGB. Its alpha is dropped, so composite a transparent image on its background first.
+// --photo marks every pixel as a photo pixel, so the image takes the dither of the photo mode that
+// --mode names (tones.h), TONE_PHOTO_DEFAULT without it.
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -38,10 +39,24 @@ static void entry_rgb(const tone_entry& e, uint8_t* o)
 
 int main(int argc, char** argv)
 {
-    const bool photo = argc == 4 && strcmp(argv[1], "--photo") == 0;
-    if(argc != 3 && !photo)
+    const char* const modes[TONE_PHOTO_MODES] = {"diffuse", "triangle", "nearest"};
+    bool              photo = false, ok = argc >= 3;
+    int               a     = 1;
+    for(; ok && a < argc - 2; a++)
     {
-        fprintf(stderr, "usage: %s [--photo] IN.png OUT.png\n", argv[0]);
+        if(strcmp(argv[a], "--photo") == 0) photo = true;
+        else if(strcmp(argv[a], "--mode") == 0 && a + 1 < argc - 2)
+        {
+            int m = 0;
+            while(m < TONE_PHOTO_MODES && strcmp(argv[a + 1], modes[m]) != 0) m++;
+            ok = m < TONE_PHOTO_MODES;
+            if(ok) tones_set_photo_mode(static_cast<tone_photo_mode>(m)), a++;
+        }
+        else ok = false;
+    }
+    if(!ok)
+    {
+        fprintf(stderr, "usage: %s [--photo] [--mode diffuse|triangle|nearest] IN.png OUT.png\n", argv[0]);
         return 1;
     }
     const char* in_path  = argv[argc - 2];
@@ -69,7 +84,7 @@ int main(int argc, char** argv)
         entry_rgb(k_tonemap[idx[p]], &out[p * 3]);
     }
     free(in);
-    printf("%s, %ux%u, dither %.1f ms\n", photo ? "photo" : "error diffusion", w, h, ms);
+    printf("%s, %ux%u, dither %.1f ms\n", photo ? modes[q.mode] : "error diffusion", w, h, ms);
     for(unsigned e = 0; e < TONEMAP_COUNT; e++)
         if(n[e])
             printf("e%-3u %6.2f%%  L %.4f a %+.4f b %+.4f  %s\n", e, 100.0 * n[e] / (static_cast<double>(w) * h),

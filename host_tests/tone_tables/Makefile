@@ -9,7 +9,9 @@
 #                  limits (a build with every limit at 2 frames or less), and runs tone_tables_check, which
 #                  runs pass_a() of main/tones.cpp on the file's tables and compares the slot WHITE
 #                  and the solid gray table, and checks the mean of the photo dither's picks. It also
-#                  checks the phase 2 marks h and '|' in the expansion and the plans.
+#                  checks the phase 2 marks h and '|' in the expansion and the plans. Last it runs
+#                  tone_graph_check on the graph of the tones (main/tone_graph.h), then again with
+#                  each of its faults, where it must fail.
 # The file is checked in, so the firmware build needs no host compiler.
 #
 # The flags are those of the host harness (host_tests/tones). The fit of the squeeze runs in float
@@ -31,12 +33,14 @@ TIGHT    := -DEPD_B_FRAME_US=1000000u
 FX       := srgb bracket squeeze search oklab
 MAIN_HDR := $(ROOT)/main/tonemap.h $(ROOT)/main/tonemap_entries.inc $(ROOT)/main/tonemap_squeeze.h \
             $(ROOT)/main/tone_plan.h $(ROOT)/main/tone_fx.h $(ROOT)/main/tone_tables_source.h $(ROOT)/main/tone_photo.h \
+            $(ROOT)/main/tone_graph.h \
             $(foreach k,$(FX),$(ROOT)/main/tone_fx_$(k).h $(ROOT)/main/tone_fx_$(k)_internal.h) \
             $(wildcard $(ROOT)/components/epd97/*.h) $(MODEL)/tone_fx_model.h
 
 GEN_SRCS := tone_tables_gen.cpp tone_plan_expand.cpp tone_fx_squeeze_build.cpp tone_fx_bracket_build.cpp \
-            tone_fx_search_build.cpp tone_photo_build.cpp $(foreach k,srgb oklab squeeze bracket,$(MODEL)/tone_fx_$(k)_model.cpp)
-GEN_DEPS := $(GEN_SRCS) tone_plan_expand.h tone_tables_build.h $(MAIN_HDR)
+            tone_fx_search_build.cpp tone_photo_build.cpp tone_graph_build.cpp \
+            $(foreach k,srgb oklab squeeze bracket,$(MODEL)/tone_fx_$(k)_model.cpp)
+GEN_DEPS := $(GEN_SRCS) tone_plan_expand.h tone_tables_build.h tone_graph_build.h $(MAIN_HDR)
 
 # The check builds tones.cpp as the host harness does, with its ESP-IDF stubs and driver model.
 CHECK_SRCS := tone_tables_check.cpp tone_plan_expand.cpp $(ROOT)/main/tone_plan.cpp ../tones/epd_stub.cpp \
@@ -44,6 +48,9 @@ CHECK_SRCS := tone_tables_check.cpp tone_plan_expand.cpp $(ROOT)/main/tone_plan.
 CHECK_DEPS := $(CHECK_SRCS) tone_tables_build.h tone_plan_expand.h $(ROOT)/main/tones.cpp $(ROOT)/main/tones.h \
               $(ROOT)/main/tone_tables.h $(ROOT)/main/tone_tables.inc $(MAIN_HDR) ../tones/epd_stub.h \
               $(wildcard ../tones/stub/*.h)
+# The check of the graph of the tones (main/tone_graph.h) reads the file through the header alone.
+GRAPH_DEPS := tone_graph_check.cpp $(ROOT)/main/tone_tables.h $(ROOT)/main/tone_tables.inc $(MAIN_HDR)
+GRAPH_FAULTS := 1 2 3 4 5 6
 
 .PHONY: generate test clean
 
@@ -59,12 +66,17 @@ $(OUT)/tone_tables_check: $(CHECK_DEPS)
 	mkdir -p $(OUT)
 	$(CXX) $(CXXFLAGS) -I../tones/stub -I../tones -o $@ $(CHECK_SRCS)
 
+$(OUT)/tone_graph_check: $(GRAPH_DEPS)
+	mkdir -p $(OUT)
+	$(CXX) $(CXXFLAGS) -o $@ tone_graph_check.cpp
+
 generate: $(OUT)/tone_tables_gen
 	$(OUT)/tone_tables_gen $(ROOT)/main/tone_tables.inc
-	$(MAKE) $(OUT)/tone_tables_check
+	$(MAKE) $(OUT)/tone_tables_check $(OUT)/tone_graph_check
 	$(OUT)/tone_tables_check
+	$(OUT)/tone_graph_check
 
-test: $(OUT)/tone_tables_gen $(OUT)/tone_tables_gen_tight $(OUT)/tone_tables_check
+test: $(OUT)/tone_tables_gen $(OUT)/tone_tables_gen_tight $(OUT)/tone_tables_check $(OUT)/tone_graph_check
 	rm -f $(OUT)/tone_tables.inc $(OUT)/tone_tables_tight.inc
 	$(OUT)/tone_tables_gen $(OUT)/tone_tables.inc
 	@cmp -s $(OUT)/tone_tables.inc $(ROOT)/main/tone_tables.inc || \
@@ -76,6 +88,14 @@ test: $(OUT)/tone_tables_gen $(OUT)/tone_tables_gen_tight $(OUT)/tone_tables_che
 	@test ! -e $(OUT)/tone_tables_tight.inc || { echo "FAIL: the refused run left a file"; exit 1; }
 	@echo "the generator refuses a table over the push limits and writes nothing"
 	$(OUT)/tone_tables_check
+	$(OUT)/tone_graph_check
+	@for k in $(GRAPH_FAULTS); do \
+	    if $(OUT)/tone_graph_check --break $$k > $(OUT)/tone_graph_fault.txt; then \
+	        echo "FAIL: tone_graph_check passes the graph with fault $$k"; exit 1; fi; \
+	    echo "fault $$k fails:" $$(sed -n 's/^FAIL \([a-z]*\).*/\1/p; s/^\(paths\): .*FAIL.*/\1/p' \
+	        $(OUT)/tone_graph_fault.txt | sort -u); \
+	done
+	@echo "tone_graph_check fails the graph with each of the faults $(GRAPH_FAULTS)"
 
 clean:
 	rm -rf $(OUT)
