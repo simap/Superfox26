@@ -42,7 +42,7 @@ static const char* const LOW_BATTERY_HTML =
     "<html><body style=\"margin:0;padding:80px 80px;font-family:sans-serif;color:#000;background:#fff\">"
     "<div style=\"height:180px\">"
     "<div style=\"float:left;width:312px;height:132px;padding:12px;border:12px solid #000;border-radius:20px\">"
-    "<div style=\"width:52px;height:132px;background:#f62e2e;border-radius:6px\"></div></div>"
+    "<div style=\"width:52px;height:132px;background:#c11f16;border-radius:6px\"></div></div>"
     "<div style=\"float:left;width:28px;height:72px;margin-top:54px;background:#000;"
     "border-radius:0 10px 10px 0\"></div>"
     "</div>"

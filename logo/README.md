@@ -5,7 +5,7 @@
 | `superfox26_text.svg` | The editable source. The "26" is live text in Pirata One. | Editing only |
 | `superfox26.svg` | The logo with the "26" as outlines, so it renders without the font. | Source of `superfox26.png`, `superfox26_100.png`, `superfox26_32.png` and the 32 and 64 px icons of `webinstall/index.html` |
 | `favicon.svg` | The logo without the "26", for 16 px, where the digits do not read. | Source of the 16 px icon of `webinstall/index.html` |
-| `superfox26_panel.svg` | `superfox26.svg` in colours that each land on one tone entry of the panel, so its fills draw without dither: `#f62e2e` red, `#f6bbbb` light pink, black and paper white. | Source of `panel_32.png` and `panel_200.png` |
+| `superfox26_panel.svg` | `superfox26.svg` in colours that each land on one tone entry of the panel, so its fills draw without dither: `#c11f16` red, `#e6a499` light pink, black and paper white. | Source of `panel_32.png` and `panel_200.png` |
 | `panel_32.png` | 32 x 32 RGBA render of `superfox26_panel.svg` | Firmware: the left end of the tab bar (`EMBED_FILES` in `main/CMakeLists.txt`) |
 | `panel_200.png` | 200 x 200 RGBA render of `superfox26_panel.svg` | Firmware: the welcome notice |
 | `superfox26.png` | 512 x 512 RGBA render of `superfox26.svg` | General use, for example a repository or project image |
