@@ -111,32 +111,7 @@ inline unsigned tone_photo_pair(unsigned lo, unsigned hi, int ll, int lh, int li
 }
 
 // The nearest mix of a coloured photo pixel (TONE_PHOTO_NEAREST of tones.h), in the plane of L and
-// 2C of tone_graph.h. The graph G of that plane answers (tones.cpp maps these to tone_graph.h):
-//   G::top(l)             the highest c that a triangle of the graph reaches at l, at most 2 low, so
-//                         a point more than 2 above it lies in no triangle
-//   G::owner(l, c)        the entry that owns the point (l, c)
-//   G::toward(a, dl, dc)  the neighbour of a at the least angle from (dl, dc), under 90 degrees, or -1
-//   G::third(a, b, side)  the entry that forms a triangle with a and b on the left of a to b for side
-//                         above 0, on the right for side below 0, or -1
-//   G::focal(l, c, t, w)  the focal rule for a point above the top: the point where the segment from
-//                         it to the focal point crosses the top, on the pair t[0] t[1] with the parts
-//                         w[0] and w[1], t[2] t[1], w[2] 0
-//   G::rim(l, c, t, w)    the closest rule, the same with the point nearest it of the union of the
-//                         triangles and the pairs in no triangle, t[2] the third corner of its triangle
-//                         or t[1]
-//   G::unit(a, b, ul, uc) the vector from a to its neighbour b at the length 2^14, false for none
-//   G::l(e), G::c(e)      the point of entry e
-// A target T at (l, c) keeps its l and c and takes:
-// 1. When T lies at most 2 above top(l): A, the owner of T, B, the neighbour of A toward T, and C,
-//    the third entry of A and B on the side of A B that T is on, or on the other side when that side
-//    has none. When the point of triangle A B C nearest T lies inside an edge and T beyond it, the
-//    triangle across the edge takes the place of A B C, up to TONE_NEAR_STEPS times. When the
-//    triangle holds T, the weights are T's position in it. A target on its owner takes the owner.
-// 2. Else, or when no triangle on the way holds T, the focal rule: the point where the segment from
-//    T to the focal point of tone_graph.h crosses the top, as the parts of the two tones of that
-//    edge. Each point of the top takes the targets of one direction, so the mix moves with the
-//    target without a step, and a target on the top takes itself, the mix of step 1.
-// 3. The ease of tone_near_ease.
+// 2C of tone_graph.h.
 // Every two entries of a mix with weight are neighbours, and a target that a triangle holds is met
 // to the rounding of the weights before the ease.
 static const int TONE_NEAR_STEPS = 3;

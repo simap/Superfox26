@@ -9,11 +9,9 @@ use that word.
 The panel pigment has three native states: black, white and red. The driver moves a pixel with
 short voltage pulses. A pulse that stops part way leaves the pixel between two native states, so a
 pixel can hold a grey or a muted colour as well as the three natives. The table holds 70 such
-shades, measured on the panel from photos of test pages. Each reading first takes out the camera's tone
-curve, fitted to grey references on the page, and the uneven light across the photo. It then gives
-the shade's share of the light between the nearby black and the nearby paper, per channel.
+shades, measured on the panel from photos of test pages. 
 
-`main/tonemap.h` holds 72 entries: paper, black and the 70 shades. Each entry has a colour in Oklab
+`main/tonemap.h` holds the shades. Each entry has a colour in Oklab
 and a pattern. The pattern is the list of drive pulls that produce the shade.
 `main/tonemap_entries.inc` holds the entry data. The red reference entry, `S4pRi3R5`, is the
 strongest red the panel shows.
@@ -52,24 +50,7 @@ coloured photo pixel does:
 - `triangle`: the pixel mixes the three shades that enclose its target in linear light. The mix keeps
   the mean colour, but the shades can be far apart, for example paper dots on a strong red.
 - `nearest`, the default: the pixel mixes the three shades of a triangle around its target in a
-  plane of lightness and chroma (`main/tone_photo.h`, `main/tone_graph.h`). Each shade owns the
-  targets nearer to it than to any other shade, two shades neighbour when their areas share a
-  border, and three neighbours whose areas meet at a point form a triangle. The target keeps its
-  lightness and chroma. For a target in a triangle, the pixel takes the owner of the target, then
-  the neighbour at the least angle from the direction of the target, then the shade that forms a
-  triangle with both on the target's side. When the target lies beyond an edge of that triangle,
-  the triangle across the edge takes its place, up to 3 times. The weights of the three shades are
-  the target's position in the triangle. A target above the top of the triangles, a colour the
-  shades cannot mix, takes the focal rule: the point where the line from it to a fixed focal point
-  crosses the top, as a mix of the two shades at the ends of that edge. The focal point lies on the
-  gray axis at lightness 0.513, and the top, a line of 24 shades, is star shaped from it, so each
-  point of the top takes the targets of one direction. The mix then changes smoothly as the target
-  moves, with no line where the dither starts or stops, and a target on the top takes itself. The
-  distance from target to mix is 0.030 on average and 0.090 at worst, against 0.025 and 0.084 for
-  the closest rule, the nearest point of the triangles, which draws wedges and steps. The table
-  generator refuses a top that is not star shaped from the focal point. So a mix only holds shades
-  that neighbour each other, and paper does not mix with a strong red. The mix is set in lightness,
-  not in light.
+  plane of lightness and chroma (`main/tone_photo.h`, `main/tone_graph.h`). Uses close neighbors.
 
   Two steps then ease the minor shades, each a blend between the plain mix and a simpler one by a
   smoothstep of a distance, so the mix point moves by at most that distance:
@@ -82,12 +63,6 @@ coloured photo pixel does:
     nearest the target, and at T2 + W2 the mix is plain again. It draws a band of another texture
     along every edge.
   T 0 and W 0 turn a step off, and both off give the plain mix.
-
-The console command `dither` prints the mode and both steps, and `dither diffuse`, `dither triangle`
-or `dither nearest` sets the mode. The next page drawn uses it, and `load N` draws page N again.
-The mode is kept across deep sleep and goes back to `nearest` when power is removed. `dither solid
-T W` and `dither line T W` set the steps, 0 to 1024 each. They are kept in RAM only, so a deep sleep
-or a power up starts again at solid 8 16 and line 0 0.
 
 The driver runs two drive tables in turn. Phase 1 uses one table, phase 2 the other. At each pull a
 pixel plays the code its shade holds for that pull. A code is a two-bit value in the two plane

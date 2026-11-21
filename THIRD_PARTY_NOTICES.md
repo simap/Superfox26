@@ -13,7 +13,7 @@ after the first build, when the ESP-IDF component manager downloads those compon
 
 ### litehtml (fork)
 
-- Version: a fork of litehtml at commit 3147342c, branch `epaper`, based on litehtml v0.10
+- Version: a fork of litehtml, branch `epaper`, based on litehtml v0.10
 - Where: `components/litehtml/fork` (git submodule, the URL is in `.gitmodules`), built by
   `components/litehtml`, which applies `components/litehtml/patches/xtensa.patch`
 - Licence: BSD 3-Clause
@@ -143,24 +143,6 @@ outlines and the Hackaday Supercon graphic described under Artwork.
 - Upstream: https://github.com/espressif/esptool-js
 - Notice: the licence files of the esptool-js package, https://www.npmjs.com/package/esptool-js
 
-## In the repository only
-
-### LodePNG
-
-- Version: 20230410
-- Where: `host_tests/tones/lodepng.c` and `lodepng.h`, used by the host probe `probes/image_dither`
-  to read and write PNG files
-- Licence: zlib License
-- Upstream: https://github.com/lvandeve/lodepng
-- Notice: the copyright notice and licence at the top of `host_tests/tones/lodepng.h`
-
-### harfbuzzjs (build tool)
-
-- Version: 1.6.4, an npm dependency of `tools/fontpack`, installed by `npm ci`. It subsets the fonts
-  and is not part of the firmware.
-- Licence: MIT License
-- Upstream: https://github.com/harfbuzz/harfbuzzjs
-
 ## Artwork
 
 ### Pirata One
@@ -171,25 +153,14 @@ Font License 1.1 with Reserved Font Name "Pirata", https://fonts.google.com/spec
 
 ### Hackaday Supercon graphic
 
-The X and the ring of the logo derive from the Hackaday Supercon event graphic. Superfox26 is not
-affiliated with Hackaday.
+The X and the ring of the logo derive from the Hackaday Supercon event graphic.
 
 ## References and derived code
 
-The head of `components/epd97/epd97.c` lists the sources of the panel driver. This table repeats
-them with their licences.
-
-| Source | URL | Licence | What the driver takes from it |
-|---|---|---|---|
-| The badge team's ITC97 driver, `firmware/esp32s3-itc97-drag-drop/src/epd97.cpp` at commit 6ba6dd8 | https://github.com/Hack-a-Day/2026-Billboard_Badge | The repository has no licence file. The file carries no licence or copyright notice. | The bus, power, OTP detection, update register, soft start and brownout code of `epd97.c`, much of it unchanged. The pin map, the reset and supply timings and several comments of `epd97_config.h`. |
-| The badge's stock MicroPython driver, `firmware/badge/lib/epd.py`, in the same repository | https://github.com/Hack-a-Day/2026-Billboard_Badge | A BSD-style notice in the file, Copyright (c) 2012-2021 Pervasive Displays Inc. | The 0x70 booster setting of driver B and the plane resend that keeps a 0xB0 table latched. No block of code is copied. |
-| supercon26-badge-os, `components/os/epd.c` and `docs/DEVICE_INFO.md` | https://github.com/yigitabi5444/supercon26-badge-os | GPL 2.0 | The quick open waits, the 0x03 oscillator value for 23.7 ms frames, the kept supply between sessions and the one frame group of the seq set. No function matches. |
-| phthallo/supercon, `firmware/lib/luts.py` | https://github.com/phthallo/supercon | No licence | Which zero count bytes the B1 skips. |
+The head of `components/epd97/epd97.c` lists the sources of the panel driver.
 
 The badge team's driver names the OpenEPaperLink EFR32FG22 driver for this panel as its own origin.
-That repository, https://github.com/OpenEPaperLink/Tag_FW_EFR32xG22, has no licence file. The epd.py
-driver names Pervasive Displays' EPD_Driver_GU_large, https://github.com/PervasiveDisplays/EPD_Driver_GU_large,
-as its origin. That repository has no licence file either.
+That repository, https://github.com/OpenEPaperLink/Tag_FW_EFR32xG22, is licensed CC BY-NC-SA 4.0. The epd.py driver names Pervasive Displays' EPD_Driver_GU_large, https://github.com/PervasiveDisplays/EPD_Driver_GU_large, as its origin. That repository is CC BY-SA 4.0.
 
 The firmware's button and LED pins follow `firmware/badge/lib/button.py` and `led_bar.py` of the
 badge repository. Those files carry no notice.

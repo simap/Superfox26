@@ -38,19 +38,6 @@
 #define EPD_PIN_PWR       48   // VCC_EN
 #endif
 // Which level on VCC_EN powers the panel.
-//
-// The default is 0. The board switches the panel's VCC with an SK2301AA1SHB,
-// a P-channel MOSFET high-side switch driven straight off the GPIO. Pulling
-// the gate low turns it on. Set 1 for a plain active-high enable input.
-//
-// Getting this backwards does not look like a power problem from the outside.
-// The OTP read still succeeds, because it runs while the pin happens to be at
-// the other level. The refresh only fails at the DC/DC soft start, as
-// "booster never reported ready in 10 s".
-//
-// There is no pull-up on the gate, so between reset and epd_begin() the pin is
-// high-Z and the switch is undefined. epd_begin() parks it before it drives
-// it, but a 100k to 3V3 on the gate would close that window in hardware.
 #ifndef EPD_PWR_ACTIVE_HIGH
 #define EPD_PWR_ACTIVE_HIGH 0
 #endif

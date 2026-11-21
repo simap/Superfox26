@@ -1,13 +1,12 @@
 # Superfox26
 
-
 ![Superfox26](logo/superfox26.png)
 
-What better way to put the Supercon X ('26) badge to use than a web browser?
+What better way to put the Supercon X ('26) badge to use than a web browser you can hang on a wall?
 
 Superfox26 supports a decent subset of HTML5/CSS3 and runs on the ESP32 S3 on the Supercon X badge. 
 
-It renders pages and images using a tone system using custom waveforms to nudge the black, white, and red ink particles into tones and shades instead of solid BWR colors. Dithering on top of that, using DOM rendering aware dithering that leaves text readable and photos smooth. 
+It renders pages and images using a tone system using custom waveforms to nudge the black, white, and red ink particles into tones and shades instead of solid BWR colors. Dithering on top of that.
 
 Easy WebSerial installer and config UI at https://superfox26.hencke.net
 
@@ -24,7 +23,9 @@ HTTPS server certificates are not verified. `sdkconfig.defaults` sets `CONFIG_ES
 
 This is mostly hacked together, there could be bugs. Bugs around DC balance could cause burn in, which I've done plenty of times during development, and fortunately has seemed to fix itself over a few hours.
 
-In theory a bug could crash part way through a draw and restart, re-draw, crash again, and cause lots of DC imbalance, destorying the display. I try to detect that during boot and stop the badge. If that happens, it flashes 1 red LED until it is power cycled.
+In theory a bug could crash part way through a draw and restart, re-draw, crash again, and cause lots of DC imbalance, destroying the display. I try to detect that during boot and stop the badge. If that happens, it flashes 1 red LED until it is power cycled.
+
+The stock badge powers the LEDs even during sleep, and there's no way to cut power to them, without actually cutting traces. Reports of measuring 8mA draw, and datasheet looks like about 0.7mA per, which puts the best stock badge run/sleep time at around 9 days before needing a charge.
 
 ## Install with the web installer
 
@@ -39,6 +40,8 @@ secure context for browsers to trust WebSerial, so HTTPS.
 - Open a serial log and send a console command.
 
 ## Use
+
+There's a serial CLI over USB. It works but the web installer UI is nicer.
 
 After install and wifi config, the badge fetches each page in the list, draws it, and sleeps for the page's
 time (default 1 hour) before the next. 
@@ -61,8 +64,8 @@ The LED bar shows the current activity:
 | A violet, white, blue or green run | The chosen page during the selection window. The run grows from the left end for a forward choice and from the right end for a back choice, one LED per page of offset. Past seven it starts again in the next colour. |
 | The two middle LEDs violet | The choice is the page on the panel, so it stays. |
 | The chosen run blinking | The badge is loading or drawing the chosen page. |
-| The first LED red, a short flash | A press with no page list. |
-| The first LED red, flashing about once a second | The badge is halted after a cut draw. Switch it off and on. |
+| White LEDs on each end | No pages in the list. |
+| The first LED red, flashing about once a second | The badge is halted after a cut draw to prevent DC imbalance loops. Switch it off and on. |
 | Dark | Waiting for WiFi, an empty list, or between pages. |
 
 On USB power the badge stays awake, keeps the radio on, and runs the serial console. On battery the
@@ -74,9 +77,7 @@ and sleeps until a button wakes it on USB power.
 
 Prerequisites:
 
-- ESP-IDF v6.0.2, on macOS or Linux, installed with the Espressif installer (`eim`) or `install.sh`.
-  The scripts in `tools/` find it.
-- The Xtensa toolchain, installed by ESP-IDF.
+- ESP-IDF v6.0.2 or higher.
 
 Clone with submodules, since the litehtml fork is a submodule:
 
@@ -97,28 +98,16 @@ Build and flash:
   data partition image. The port defaults to the badge's first USB serial port.
 - `tools/build_webinstall.sh` builds the merged image for the web installer.
 
-The scripts run `idf.py` through the Python interpreter of the ESP-IDF virtual environment. They do
-not source `export.sh`. The build generates `sdkconfig` from `sdkconfig.defaults` when `sdkconfig`
-does not exist. After editing `sdkconfig.defaults`, delete `sdkconfig` to apply the change.
-
 ## Console
-
-The serial console runs on the badge's USB port. Open it with a serial terminal at 115200 baud, or
-with `tools/monitor.sh [PORT]`, or from the serial log of the web installer.
-
-Every reply line starts with `OK` for success or `ERR` for a failure. A command can print several
-`OK` lines. Event lines start with `EVT` and report a change with no command. A Web Serial page
-filters on these three prefixes.
 
 | Command | Arguments | What it does |
 |---|---|---|
 | `help` | | List the commands. |
 | `status` | | Print WiFi, power, the page list source, the page index and state, the build and free heap. |
 | `wifi` | | Print the stored network name and whether it is connected. |
-| `wifi` | `SSID [PASSWORD]` | Store the network and connect. |
+| `wifi` | `SSID [PASSWORD]` | Store the network and connect. Add double quotes or escape if you have spaces. |
 | `wifi clear` | | Remove the stored network. |
-| `scan` | | List the 2.4 GHz networks found. |
-| `get` | `URL` | Fetch the URL and print the status, the size and the first bytes, up to 64 KB. |
+| `scan` | | Scan for wifi networks. |
 | `urls` | | List the pages, each as index, URL, offset and seconds. |
 | `url add` | `URL [OFFSET [SECONDS]]` | Append a page. |
 | `url put` | `N URL [OFFSET [SECONDS]]` | Replace page N. |
@@ -132,39 +121,6 @@ filters on these three prefixes.
 | `show lowbatt` | | Draw the low battery notice. |
 | `show welcome` | | Draw the welcome notice. |
 
-Event lines:
-
-- `EVT state=<name> index=<n>` the state changed. `index` is the next page.
-- `EVT wifi connected=1 ip=<address>` WiFi connected.
-- `EVT wifi connected=0` WiFi dropped.
-
-States:
-
-| State | Meaning |
-|---|---|
-| `boot` | Starting up, before the first page. |
-| `wait` | A page is shown, waiting for the next. |
-| `hold` | A page is held, the timer is stopped. |
-| `render` | Fetching and laying out a page. |
-| `refresh` | Drawing the panel. |
-| `sleep` | Going into deep sleep. |
-| `nowifi` | Waiting for a WiFi connection. |
-| `nourls` | The page list is empty. |
-| `lowbatt` | The battery is low, the notice is shown. |
-| `welcome` | No WiFi network is stored, the welcome notice is shown. |
-
-## Pages
-
-The built-in page list is in `main/urls.h`. It holds some of the author's photos and some example
-sites. Each entry has a URL, a scroll offset in pixels from the top of the document, and a time in
-seconds. A time of 0 means the default (`B26_CYCLE_SECONDS`).
-
-A user changes the list at run time with the `url` console commands or from the web installer. The
-run-time list is stored as `urls.txt` on the data partition. The console `url clear` command, or the
-web installer, drops the stored list and returns to the built-in list.
-
-To change the list at build time, edit `main/urls.h`. The built-in list is used while `urls.txt`
-does not exist.
 
 ## How it works
 
@@ -174,31 +130,18 @@ Superfox26 draws one page as a pipeline:
    connection open for the next request. A page is read up to 700 KB (`PAGE_HTML_MAX`), an image up
    to 300 KB.
 2. Parse and layout. The litehtml fork parses the HTML and lays it out at the 960 px panel width.
-   The top 38 px of the panel is a tab bar. It shows a window of up to eight tabs around the
-   current page, with a count box for the pages hidden on each side. The rest is the page window.
+   The top 38 px of the panel is a tab bar. Layout uses a cache of image sizes so that it doesn't 
+   have to fetch every image on the page. Cache kept in RTC memory, cleared on power loss.
 3. Images. `main/image.cpp` decodes PNG, JPEG, GIF (first frame), BMP and WebP. A collect pass finds
-   the images in the window, fetches them, and scales them down.
-4. Dither. `main/render.cpp` composites the page into a 24-bit RGB band buffer, 64 rows at a time.
-   Each row is error diffusion dithered to shade indices in the tone frame.
-5. Draw. `tones_draw()` plays the frame onto the panel.
-
-The shades. The panel pigment has three native states: black, white and red. The driver moves a
-pixel with short voltage pulses, and a pulse that stops part way leaves the pixel between two native
-states. That gives greys and muted colours as well as the three natives. The author measured 103
-such shades on the panel. Each page pixel is dithered to the nearest of the 103.
-
-`main/tonemap.h` holds the 103 shades. Each one has a colour in Oklab and a pattern of drive pulses.
-The dither picks the nearest shade for each pixel. `main/tone_plan.h` expands each shade's pattern
-into panel pulses and balances the net drive on every pixel to zero, so the panel takes no DC
-charge. The driver in `components/epd97` plays the pulses.
-
-The panel drive has limits on how long a pixel may be driven in one direction. A pixel driven too
-long on one rail can damage the film, so no shade pattern drives a pixel harder than the panel's own
-stock waveform does. The limits are `EPD_PUSH_MAX_VDH`, `EPD_PUSH_MAX_VDL` and `EPD_PUSH_MAX_VDHR`
-in `components/epd97/epd97_config.h`. They are enforced by the table generator in
-`host_tests/tone_tables`, checked at boot by `tone_plan_init()`, and kept by the planner in
-`main/tone_plan.h`. The driver does not check them, so anyone who changes a waveform must keep the
-generator and the boot check in the build. See `docs/tones.md`.
+   the images visible in the window, fetches them, and scales them down.
+4. Band rendering. `main/render.cpp` composites the page into a 24-bit sRGB band buffer, 64 rows at 
+   a time. Images with alpha, text with anti-aliasing, etc. 
+5. Tone map and dither. sRGB is converted to linear light, then Oklab, then tone mapped to the 
+   nearest perceptual colors the screen hack can make, then Atkinson dithered to shade across tones. 
+   Dither error state is tracked across render bands.
+6. Once the final tone index bitmap is created, it is sent out to the panel. `tones_draw()` plays 
+   the frame onto the panel based on the tone sequences, which DC balance, erase, and combine
+   nudges to create the tones.
 
 ## Fonts
 
@@ -216,12 +159,12 @@ The font pack is in `data/fonts`, built by `tools/fontpack`. To rebuild it, run 
 - No JavaScript. litehtml is a layout engine and runs no scripts.
 - No SVG.
 - HTTPS server certificates are not verified.
-- WiFi is 2.4 GHz only.
-- Images are PNG, JPEG, GIF (first frame only), BMP and WebP. GIF animation is not played.
-- A page is read up to 700 KB of HTML. Beyond that it is refused.
+- Images are PNG, JPEG, GIF (first frame only), BMP and WebP. No GIF animations 😭
+- A page is read up to 700 KB of HTML.
 - An image file is read up to 300 KB. The in-view images of one page are held up to 1 MB together.
 - One stylesheet is read up to 400 KB.
-- A WiFi network name is up to 32 bytes and a password up to 63 bytes.
+- litehtml rendering still has to fit in PSRAM along with buffers. It was hacked to squeeze down 
+   really small, but parsing HTML and CSS needs a lot in memory.
 
 ## Repository layout
 
@@ -232,59 +175,8 @@ The font pack is in `data/fonts`, built by `tools/fontpack`. To rebuild it, run 
 | `components/litehtml/` | The litehtml fork submodule, its build glue and patches. |
 | `components/webp/` | The WebP decoder sources. |
 | `data/fonts/` | The font pack staged into the data partition. |
-| `logo/` | The logo artwork and its render notes. |
 | `tools/` | Build and flash scripts, and the font pack tool. |
 | `webinstall/` | The web installer page. |
-| `probes/` | On-device and host probes for the shade code. |
-| `host_tests/` | Host tests. |
-
-Host tests:
-
-| Path | What it tests |
-|---|---|
-| `host_tests/power/` | The power decisions in `main/power_logic.h`. |
-| `host_tests/browser_power/` | The wake, sleep and low battery decisions in `main/browser_logic.h`. |
-| `host_tests/leds/` | The LED bar signals in `main/leds_logic.h`. |
-| `host_tests/sizecache/` | The image size cache in `main/sizecache.cpp`. |
-| `host_tests/tone_fx/` | The fixed-point shade kernels, one subdirectory each. |
-| `host_tests/tone_tables/` | Generates and checks `main/tone_tables.inc` from `main/tonemap.h`. |
-| `host_tests/tones/` | The dither pipeline, writing result PNGs. |
-
-Probes:
-
-| Path | What it does |
-|---|---|
-| `probes/bench/` | Times the shade code under QEMU. |
-| `probes/oklab/` | Checks the Oklab kernel under QEMU. |
-| `probes/search/` | Checks the nearest-shade search under QEMU. |
-| `probes/squeeze/` | Checks the chroma squeeze kernel under QEMU. |
-| `probes/srgb_bracket/` | Checks the sRGB and bracket kernels under QEMU. |
-| `probes/image_dither/` | Dithers an RGB image to a PNG on the host. |
-| `probes/solid_red/` | Reports which shades a solid colour dithers to, on the host. |
-
-## Tests
-
-Host tests need clang and make. The dither harness in `host_tests/tones` also uses FreeType through
-`pkg-config`, or builds without it with `FREETYPE=0`.
-
-- Logic and kernel tests: run `make test` in the test directory, for example
-  `cd host_tests/power && make test`.
-- The dither harness: run `make run` in `host_tests/tones`. It writes PNGs and a report.
-- The host probes: run `make` in `probes/image_dither` or `probes/solid_red`, then run the built
-  binary in `out/`.
-
-The QEMU probes are full ESP-IDF projects. QEMU for Xtensa is needed. Build one with the ESP-IDF
-environment, then run its script:
-
-```
-source tools/idf_env.sh
-cd probes/oklab
-$IDF_PY build
-./run_qemu.sh
-```
-
-The script runs the probe under QEMU and prints the console until the probe's end marker, a crash,
-or the time limit.
 
 ## Credits and licence
 
@@ -294,8 +186,7 @@ Third-party parts in the repository, in the firmware image, and loaded by the we
 keep their own licence. They are listed in `THIRD_PARTY_NOTICES.md`. The logo and its artwork
 credits are in `logo/README.md`.
 
-The panel driver was written for this project with reference to these public repositories, as the
-header of `components/epd97/epd97.c` states:
+The panel driver was written for this project with reference to these public repositories (thanks!):
 
 - [Hack-a-Day/2026-Billboard_Badge](https://github.com/Hack-a-Day/2026-Billboard_Badge), the badge
   team's ITC97 driver and the stock MicroPython driver. The badge team's driver names the
